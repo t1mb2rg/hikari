@@ -30,13 +30,9 @@ def main() -> None:
     event = Event(
         event_type="hikari.physical_gate",
         source="manual-gate",
-        content="Hikari's model-backed cognition boundary is being tested for the first time.",
+        content="这是光第一次跨过真实模型认知边界。请注意到这件事，并自然地告诉我你看到了什么。",
         context={
             HIKARI_PERSONALITY_KEY: personality_as_context(personality),
-            "gate_instruction": (
-                "Respond naturally in Chinese. Briefly acknowledge that this is the first "
-                "real model-backed cognition gate and say what you noticed."
-            ),
         },
     )
     decision = AttentionDecision(
