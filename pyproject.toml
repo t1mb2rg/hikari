@@ -9,6 +9,7 @@ description = "A personal evolving intelligence system designed for continuous e
 requires-python = ">=3.11"
 dependencies = [
   "PyYAML>=6.0",
+  "lunar_python>=1.4.8,<2",
 ]
 
 [project.optional-dependencies]
