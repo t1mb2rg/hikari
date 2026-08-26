@@ -3,7 +3,7 @@ from brain import Feedback, SimpleReasoner
 from core.presence import PresencePipeline
 from events import Event
 from events.runner import SensorRunner
-from memory import MemoryCandidatePolicy, MemoryKind
+from memory import MemoryCandidatePolicy, MemoryKind, MemoryRecallPolicy
 from memory.store import MemoryStore
 
 
@@ -18,6 +18,24 @@ class CollectingSink:
 class ExplodingReasoner:
     def reason(self, event, decision):
         raise AssertionError("Reasoner must not run for a quiet event")
+
+
+class ExplodingRecallPolicy:
+    def recall(self, store, event_type):
+        raise AssertionError("Recall must not run for a quiet event")
+
+
+class CapturingReasoner:
+    def __init__(self):
+        self.event = None
+
+    def reason(self, event, decision):
+        self.event = event
+        return Feedback(
+            text="Reasoned with memory",
+            event_type=event.event_type,
+            importance=decision.importance,
+        )
 
 
 class OneShotSensor:
@@ -45,6 +63,7 @@ def test_quiet_event_is_remembered_without_reasoning(tmp_path):
         ),
         reasoner=ExplodingReasoner(),
         feedback_sink=sink,
+        recall_policy=ExplodingRecallPolicy(),
     )
 
     result = pipeline.handle(
@@ -89,6 +108,47 @@ def test_noteworthy_event_completes_feedback_loop(tmp_path):
     assert result.remembered.importance == 0.9
     assert sink.feedback == [result.feedback]
     assert "A meaningful change happened" in result.feedback.text
+
+
+def test_reasoning_can_receive_recalled_memory_without_polluting_event_history(tmp_path):
+    memory = MemoryStore(tmp_path / "memory.db")
+    memory.remember_memory(
+        MemoryKind.EPISODIC,
+        "We already solved a similar Hikari gate",
+        confidence=0.95,
+    )
+    reasoner = CapturingReasoner()
+    pipeline = PresencePipeline(
+        memory=memory,
+        attention=AttentionPolicy(
+            threshold=0.7,
+            event_importance={"test.recall": 0.9},
+        ),
+        reasoner=reasoner,
+        feedback_sink=CollectingSink(),
+        recall_policy=MemoryRecallPolicy(
+            {"test.recall": [MemoryKind.EPISODIC]},
+            limit=2,
+        ),
+    )
+
+    result = pipeline.handle(
+        Event(
+            event_type="test.recall",
+            source="fake",
+            content="A new related event",
+            context={"live": True},
+        )
+    )
+
+    assert result.feedback is not None
+    assert reasoner.event is not None
+    assert reasoner.event.context["_hikari_recall"][0]["content"] == (
+        "We already solved a similar Hikari gate"
+    )
+    persisted = memory.get_event(result.remembered.id)
+    assert persisted is not None
+    assert persisted.context == {"live": True}
 
 
 def test_memory_candidate_can_be_proposed_while_presence_stays_silent(tmp_path):
