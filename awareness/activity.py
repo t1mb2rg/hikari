@@ -37,21 +37,26 @@ def read_system_idle_seconds() -> float | None:
         return None
 
 
-class DeviceActivityContextProvider:
-    """Ambient user-presence signal derived from local input idle time."""
+class InputActivityContextProvider:
+    """Raw ambient signal describing recent local keyboard/mouse input.
 
-    name = "activity"
+    This provider deliberately does not infer whether the user is present,
+    focused, or away. It reports only a cheap observable signal that a later
+    user-state layer may combine with other context sources.
+    """
+
+    name = "input_activity"
 
     def __init__(
         self,
         *,
-        active_threshold_seconds: float = 120.0,
+        recent_input_threshold_seconds: float = 120.0,
         idle_seconds_reader: IdleSecondsReader = read_system_idle_seconds,
     ) -> None:
-        if active_threshold_seconds < 0:
-            raise ValueError("active_threshold_seconds must be non-negative")
+        if recent_input_threshold_seconds < 0:
+            raise ValueError("recent_input_threshold_seconds must be non-negative")
 
-        self.active_threshold_seconds = float(active_threshold_seconds)
+        self.recent_input_threshold_seconds = float(recent_input_threshold_seconds)
         self.idle_seconds_reader = idle_seconds_reader
 
     def capture(self) -> dict[str, object]:
@@ -60,19 +65,34 @@ class DeviceActivityContextProvider:
         if idle_seconds is None:
             return {
                 "supported": False,
-                "state": "unknown",
+                "recent_input": None,
             }
 
         idle_seconds = max(0.0, float(idle_seconds))
-        state = (
-            "active"
-            if idle_seconds < self.active_threshold_seconds
-            else "idle"
-        )
+        recent_input = idle_seconds < self.recent_input_threshold_seconds
 
         return {
             "supported": True,
-            "state": state,
+            "recent_input": recent_input,
             "idle_seconds": round(idle_seconds, 3),
-            "active_threshold_seconds": self.active_threshold_seconds,
+            "recent_input_threshold_seconds": self.recent_input_threshold_seconds,
         }
+
+
+class DeviceActivityContextProvider(InputActivityContextProvider):
+    """Compatibility alias for the pre-M1-02 provider name.
+
+    New code should use InputActivityContextProvider. The returned data has raw
+    input semantics and must not be interpreted as user presence.
+    """
+
+    def __init__(
+        self,
+        *,
+        active_threshold_seconds: float = 120.0,
+        idle_seconds_reader: IdleSecondsReader = read_system_idle_seconds,
+    ) -> None:
+        super().__init__(
+            recent_input_threshold_seconds=active_threshold_seconds,
+            idle_seconds_reader=idle_seconds_reader,
+        )
