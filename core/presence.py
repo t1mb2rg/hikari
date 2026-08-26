@@ -10,7 +10,15 @@ from events.models import Event
 from memory.candidates import MemoryCandidate, MemoryCandidatePolicy
 from memory.recall import MemoryRecallPolicy, memories_as_context
 from memory.store import MemoryEvent, MemoryStore
-from personality import HIKARI_PERSONALITY_KEY, PersonalityProfile, personality_as_context
+from personality import (
+    HIKARI_EMOTION_KEY,
+    HIKARI_PERSONALITY_KEY,
+    EmotionPolicy,
+    EmotionState,
+    PersonalityProfile,
+    emotion_as_context,
+    personality_as_context,
+)
 
 
 @runtime_checkable
@@ -34,6 +42,7 @@ class InterventionResult:
     decision: AttentionDecision
     feedback: Feedback | None
     candidate: MemoryCandidate | None
+    emotion: EmotionState | None = None
 
 
 class PresencePipeline:
@@ -55,6 +64,8 @@ class PresencePipeline:
         candidate_policy: MemoryCandidatePolicy | None = None,
         recall_policy: MemoryRecallPolicy | None = None,
         personality_profile: PersonalityProfile | None = None,
+        emotion_state: EmotionState | None = None,
+        emotion_policy: EmotionPolicy | None = None,
     ) -> None:
         self.memory = memory
         self.attention = attention
@@ -64,6 +75,16 @@ class PresencePipeline:
         self.candidate_policy = candidate_policy
         self.recall_policy = recall_policy
         self.personality_profile = personality_profile
+        self.emotion_policy = emotion_policy
+        self.emotion_state = (
+            emotion_state
+            if emotion_state is not None
+            else emotion_policy.baseline if emotion_policy is not None else None
+        )
+
+    @property
+    def current_emotion(self) -> EmotionState | None:
+        return self.emotion_state
 
     def handle(self, event: Event) -> InterventionResult:
         if self.context_collector is not None:
@@ -88,12 +109,17 @@ class PresencePipeline:
             else None
         )
 
+        if self.emotion_policy is not None:
+            state = self.emotion_state or self.emotion_policy.baseline
+            self.emotion_state = self.emotion_policy.transition(state, event, decision)
+
         if not decision.should_intervene:
             return InterventionResult(
                 remembered=remembered,
                 decision=decision,
                 feedback=None,
                 candidate=candidate,
+                emotion=self.emotion_state,
             )
 
         reasoning_context = dict(event.context)
@@ -108,6 +134,9 @@ class PresencePipeline:
                 self.personality_profile
             )
 
+        if self.emotion_state is not None:
+            reasoning_context[HIKARI_EMOTION_KEY] = emotion_as_context(self.emotion_state)
+
         reasoning_event = (
             replace(event, context=reasoning_context)
             if reasoning_context != event.context
@@ -121,4 +150,5 @@ class PresencePipeline:
             decision=decision,
             feedback=feedback,
             candidate=candidate,
+            emotion=self.emotion_state,
         )
