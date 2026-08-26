@@ -80,7 +80,7 @@ Context providers may describe:
 - Chinese lunar date
 - host / device identity
 - recent local input
-- foreground / focus signals
+- foreground window activity
 - schedule state
 - other environment state
 
@@ -88,14 +88,14 @@ Context data is namespaced and attached to Events before Memory, Attention, and 
 
 Chinese lunar date is part of Hikari's own time awareness. It does not depend on Google Calendar or any calendar application's display features.
 
-Raw context signals must not overclaim what they mean. In particular, keyboard/mouse idle time is an input-activity signal, not proof that the user is present or away.
+Raw context signals must not overclaim what they mean. Keyboard/mouse idle time is an input-activity signal, not proof that the user is present or away. Likewise, a foreground window describes what the operating system is currently presenting, not proof of the user's focus, intent, or emotional state.
 
 Future user-state inference may combine multiple signals:
 
 ```
-recent input ───────┐
-session / lock state ┤
-foreground activity ─┤
+recent input ─────────┐
+session / lock state ─┤
+foreground activity ──┤
 schedule context ─────┤
 other device signals ─┘
           ↓
