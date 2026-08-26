@@ -12,6 +12,7 @@ from .context import (
     HostContextProvider,
     TimeContextProvider,
 )
+from .schedule import ScheduleContextProvider, ScheduleEntry, ScheduleSource
 
 __all__ = [
     "ContextCollector",
@@ -20,6 +21,9 @@ __all__ = [
     "DeviceActivityContextProvider",
     "HostContextProvider",
     "InputActivityContextProvider",
+    "ScheduleContextProvider",
+    "ScheduleEntry",
+    "ScheduleSource",
     "TimeContextProvider",
     "read_system_idle_seconds",
 ]
