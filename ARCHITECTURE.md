@@ -77,6 +77,7 @@ Captures cheap ambient state that gives meaning to an Event.
 Context providers may describe:
 
 - local time
+- Chinese lunar date
 - host / device identity
 - recent local input
 - foreground / focus signals
@@ -84,6 +85,8 @@ Context providers may describe:
 - other environment state
 
 Context data is namespaced and attached to Events before Memory, Attention, and Reasoning. Context capture is intended to stay cheap and does not invoke a language model.
+
+Chinese lunar date is part of Hikari's own time awareness. It does not depend on Google Calendar or any calendar application's display features.
 
 Raw context signals must not overclaim what they mean. In particular, keyboard/mouse idle time is an input-activity signal, not proof that the user is present or away.
 
@@ -98,6 +101,20 @@ other device signals ─┘
           ↓
       User State
 ```
+
+### Schedule Awareness
+
+Schedule state is vendor-neutral. Hikari consumes a common ScheduleSource contract rather than depending on one calendar service.
+
+Possible adapters include:
+
+- Google Calendar
+- Outlook / Microsoft 365
+- local ICS / CalDAV
+- phone or Huawei calendar bridges
+- Hikari-native reminders and plans
+
+The calendar product is an adapter. It is not Hikari's canonical time model.
 
 ### Memory System
 
