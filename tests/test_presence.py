@@ -3,6 +3,7 @@ from brain import Feedback, SimpleReasoner
 from core.presence import PresencePipeline
 from events import Event
 from events.runner import SensorRunner
+from memory import MemoryCandidatePolicy, MemoryKind
 from memory.store import MemoryStore
 
 
@@ -55,6 +56,7 @@ def test_quiet_event_is_remembered_without_reasoning(tmp_path):
     )
 
     assert result.feedback is None
+    assert result.candidate is None
     assert result.decision.should_intervene is False
     assert result.remembered.importance == 0.2
     assert memory.get_event(result.remembered.id) == result.remembered
@@ -83,9 +85,45 @@ def test_noteworthy_event_completes_feedback_loop(tmp_path):
     )
 
     assert result.feedback is not None
+    assert result.candidate is None
     assert result.remembered.importance == 0.9
     assert sink.feedback == [result.feedback]
     assert "A meaningful change happened" in result.feedback.text
+
+
+def test_memory_candidate_can_be_proposed_while_presence_stays_silent(tmp_path):
+    memory = MemoryStore(tmp_path / "memory.db")
+    sink = CollectingSink()
+    pipeline = PresencePipeline(
+        memory=memory,
+        attention=AttentionPolicy(
+            threshold=0.95,
+            event_importance={"test.memory": 0.9},
+        ),
+        reasoner=ExplodingReasoner(),
+        feedback_sink=sink,
+        candidate_policy=MemoryCandidatePolicy(
+            {"test.memory": MemoryKind.EPISODIC},
+            min_importance=0.8,
+        ),
+    )
+
+    result = pipeline.handle(
+        Event(
+            event_type="test.memory",
+            source="fake",
+            content="Worth remembering without interrupting",
+        )
+    )
+
+    assert result.decision.should_intervene is False
+    assert result.feedback is None
+    assert result.candidate is not None
+    assert result.candidate.kind is MemoryKind.EPISODIC
+    assert result.candidate.source_event_id == result.remembered.id
+    assert result.candidate.salience == 0.9
+    assert sink.feedback == []
+    assert memory.recent_memories() == []
 
 
 def test_sensor_runner_can_drive_presence_without_sensor_specific_core_code(tmp_path):
