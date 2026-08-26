@@ -7,6 +7,7 @@ from attention.policy import AttentionDecision, AttentionPolicy
 from awareness.context import ContextCollector
 from brain.reasoner import Feedback, Reasoner
 from events.models import Event
+from memory.candidates import MemoryCandidate, MemoryCandidatePolicy
 from memory.store import MemoryEvent, MemoryStore
 
 
@@ -30,6 +31,7 @@ class InterventionResult:
     remembered: MemoryEvent
     decision: AttentionDecision
     feedback: Feedback | None
+    candidate: MemoryCandidate | None
 
 
 class PresencePipeline:
@@ -48,12 +50,14 @@ class PresencePipeline:
         reasoner: Reasoner,
         feedback_sink: FeedbackSink,
         context_collector: ContextCollector | None = None,
+        candidate_policy: MemoryCandidatePolicy | None = None,
     ) -> None:
         self.memory = memory
         self.attention = attention
         self.reasoner = reasoner
         self.feedback_sink = feedback_sink
         self.context_collector = context_collector
+        self.candidate_policy = candidate_policy
 
     def handle(self, event: Event) -> InterventionResult:
         if self.context_collector is not None:
@@ -72,11 +76,18 @@ class PresencePipeline:
             decision.importance,
         )
 
+        candidate = (
+            self.candidate_policy.propose(remembered)
+            if self.candidate_policy is not None
+            else None
+        )
+
         if not decision.should_intervene:
             return InterventionResult(
                 remembered=remembered,
                 decision=decision,
                 feedback=None,
+                candidate=candidate,
             )
 
         feedback = self.reasoner.reason(event, decision)
@@ -85,4 +96,5 @@ class PresencePipeline:
             remembered=remembered,
             decision=decision,
             feedback=feedback,
+            candidate=candidate,
         )
