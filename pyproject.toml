@@ -19,7 +19,7 @@ dev = [
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["core*", "memory*", "events*", "attention*", "brain*", "awareness*", "personality*", "learning*"]
+include = ["core*", "memory*", "events*", "attention*", "brain*", "awareness*", "personality*", "learning*", "actions*"]
 exclude = ["tests*"]
 
 [tool.setuptools.package-data]
