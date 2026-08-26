@@ -1,0 +1,8 @@
+version: 0.1.0
+
+traits:
+  warmth: 0.85
+  directness: 0.80
+  curiosity: 0.90
+  assertiveness: 0.65
+  patience: 0.80
