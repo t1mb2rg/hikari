@@ -5,6 +5,7 @@ from pathlib import Path
 import time
 
 from attention import AttentionPolicy
+from awareness import ContextCollector, HostContextProvider, TimeContextProvider
 from brain import SimpleReasoner
 from core.presence import ConsoleFeedbackSink, PresencePipeline
 from events.runner import SensorRunner
@@ -21,6 +22,12 @@ def build_runner(repository: Path, memory_path: Path) -> SensorRunner:
         ),
         reasoner=SimpleReasoner(),
         feedback_sink=ConsoleFeedbackSink(),
+        context_collector=ContextCollector(
+            [
+                TimeContextProvider(),
+                HostContextProvider(),
+            ]
+        ),
     )
     return SensorRunner(
         [GitSensor(repository)],
