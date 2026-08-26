@@ -90,6 +90,22 @@ class MemoryStore:
             occurred_at=timestamp_text,
         )
 
+    def update_importance(self, event_id: int, importance: float) -> MemoryEvent:
+        """Attach Attention's score to an already remembered event."""
+        with self._connect() as connection:
+            cursor = connection.execute(
+                "UPDATE events SET importance = ? WHERE id = ?",
+                (float(importance), event_id),
+            )
+
+        if cursor.rowcount == 0:
+            raise KeyError(f"Memory event does not exist: {event_id}")
+
+        event = self.get_event(event_id)
+        if event is None:
+            raise RuntimeError(f"Memory event disappeared after update: {event_id}")
+        return event
+
     def get_event(self, event_id: int) -> MemoryEvent | None:
         with self._connect() as connection:
             row = connection.execute(
