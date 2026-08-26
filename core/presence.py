@@ -10,6 +10,7 @@ from events.models import Event
 from memory.candidates import MemoryCandidate, MemoryCandidatePolicy
 from memory.recall import MemoryRecallPolicy, memories_as_context
 from memory.store import MemoryEvent, MemoryStore
+from personality import HIKARI_PERSONALITY_KEY, PersonalityProfile, personality_as_context
 
 
 @runtime_checkable
@@ -53,6 +54,7 @@ class PresencePipeline:
         context_collector: ContextCollector | None = None,
         candidate_policy: MemoryCandidatePolicy | None = None,
         recall_policy: MemoryRecallPolicy | None = None,
+        personality_profile: PersonalityProfile | None = None,
     ) -> None:
         self.memory = memory
         self.attention = attention
@@ -61,6 +63,7 @@ class PresencePipeline:
         self.context_collector = context_collector
         self.candidate_policy = candidate_policy
         self.recall_policy = recall_policy
+        self.personality_profile = personality_profile
 
     def handle(self, event: Event) -> InterventionResult:
         if self.context_collector is not None:
@@ -93,13 +96,23 @@ class PresencePipeline:
                 candidate=candidate,
             )
 
-        reasoning_event = event
+        reasoning_context = dict(event.context)
+
         if self.recall_policy is not None:
             recalled = self.recall_policy.recall(self.memory, event.event_type)
             if recalled:
-                reasoning_context = dict(event.context)
                 reasoning_context["_hikari_recall"] = memories_as_context(recalled)
-                reasoning_event = replace(event, context=reasoning_context)
+
+        if self.personality_profile is not None:
+            reasoning_context[HIKARI_PERSONALITY_KEY] = personality_as_context(
+                self.personality_profile
+            )
+
+        reasoning_event = (
+            replace(event, context=reasoning_context)
+            if reasoning_context != event.context
+            else event
+        )
 
         feedback = self.reasoner.reason(reasoning_event, decision)
         self.feedback_sink.deliver(feedback)
