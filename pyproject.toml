@@ -1,0 +1,17 @@
+[project]
+name = "hikari"
+version = "0.1.0"
+description = "A personal evolving intelligence system designed for continuous existence, memory, and growth."
+requires-python = ">=3.11"
+dependencies = [
+  "PyYAML>=6.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.0",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
