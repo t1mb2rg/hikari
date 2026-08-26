@@ -5,7 +5,12 @@ from pathlib import Path
 import time
 
 from attention import AttentionPolicy
-from awareness import ContextCollector, HostContextProvider, TimeContextProvider
+from awareness import (
+    ContextCollector,
+    DeviceActivityContextProvider,
+    HostContextProvider,
+    TimeContextProvider,
+)
 from brain import SimpleReasoner
 from core.presence import ConsoleFeedbackSink, PresencePipeline
 from events.runner import SensorRunner
@@ -26,6 +31,7 @@ def build_runner(repository: Path, memory_path: Path) -> SensorRunner:
             [
                 TimeContextProvider(),
                 HostContextProvider(),
+                DeviceActivityContextProvider(),
             ]
         ),
     )
@@ -37,7 +43,7 @@ def build_runner(repository: Path, memory_path: Path) -> SensorRunner:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Run Hikari's M0 proactive loop against a Git repository.",
+        description="Run Hikari's proactive loop against a Git repository.",
     )
     parser.add_argument(
         "repository",
