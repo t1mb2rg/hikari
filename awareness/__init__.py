@@ -15,6 +15,7 @@ from .context import (
 from .foreground import ForegroundContextProvider, read_foreground_window
 from .lunar import ChineseCalendarContextProvider
 from .schedule import ScheduleContextProvider, ScheduleEntry, ScheduleSource
+from .user_state import UserState, UserStateInferer
 
 __all__ = [
     "ChineseCalendarContextProvider",
@@ -29,6 +30,8 @@ __all__ = [
     "ScheduleEntry",
     "ScheduleSource",
     "TimeContextProvider",
+    "UserState",
+    "UserStateInferer",
     "read_foreground_window",
     "read_system_idle_seconds",
 ]
