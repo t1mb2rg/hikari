@@ -6,6 +6,7 @@ import time
 
 from attention import AttentionPolicy
 from awareness import (
+    ChineseCalendarContextProvider,
     ContextCollector,
     HostContextProvider,
     InputActivityContextProvider,
@@ -30,6 +31,7 @@ def build_runner(repository: Path, memory_path: Path) -> SensorRunner:
         context_collector=ContextCollector(
             [
                 TimeContextProvider(),
+                ChineseCalendarContextProvider(),
                 HostContextProvider(),
                 InputActivityContextProvider(),
             ]
