@@ -4,7 +4,7 @@
 
 Hikari is designed as a long-running personal intelligence system.
 
-The early architecture focuses on establishing a minimal living core.
+The early architecture focuses on establishing a minimal living core and then expanding awareness without coupling the core to specific sensors or devices.
 
 ## Core Components
 
@@ -13,8 +13,9 @@ The early architecture focuses on establishing a minimal living core.
 
         Identity
         Memory
-        Reasoning
+        Awareness / Context
         Attention
+        Reasoning
         Runtime
 
                  ☁️
@@ -28,19 +29,27 @@ The early architecture focuses on establishing a minimal living core.
         Smart Glasses
 ```
 
-## v0.1 Loop
+## Presence Loop
 
 ```
-Event
- ↓
-Memory
- ↓
-Attention
- ↓
-Reasoning
- ↓
-Feedback
+Sensor Adapter
+     ↓
+   Event
+     ↓
+Ambient Context
+     ↓
+  Memory
+     ↓
+ Attention
+     ↓
+ Reasoning
+     ↓
+ Feedback Adapter
 ```
+
+Sensors report changes. Context providers describe current state.
+
+This distinction keeps Hikari from rebuilding the same lifecycle, storage, attention, and reasoning logic for every new source of information.
 
 ## Main Modules
 
@@ -50,13 +59,31 @@ Keeps Hikari continuously running.
 
 ### Event System
 
-Receives changes from the environment.
+Receives changes from the environment through interchangeable Sensor adapters.
 
 Initial sources:
 
 - Git
 - Calendar
+- File system
 - Device state
+
+All sensors normalize observations into Event objects. Downstream core code does not depend on concrete sensors.
+
+### Awareness / Context
+
+Captures cheap ambient state that gives meaning to an Event.
+
+Context providers may describe:
+
+- local time
+- host / device identity
+- activity state
+- focus state
+- schedule state
+- other environment state
+
+Context data is namespaced and attached to Events before Memory, Attention, and Reasoning. Context capture is intended to stay cheap and does not invoke a language model.
 
 ### Memory System
 
@@ -70,6 +97,8 @@ Stores:
 ### Attention Engine
 
 Determines whether an event is meaningful enough to process or present.
+
+The default path should be cheap. Events that do not deserve deeper cognition must not wake the Reasoner.
 
 ### Brain Interface
 
@@ -94,6 +123,24 @@ Validation
         ↓
 New capability
 ```
+
+## Adapter Boundary
+
+Hikari interacts with the outside world through replaceable boundaries:
+
+```
+World
+  ↓
+Sensor Adapters
+  ↓
+Hikari Core
+  ↓
+Action / Feedback Adapters
+  ↓
+World
+```
+
+New sensors should not require changes to Memory, Attention, Reasoning, or Feedback code.
 
 ## Runtime Philosophy
 
