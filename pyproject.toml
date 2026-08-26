@@ -18,8 +18,8 @@ dev = [
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["core*"]
-exclude = ["tests*", "brain*", "events*", "memory*", "attention*"]
+include = ["core*", "memory*"]
+exclude = ["tests*", "brain*", "events*", "attention*"]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
