@@ -1,6 +1,10 @@
 """Ambient context collection for Hikari awareness."""
 
-from .activity import DeviceActivityContextProvider, read_system_idle_seconds
+from .activity import (
+    DeviceActivityContextProvider,
+    InputActivityContextProvider,
+    read_system_idle_seconds,
+)
 from .context import (
     ContextCollector,
     ContextProvider,
@@ -15,6 +19,7 @@ __all__ = [
     "ContextSnapshot",
     "DeviceActivityContextProvider",
     "HostContextProvider",
+    "InputActivityContextProvider",
     "TimeContextProvider",
     "read_system_idle_seconds",
 ]
