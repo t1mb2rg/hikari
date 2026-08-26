@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Protocol, runtime_checkable
 
 from attention.policy import AttentionDecision, AttentionPolicy
@@ -8,6 +8,7 @@ from awareness.context import ContextCollector
 from brain.reasoner import Feedback, Reasoner
 from events.models import Event
 from memory.candidates import MemoryCandidate, MemoryCandidatePolicy
+from memory.recall import MemoryRecallPolicy, memories_as_context
 from memory.store import MemoryEvent, MemoryStore
 
 
@@ -51,6 +52,7 @@ class PresencePipeline:
         feedback_sink: FeedbackSink,
         context_collector: ContextCollector | None = None,
         candidate_policy: MemoryCandidatePolicy | None = None,
+        recall_policy: MemoryRecallPolicy | None = None,
     ) -> None:
         self.memory = memory
         self.attention = attention
@@ -58,6 +60,7 @@ class PresencePipeline:
         self.feedback_sink = feedback_sink
         self.context_collector = context_collector
         self.candidate_policy = candidate_policy
+        self.recall_policy = recall_policy
 
     def handle(self, event: Event) -> InterventionResult:
         if self.context_collector is not None:
@@ -90,7 +93,15 @@ class PresencePipeline:
                 candidate=candidate,
             )
 
-        feedback = self.reasoner.reason(event, decision)
+        reasoning_event = event
+        if self.recall_policy is not None:
+            recalled = self.recall_policy.recall(self.memory, event.event_type)
+            if recalled:
+                reasoning_context = dict(event.context)
+                reasoning_context["_hikari_recall"] = memories_as_context(recalled)
+                reasoning_event = replace(event, context=reasoning_context)
+
+        feedback = self.reasoner.reason(reasoning_event, decision)
         self.feedback_sink.deliver(feedback)
         return InterventionResult(
             remembered=remembered,
