@@ -6,7 +6,8 @@ from numbers import Real
 from typing import Any
 
 from brain import ChatMessage, ChatProvider
-from memory import DurableMemory, MemoryCandidate, MemoryKind, parse_memory_kind
+from memory import DurableMemory, MemoryCandidate, MemoryKind
+from memory.models import parse_memory_kind
 
 
 LEARNING_CONTEXT_KEY = "_hikari_learning"
