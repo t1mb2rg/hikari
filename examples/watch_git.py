@@ -7,8 +7,8 @@ import time
 from attention import AttentionPolicy
 from awareness import (
     ContextCollector,
-    DeviceActivityContextProvider,
     HostContextProvider,
+    InputActivityContextProvider,
     TimeContextProvider,
 )
 from brain import SimpleReasoner
@@ -31,7 +31,7 @@ def build_runner(repository: Path, memory_path: Path) -> SensorRunner:
             [
                 TimeContextProvider(),
                 HostContextProvider(),
-                DeviceActivityContextProvider(),
+                InputActivityContextProvider(),
             ]
         ),
     )
