@@ -9,14 +9,18 @@ from .store import MemoryEvent, MemoryStore
 
 @dataclass(frozen=True)
 class MemoryCandidate:
-    """A reviewable proposal that has not yet become durable memory."""
+    """A reviewable proposal that has not yet become durable memory.
+
+    ``source_event_id`` may be ``None`` for synthesized candidates derived from
+    multiple durable memories rather than one original event.
+    """
 
     kind: MemoryKind
     content: str
     context: dict[str, Any]
     confidence: float
     salience: float
-    source_event_id: int
+    source_event_id: int | None
     reason: str
 
 
