@@ -18,7 +18,7 @@ dev = [
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["core*", "memory*", "events*", "attention*", "brain*"]
+include = ["core*", "memory*", "events*", "attention*", "brain*", "awareness*"]
 exclude = ["tests*"]
 
 [tool.pytest.ini_options]
