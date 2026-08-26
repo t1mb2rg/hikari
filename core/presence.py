@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
 from attention.policy import AttentionDecision, AttentionPolicy
+from awareness.context import ContextCollector
 from brain.reasoner import Feedback, Reasoner
 from events.models import Event
 from memory.store import MemoryEvent, MemoryStore
@@ -46,13 +47,18 @@ class PresencePipeline:
         attention: AttentionPolicy,
         reasoner: Reasoner,
         feedback_sink: FeedbackSink,
+        context_collector: ContextCollector | None = None,
     ) -> None:
         self.memory = memory
         self.attention = attention
         self.reasoner = reasoner
         self.feedback_sink = feedback_sink
+        self.context_collector = context_collector
 
     def handle(self, event: Event) -> InterventionResult:
+        if self.context_collector is not None:
+            event = self.context_collector.enrich(event)
+
         remembered = self.memory.remember_event(
             event.event_type,
             event.content,
