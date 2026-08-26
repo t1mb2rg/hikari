@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import json
@@ -238,6 +239,49 @@ class MemoryStore:
 
         with self._connect() as connection:
             rows = connection.execute(query, params).fetchall()
+
+        return [self._row_to_memory(row) for row in rows]
+
+    def memories_after(
+        self,
+        after_id: int,
+        *,
+        kinds: Iterable[MemoryKind | str] | None = None,
+        limit: int = 50,
+    ) -> list[DurableMemory]:
+        """Return durable memories newer than a caller-owned watermark.
+
+        Results are oldest-first so a bounded consumer can advance through new
+        experience without skipping earlier memories when more than ``limit``
+        items are waiting.
+        """
+
+        watermark = int(after_id)
+        if watermark < 0:
+            raise ValueError("after_id must be non-negative")
+        if limit <= 0:
+            return []
+
+        params: list[object] = [watermark]
+        clauses = ["id > ?"]
+
+        if kinds is not None:
+            parsed_kinds = tuple(parse_memory_kind(kind) for kind in kinds)
+            if not parsed_kinds:
+                return []
+            placeholders = ", ".join("?" for _ in parsed_kinds)
+            clauses.append(f"kind IN ({placeholders})")
+            params.extend(kind.value for kind in parsed_kinds)
+
+        params.append(int(limit))
+        query = (
+            "SELECT * FROM memories WHERE "
+            + " AND ".join(clauses)
+            + " ORDER BY id ASC LIMIT ?"
+        )
+
+        with self._connect() as connection:
+            rows = connection.execute(query, tuple(params)).fetchall()
 
         return [self._row_to_memory(row) for row in rows]
 
