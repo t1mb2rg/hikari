@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import json
@@ -27,10 +28,25 @@ class MemoryStore:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._initialize()
 
-    def _connect(self) -> sqlite3.Connection:
+    @contextmanager
+    def _connect(self) -> Iterator[sqlite3.Connection]:
+        """Open one short-lived SQLite connection and always close it.
+
+        ``sqlite3.Connection`` is a transaction context manager, but leaving
+        ``with connection`` does not close the underlying database handle.
+        Explicit close is required for reliable temporary-file cleanup on
+        Windows, where an open SQLite handle prevents unlinking the DB file.
+        """
         connection = sqlite3.connect(self.path)
         connection.row_factory = sqlite3.Row
-        return connection
+        try:
+            yield connection
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
 
     def _initialize(self) -> None:
         with self._connect() as connection:
@@ -170,8 +186,9 @@ class MemoryStore:
                 "UPDATE events SET importance = ? WHERE id = ?",
                 (float(importance), event_id),
             )
+            rowcount = cursor.rowcount
 
-        if cursor.rowcount == 0:
+        if rowcount == 0:
             raise KeyError(f"Memory event does not exist: {event_id}")
 
         event = self.get_event(event_id)
