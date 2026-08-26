@@ -7,6 +7,11 @@ from attention.policy import AttentionDecision, AttentionPolicy
 from awareness.context import ContextCollector
 from brain.reasoner import Feedback, Reasoner
 from events.models import Event
+from learning import (
+    LEARNED_CONTEXT_KEY,
+    LearningAssimilationPolicy,
+    learned_memories_as_context,
+)
 from memory.candidates import MemoryCandidate, MemoryCandidatePolicy
 from memory.recall import MemoryRecallPolicy, memories_as_context
 from memory.store import MemoryEvent, MemoryStore
@@ -63,6 +68,7 @@ class PresencePipeline:
         context_collector: ContextCollector | None = None,
         candidate_policy: MemoryCandidatePolicy | None = None,
         recall_policy: MemoryRecallPolicy | None = None,
+        assimilation_policy: LearningAssimilationPolicy | None = None,
         personality_profile: PersonalityProfile | None = None,
         emotion_state: EmotionState | None = None,
         emotion_policy: EmotionPolicy | None = None,
@@ -74,6 +80,7 @@ class PresencePipeline:
         self.context_collector = context_collector
         self.candidate_policy = candidate_policy
         self.recall_policy = recall_policy
+        self.assimilation_policy = assimilation_policy
         self.personality_profile = personality_profile
         self.emotion_policy = emotion_policy
         self.emotion_state = (
@@ -128,6 +135,13 @@ class PresencePipeline:
             recalled = self.recall_policy.recall(self.memory, event.event_type)
             if recalled:
                 reasoning_context["_hikari_recall"] = memories_as_context(recalled)
+
+        if self.assimilation_policy is not None:
+            learned = self.assimilation_policy.recall(self.memory)
+            if learned:
+                reasoning_context[LEARNED_CONTEXT_KEY] = learned_memories_as_context(
+                    learned
+                )
 
         if self.personality_profile is not None:
             reasoning_context[HIKARI_PERSONALITY_KEY] = personality_as_context(
