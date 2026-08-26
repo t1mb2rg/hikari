@@ -78,12 +78,26 @@ Context providers may describe:
 
 - local time
 - host / device identity
-- activity state
-- focus state
+- recent local input
+- foreground / focus signals
 - schedule state
 - other environment state
 
 Context data is namespaced and attached to Events before Memory, Attention, and Reasoning. Context capture is intended to stay cheap and does not invoke a language model.
+
+Raw context signals must not overclaim what they mean. In particular, keyboard/mouse idle time is an input-activity signal, not proof that the user is present or away.
+
+Future user-state inference may combine multiple signals:
+
+```
+recent input ───────┐
+session / lock state ┤
+foreground activity ─┤
+schedule context ─────┤
+other device signals ─┘
+          ↓
+      User State
+```
 
 ### Memory System
 
