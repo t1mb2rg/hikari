@@ -12,9 +12,11 @@ from .context import (
     HostContextProvider,
     TimeContextProvider,
 )
+from .lunar import ChineseCalendarContextProvider
 from .schedule import ScheduleContextProvider, ScheduleEntry, ScheduleSource
 
 __all__ = [
+    "ChineseCalendarContextProvider",
     "ContextCollector",
     "ContextProvider",
     "ContextSnapshot",
