@@ -19,8 +19,11 @@ dev = [
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["core*", "memory*", "events*", "attention*", "brain*", "awareness*"]
+include = ["core*", "memory*", "events*", "attention*", "brain*", "awareness*", "personality*"]
 exclude = ["tests*"]
+
+[tool.setuptools.package-data]
+personality = ["*.yaml"]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
