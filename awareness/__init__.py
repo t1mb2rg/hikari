@@ -12,6 +12,7 @@ from .context import (
     HostContextProvider,
     TimeContextProvider,
 )
+from .foreground import ForegroundContextProvider, read_foreground_window
 from .lunar import ChineseCalendarContextProvider
 from .schedule import ScheduleContextProvider, ScheduleEntry, ScheduleSource
 
@@ -21,11 +22,13 @@ __all__ = [
     "ContextProvider",
     "ContextSnapshot",
     "DeviceActivityContextProvider",
+    "ForegroundContextProvider",
     "HostContextProvider",
     "InputActivityContextProvider",
     "ScheduleContextProvider",
     "ScheduleEntry",
     "ScheduleSource",
     "TimeContextProvider",
+    "read_foreground_window",
     "read_system_idle_seconds",
 ]
