@@ -160,6 +160,70 @@ def test_run_forge_task_spec_registers_in_planner_catalog():
     ]
 
 
+def test_run_forge_task_spec_describes_exact_argument_types():
+    """The description is the only model-visible contract, so it must spell out
+    the required JSON type of every argument the adapter will enforce."""
+
+    description = forge_task_action_spec().description
+
+    assert "project_id: non-empty string" in description
+    assert "goal: non-empty string" in description
+    assert "constraints: JSON array of strings, may be empty" in description
+    assert "acceptance: non-empty JSON array of strings" in description
+
+
+def test_run_forge_task_spec_forbids_other_arguments():
+    description = forge_task_action_spec().description
+
+    assert "Arguments are exactly:" in description
+    assert "No other arguments are allowed" in description
+
+
+def test_planner_catalog_exposes_argument_contract_to_the_model():
+    """The planner serializes catalog.describe() into the model request, so the
+    exposed catalog entry must carry the full argument-type contract."""
+
+    described = ActionCatalog([forge_task_action_spec()]).describe()
+
+    assert len(described) == 1
+    description = described[0]["description"]
+    assert "project_id: non-empty string" in description
+    assert "goal: non-empty string" in description
+    assert "constraints: JSON array of strings, may be empty" in description
+    assert "acceptance: non-empty JSON array of strings" in description
+    assert "No other arguments are allowed" in description
+
+
+def test_run_forge_task_spec_does_not_compel_the_model_to_choose_it():
+    """The spec describes a capability, not a command to act on it."""
+
+    description = forge_task_action_spec().description.lower()
+
+    for compelled in ("must propose", "must choose", "must use", "must select", "you must"):
+        assert compelled not in description
+
+
+def test_run_forge_task_spec_leaks_no_trusted_execution_settings():
+    """Nothing in the model-visible description names trusted execution
+    settings, so the model is never invited to supply them."""
+
+    description = forge_task_action_spec().description.lower()
+
+    for setting in (
+        "repository",
+        "repo",
+        "verification",
+        "executable",
+        "backend",
+        "attempt",
+        "permission",
+        "supervisor",
+        "shell",
+        "max_turns",
+    ):
+        assert setting not in description
+
+
 # --- authorization flow -----------------------------------------------------
 
 
@@ -569,6 +633,27 @@ def test_malformed_arguments_rejected_before_forge_invoked(tmp_path: Path, argum
     action = _authorize(_proposal(arguments=arguments))
 
     with pytest.raises(ActionExecutionError):
+        adapter.execute(action)
+
+    assert runner.calls == []
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        {**VALID_ARGUMENTS, "constraints": "keep api stable"},
+        {**VALID_ARGUMENTS, "acceptance": "the tests pass"},
+    ],
+)
+def test_scalar_constraints_or_acceptance_remain_invalid(tmp_path: Path, arguments):
+    """A scalar string for constraints/acceptance is invalid model output and
+    stays invalid: the adapter rejects it rather than coercing it into a list."""
+
+    runner = _RecordingRunner()
+    adapter = ForgeTaskAdapter(_registry(tmp_path), work_dir=tmp_path / "tasks", runner=runner)
+    action = _authorize(_proposal(arguments=arguments))
+
+    with pytest.raises(ActionExecutionError, match="must be a list of strings"):
         adapter.execute(action)
 
     assert runner.calls == []

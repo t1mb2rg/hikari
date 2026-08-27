@@ -191,14 +191,24 @@ class ForgeProjectRegistry:
 
 
 def forge_task_action_spec() -> ActionSpec:
-    """Expose run_forge_task as one REVERSIBLE action that requires confirmation."""
+    """Expose run_forge_task as one REVERSIBLE action that requires confirmation.
+
+    The description is the only model-visible part of this spec, so it doubles
+    as the argument contract: every required JSON type is spelled out there.
+    Trusted execution settings never appear in it.
+    """
 
     return ActionSpec(
         name=FORGE_RUN_ACTION,
         description=(
             "Dispatch one bounded engineering task to Forge for a pre-registered "
-            "trusted project. The model supplies project_id, goal, constraints, and "
-            "acceptance; Forge implements and verifies the change in its own worktree."
+            "trusted project; Forge implements and verifies the change in its own "
+            "worktree. Arguments are exactly: "
+            "project_id: non-empty string; "
+            "goal: non-empty string; "
+            "constraints: JSON array of strings, may be empty; "
+            "acceptance: non-empty JSON array of strings. "
+            "No other arguments are allowed."
         ),
         risk=ActionRisk.REVERSIBLE,
         requires_confirmation=True,
