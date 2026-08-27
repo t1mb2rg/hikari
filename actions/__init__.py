@@ -11,6 +11,8 @@ from .execution import (
     ActionExecutor,
     ConsoleNotifyAdapter,
     ExecutionResult,
+    WindowsNotificationUnavailable,
+    WindowsToastNotifyAdapter,
 )
 from .planner import ActionPlanningError, ModelActionPlanner
 
@@ -30,4 +32,6 @@ __all__ = [
     "ConsoleNotifyAdapter",
     "ExecutionResult",
     "ModelActionPlanner",
+    "WindowsNotificationUnavailable",
+    "WindowsToastNotifyAdapter",
 ]
