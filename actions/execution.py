@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import os
+from pathlib import Path
 from typing import Callable, Iterable, Protocol, runtime_checkable
 
 from .authorization import AuthorizedAction
@@ -115,12 +116,7 @@ ToastSender = Callable[[str, str], None]
 
 
 class WindowsToastNotifyAdapter:
-    """Native Windows toast leaf adapter for the existing notify_user action.
-
-    Imports the Windows-only transport lazily so the core package remains
-    importable and testable on non-Windows systems. A sender may be injected for
-    deterministic tests without producing a real desktop notification.
-    """
+    """Native Windows toast leaf adapter for the existing notify_user action."""
 
     action_name = "notify_user"
 
@@ -165,7 +161,72 @@ def _send_windows_toast(app_name: str, message: str) -> None:
         toast = Toast()
         toast.text_fields = [app_name, message]
         toaster.show_toast(toast)
-    except Exception as exc:  # transport boundary: surface one bounded execution error
+    except Exception as exc:
         raise WindowsNotificationUnavailable(
             f"Windows toast transport failed: {exc}"
         ) from exc
+
+
+class CreateLocalNoteAdapter:
+    """Create exactly one caller-chosen local note without exposing a path tool.
+
+    The model supplies only note text. The target path is fixed by trusted caller
+    code when the adapter is created, and existing files are never overwritten.
+    """
+
+    action_name = "create_local_note"
+
+    def __init__(self, target_path: str | Path) -> None:
+        path = Path(target_path)
+        if not path.name:
+            raise ValueError("local note target_path must identify a file")
+        self.target_path = path
+
+    def execute(self, action: AuthorizedAction) -> ExecutionResult:
+        if not isinstance(action, AuthorizedAction):
+            raise TypeError("CreateLocalNoteAdapter accepts only AuthorizedAction")
+
+        proposal = action.proposal
+        if proposal.action_name != self.action_name:
+            raise ActionExecutionError(
+                f"CreateLocalNoteAdapter cannot execute {proposal.action_name!r}"
+            )
+
+        arguments = proposal.arguments
+        if set(arguments) != {"text"}:
+            raise ActionExecutionError(
+                "create_local_note requires exactly one `text` argument"
+            )
+        text = arguments.get("text")
+        if not isinstance(text, str) or not text.strip():
+            raise ActionExecutionError(
+                "create_local_note `text` must be a non-empty string"
+            )
+        if self.target_path.exists():
+            raise ActionExecutionError(
+                f"local note target already exists: {self.target_path}"
+            )
+
+        parent = self.target_path.parent
+        if not parent.exists() or not parent.is_dir():
+            raise ActionExecutionError(
+                f"local note parent directory does not exist: {parent}"
+            )
+
+        message = text.strip()
+        try:
+            with self.target_path.open("x", encoding="utf-8", newline="\n") as handle:
+                handle.write(message)
+                handle.write("\n")
+        except FileExistsError as exc:
+            raise ActionExecutionError(
+                f"local note target already exists: {self.target_path}"
+            ) from exc
+        except OSError as exc:
+            raise ActionExecutionError(f"local note write failed: {exc}") from exc
+
+        return ExecutionResult(
+            action_name=self.action_name,
+            success=True,
+            summary=f"local note created at {self.target_path}",
+        )
