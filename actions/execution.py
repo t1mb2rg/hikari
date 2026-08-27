@@ -1,13 +1,18 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Iterable, Protocol, runtime_checkable
+import os
+from typing import Callable, Iterable, Protocol, runtime_checkable
 
 from .authorization import AuthorizedAction
 
 
 class ActionExecutionError(RuntimeError):
     """Raised when an authorized action cannot be safely dispatched."""
+
+
+class WindowsNotificationUnavailable(ActionExecutionError):
+    """Raised when the native Windows notification transport is unavailable."""
 
 
 @dataclass(frozen=True)
@@ -72,32 +77,95 @@ class ActionExecutor:
         return result
 
 
+def _validated_notify_text(action: AuthorizedAction, *, adapter_name: str) -> str:
+    if not isinstance(action, AuthorizedAction):
+        raise TypeError(f"{adapter_name} accepts only AuthorizedAction")
+
+    proposal = action.proposal
+    if proposal.action_name != "notify_user":
+        raise ActionExecutionError(
+            f"{adapter_name} cannot execute {proposal.action_name!r}"
+        )
+
+    arguments = proposal.arguments
+    if set(arguments) != {"text"}:
+        raise ActionExecutionError("notify_user requires exactly one `text` argument")
+    text = arguments.get("text")
+    if not isinstance(text, str) or not text.strip():
+        raise ActionExecutionError("notify_user `text` must be a non-empty string")
+    return text.strip()
+
+
 class ConsoleNotifyAdapter:
-    """First concrete M5 side effect: one validated console notification."""
+    """Dependency-free notification adapter for tests and fallback use."""
 
     action_name = "notify_user"
 
     def execute(self, action: AuthorizedAction) -> ExecutionResult:
-        if not isinstance(action, AuthorizedAction):
-            raise TypeError("ConsoleNotifyAdapter accepts only AuthorizedAction")
-
-        proposal = action.proposal
-        if proposal.action_name != self.action_name:
-            raise ActionExecutionError(
-                f"ConsoleNotifyAdapter cannot execute {proposal.action_name!r}"
-            )
-
-        arguments = proposal.arguments
-        if set(arguments) != {"text"}:
-            raise ActionExecutionError("notify_user requires exactly one `text` argument")
-        text = arguments.get("text")
-        if not isinstance(text, str) or not text.strip():
-            raise ActionExecutionError("notify_user `text` must be a non-empty string")
-
-        message = text.strip()
+        message = _validated_notify_text(action, adapter_name="ConsoleNotifyAdapter")
         print(message)
         return ExecutionResult(
             action_name=self.action_name,
             success=True,
             summary="console notification delivered",
         )
+
+
+ToastSender = Callable[[str, str], None]
+
+
+class WindowsToastNotifyAdapter:
+    """Native Windows toast leaf adapter for the existing notify_user action.
+
+    Imports the Windows-only transport lazily so the core package remains
+    importable and testable on non-Windows systems. A sender may be injected for
+    deterministic tests without producing a real desktop notification.
+    """
+
+    action_name = "notify_user"
+
+    def __init__(
+        self,
+        *,
+        app_name: str = "Hikari",
+        sender: ToastSender | None = None,
+    ) -> None:
+        normalized = app_name.strip()
+        if not normalized:
+            raise ValueError("Windows toast app_name must not be empty")
+        self.app_name = normalized
+        self._sender = sender or _send_windows_toast
+
+    def execute(self, action: AuthorizedAction) -> ExecutionResult:
+        message = _validated_notify_text(action, adapter_name="WindowsToastNotifyAdapter")
+        self._sender(self.app_name, message)
+        return ExecutionResult(
+            action_name=self.action_name,
+            success=True,
+            summary="Windows toast notification delivered",
+        )
+
+
+def _send_windows_toast(app_name: str, message: str) -> None:
+    if os.name != "nt":
+        raise WindowsNotificationUnavailable(
+            "Windows toast notifications are only available on Windows"
+        )
+
+    try:
+        from windows_toasts import Toast, WindowsToaster
+    except ImportError as exc:
+        raise WindowsNotificationUnavailable(
+            'Windows notification support is not installed; run '
+            'python -m pip install -e ".[windows-notify]"'
+        ) from exc
+
+    try:
+        toaster = WindowsToaster(app_name)
+        toast = Toast()
+        toast.text_fields = [app_name, message]
+        toaster.show_toast(toast)
+    except Exception as exc:  # transport boundary: surface one bounded execution error
+        raise WindowsNotificationUnavailable(
+            f"Windows toast transport failed: {exc}"
+        ) from exc
