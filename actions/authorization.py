@@ -132,3 +132,48 @@ class ActionAuthorizationPolicy:
             ),
             authorized_action=authorized,
         )
+
+    def confirm(self, proposal: ActionProposal, *, approved: bool) -> AuthorizationResult:
+        """Apply one explicit external confirmation to a proposal.
+
+        Confirmation does not weaken normal deny rules and, in M5-05, may only
+        unlock reversible actions. Destructive execution remains unavailable.
+        """
+
+        if not isinstance(approved, bool):
+            raise TypeError("approved confirmation must be a bool")
+
+        initial = self.authorize(proposal)
+        if initial.decision is AuthorizationDecision.DENY:
+            return initial
+        if initial.decision is AuthorizationDecision.AUTHORIZE:
+            return initial
+
+        if not approved:
+            return AuthorizationResult(
+                decision=AuthorizationDecision.DENY,
+                proposal=proposal,
+                reason="external confirmation denied the proposed action",
+            )
+
+        if proposal.risk is ActionRisk.DESTRUCTIVE:
+            return AuthorizationResult(
+                decision=AuthorizationDecision.DENY,
+                proposal=proposal,
+                reason="destructive actions remain blocked after confirmation",
+            )
+
+        if proposal.risk is not ActionRisk.REVERSIBLE:
+            return AuthorizationResult(
+                decision=AuthorizationDecision.DENY,
+                proposal=proposal,
+                reason="only reversible confirmation-gated actions are enabled here",
+            )
+
+        authorized = AuthorizedAction._from_policy(proposal)
+        return AuthorizationResult(
+            decision=AuthorizationDecision.AUTHORIZE,
+            proposal=proposal,
+            reason="external confirmation approved one reversible action",
+            authorized_action=authorized,
+        )
