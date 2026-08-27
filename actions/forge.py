@@ -19,6 +19,11 @@ FORGE_RUN_ACTION = "run_forge_task"
 _ALLOWED_FORGE_ARGUMENTS = frozenset({"project_id", "goal", "constraints", "acceptance"})
 _FORGE_BACKENDS = frozenset({"claude", "codex"})
 
+# Values track the current Forge CLI (`forge run --claude-permission-mode`).
+# `bypassPermissions` is intentionally absent: Forge does not expose a mode
+# that skips the permission boundary it relies on.
+_FORGE_CLAUDE_PERMISSION_MODES = ("auto", "acceptEdits", "manual", "dontAsk", "plan")
+
 
 @dataclass(frozen=True)
 class ForgeSupervisorSettings:
@@ -80,8 +85,8 @@ class ForgeProjectProfile:
     """Caller-owned trusted execution profile for one Forge project.
 
     Everything Forge needs to run — repository, verification commands,
-    executable, backend, attempt limits, and supervisor wiring — lives here.
-    The model never supplies any of it.
+    executable, backend, attempt limits, Claude permission settings, and
+    supervisor wiring — lives here. The model never supplies any of it.
     """
 
     project_id: str
@@ -90,6 +95,8 @@ class ForgeProjectProfile:
     executable: str = "forge"
     backend: str = "claude"
     max_attempts: int = 3
+    claude_permission_mode: str = "auto"
+    claude_max_turns: int = 30
     supervisor: ForgeSupervisorSettings | None = None
 
     def __post_init__(self) -> None:
@@ -108,10 +115,30 @@ class ForgeProjectProfile:
         ):
             raise ValueError("Forge max_attempts must be an integer >= 1")
 
+        if not isinstance(self.claude_permission_mode, str):
+            raise TypeError("Forge claude_permission_mode must be a string")
+        claude_permission_mode = self.claude_permission_mode.strip()
+        if claude_permission_mode not in _FORGE_CLAUDE_PERMISSION_MODES:
+            raise ValueError(
+                "Forge claude_permission_mode must be one of "
+                + ", ".join(_FORGE_CLAUDE_PERMISSION_MODES)
+                + f"; got {claude_permission_mode!r}"
+            )
+        if (
+            not isinstance(self.claude_max_turns, int)
+            or isinstance(self.claude_max_turns, bool)
+            or self.claude_max_turns < 1
+        ):
+            raise ValueError("Forge claude_max_turns must be an integer >= 1")
+
         repository = Path(self.repository).expanduser()
         if not repository.is_dir():
             raise ValueError(f"Forge repository must be an existing directory: {repository}")
 
+        if isinstance(self.verification, (str, bytes)):
+            raise TypeError(
+                "Forge verification must be an iterable of command strings, not str/bytes"
+            )
         verification = tuple(str(item).strip() for item in self.verification)
         if not verification or any(not item for item in verification):
             raise ValueError("Forge verification must be a non-empty list of non-empty commands")
@@ -125,6 +152,8 @@ class ForgeProjectProfile:
         object.__setattr__(self, "executable", executable)
         object.__setattr__(self, "backend", self.backend)
         object.__setattr__(self, "max_attempts", int(self.max_attempts))
+        object.__setattr__(self, "claude_permission_mode", claude_permission_mode)
+        object.__setattr__(self, "claude_max_turns", int(self.claude_max_turns))
         object.__setattr__(self, "supervisor", self.supervisor)
 
 
@@ -132,8 +161,9 @@ class ForgeProjectRegistry:
     """Caller-owned trusted mapping from project_id to one Forge execution profile.
 
     The model only ever supplies a project_id. Repository path, verification
-    commands, Forge executable, backend, attempt limits, and supervisor settings
-    are resolved here — never from proposal text.
+    commands, Forge executable, backend, attempt limits, Claude permission
+    settings, and supervisor settings are resolved here — never from proposal
+    text.
     """
 
     def __init__(self, profiles: Iterable[ForgeProjectProfile] = ()) -> None:
@@ -211,7 +241,8 @@ def build_forge_argv(
     """Build the current Forge CLI argument list.
 
     Shape: forge run <task-file> --repo <repository> --backend <claude|codex>
-    --max-attempts <n>, plus optional trusted supervisor flags. Every element is
+    --max-attempts <n>, plus the trusted Claude permission flags when the
+    backend is claude, plus optional trusted supervisor flags. Every element is
     one argv item; nothing is ever joined into a shell command.
     """
 
@@ -223,6 +254,11 @@ def build_forge_argv(
         "--backend", profile.backend,
         "--max-attempts", str(profile.max_attempts),
     ]
+    if profile.backend == "claude":
+        argv += [
+            "--claude-permission-mode", profile.claude_permission_mode,
+            "--claude-max-turns", str(profile.claude_max_turns),
+        ]
     if profile.supervisor is not None:
         argv.extend(profile.supervisor.argv_flags())
     return argv
@@ -284,9 +320,9 @@ class ForgeTaskAdapter:
     """Dispatch one confirmed run_forge_task through Forge's real CLI contract.
 
     The model supplies only project_id, goal, constraints, and acceptance.
-    Repository, verification, executable, backend, attempt limits, and supervisor
-    settings are resolved from the caller-owned registry, and Forge is invoked
-    without a shell.
+    Repository, verification, executable, backend, attempt limits, Claude
+    permission settings, and supervisor settings are resolved from the
+    caller-owned registry, and Forge is invoked without a shell.
     """
 
     action_name = FORGE_RUN_ACTION
@@ -335,9 +371,12 @@ class ForgeTaskAdapter:
             profile=profile,
         )
         try:
-            returncode = self._runner(argv)
-        except OSError as exc:
-            raise ActionExecutionError(f"Forge executable failed to start: {exc}") from exc
+            try:
+                returncode = self._runner(argv)
+            except OSError as exc:
+                raise ActionExecutionError(f"Forge executable failed to start: {exc}") from exc
+        finally:
+            self._remove_task_file(task_file)
         return ExecutionResult(
             action_name=self.action_name,
             success=returncode == 0,
@@ -346,6 +385,20 @@ class ForgeTaskAdapter:
                 f"finished with exit code {returncode}"
             ),
         )
+
+    @staticmethod
+    def _remove_task_file(task_file: Path) -> None:
+        """Best-effort removal of the generated task YAML after the Forge run.
+
+        The task file exists only so the Forge CLI can read it; Forge streams
+        its own report and evidence elsewhere. Removal failure must never mask
+        the Forge result, so this swallows removal errors.
+        """
+
+        try:
+            task_file.unlink(missing_ok=True)
+        except OSError:
+            pass
 
     def _write_task_file(self, project_id: str, task_yaml: str) -> Path:
         try:

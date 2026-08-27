@@ -30,6 +30,8 @@ def main() -> None:
                 executable="forge",
                 backend="claude",
                 max_attempts=3,
+                claude_permission_mode="auto",
+                claude_max_turns=30,
             )
         ]
     )
