@@ -1,0 +1,364 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from pathlib import Path
+import subprocess
+import tempfile
+import time
+from typing import Callable, Iterable
+
+import yaml
+
+from .authorization import AuthorizedAction
+from .contract import ActionRisk, ActionSpec
+from .execution import ActionExecutionError, ExecutionResult
+
+
+FORGE_RUN_ACTION = "run_forge_task"
+
+_ALLOWED_FORGE_ARGUMENTS = frozenset({"project_id", "goal", "constraints", "acceptance"})
+_FORGE_BACKENDS = frozenset({"claude", "codex"})
+
+
+@dataclass(frozen=True)
+class ForgeSupervisorSettings:
+    """Caller-owned optional FlexiWeb supervisor wiring for one Forge project."""
+
+    url: str
+    site: str = "chatgpt"
+    session: str = "forge-supervisor"
+    conversation_url: str | None = None
+    after_attempt: int = 2
+
+    def __post_init__(self) -> None:
+        url = self.url.strip()
+        site = self.site.strip()
+        session = self.session.strip()
+        if not url:
+            raise ValueError("Forge supervisor url must not be empty")
+        if not site:
+            raise ValueError("Forge supervisor site must not be empty")
+        if not session:
+            raise ValueError("Forge supervisor session must not be empty")
+        if self.conversation_url is not None and not isinstance(self.conversation_url, str):
+            raise TypeError("Forge supervisor conversation_url must be a string or None")
+        if (
+            not isinstance(self.after_attempt, int)
+            or isinstance(self.after_attempt, bool)
+            or self.after_attempt < 1
+        ):
+            raise ValueError("Forge supervisor after_attempt must be an integer >= 1")
+
+        conversation_url = (
+            self.conversation_url.strip() if isinstance(self.conversation_url, str) else None
+        )
+        if not conversation_url:
+            conversation_url = None
+
+        object.__setattr__(self, "url", url)
+        object.__setattr__(self, "site", site)
+        object.__setattr__(self, "session", session)
+        object.__setattr__(self, "conversation_url", conversation_url)
+        object.__setattr__(self, "after_attempt", int(self.after_attempt))
+
+    def argv_flags(self) -> list[str]:
+        """Trusted supervisor flags matching the current Forge run CLI."""
+
+        flags = [
+            "--supervisor-url", self.url,
+            "--supervisor-site", self.site,
+            "--supervisor-session", self.session,
+        ]
+        if self.conversation_url is not None:
+            flags += ["--supervisor-conversation-url", self.conversation_url]
+        flags += ["--supervisor-after-attempt", str(self.after_attempt)]
+        return flags
+
+
+@dataclass(frozen=True)
+class ForgeProjectProfile:
+    """Caller-owned trusted execution profile for one Forge project.
+
+    Everything Forge needs to run — repository, verification commands,
+    executable, backend, attempt limits, and supervisor wiring — lives here.
+    The model never supplies any of it.
+    """
+
+    project_id: str
+    repository: str | Path
+    verification: Iterable[str]
+    executable: str = "forge"
+    backend: str = "claude"
+    max_attempts: int = 3
+    supervisor: ForgeSupervisorSettings | None = None
+
+    def __post_init__(self) -> None:
+        project_id = self.project_id.strip()
+        if not project_id:
+            raise ValueError("Forge project_id must not be empty")
+        if self.backend not in _FORGE_BACKENDS:
+            raise ValueError(f"Forge backend must be one of claude, codex; got {self.backend!r}")
+        executable = self.executable.strip()
+        if not executable:
+            raise ValueError("Forge executable must not be empty")
+        if (
+            not isinstance(self.max_attempts, int)
+            or isinstance(self.max_attempts, bool)
+            or self.max_attempts < 1
+        ):
+            raise ValueError("Forge max_attempts must be an integer >= 1")
+
+        repository = Path(self.repository).expanduser()
+        if not repository.is_dir():
+            raise ValueError(f"Forge repository must be an existing directory: {repository}")
+
+        verification = tuple(str(item).strip() for item in self.verification)
+        if not verification or any(not item for item in verification):
+            raise ValueError("Forge verification must be a non-empty list of non-empty commands")
+
+        if self.supervisor is not None and not isinstance(self.supervisor, ForgeSupervisorSettings):
+            raise TypeError("Forge supervisor must be ForgeSupervisorSettings or None")
+
+        object.__setattr__(self, "project_id", project_id)
+        object.__setattr__(self, "repository", repository.resolve())
+        object.__setattr__(self, "verification", verification)
+        object.__setattr__(self, "executable", executable)
+        object.__setattr__(self, "backend", self.backend)
+        object.__setattr__(self, "max_attempts", int(self.max_attempts))
+        object.__setattr__(self, "supervisor", self.supervisor)
+
+
+class ForgeProjectRegistry:
+    """Caller-owned trusted mapping from project_id to one Forge execution profile.
+
+    The model only ever supplies a project_id. Repository path, verification
+    commands, Forge executable, backend, attempt limits, and supervisor settings
+    are resolved here — never from proposal text.
+    """
+
+    def __init__(self, profiles: Iterable[ForgeProjectProfile] = ()) -> None:
+        self._profiles: dict[str, ForgeProjectProfile] = {}
+        for profile in profiles:
+            self.register(profile)
+
+    def register(self, profile: ForgeProjectProfile) -> None:
+        if not isinstance(profile, ForgeProjectProfile):
+            raise TypeError("ForgeProjectRegistry accepts only ForgeProjectProfile")
+        if profile.project_id in self._profiles:
+            raise ValueError(f"duplicate Forge project: {profile.project_id}")
+        self._profiles[profile.project_id] = profile
+
+    def resolve(self, project_id: str) -> ForgeProjectProfile:
+        if not isinstance(project_id, str) or not project_id.strip():
+            raise ActionExecutionError("run_forge_task project_id must be a non-empty string")
+        profile = self._profiles.get(project_id.strip())
+        if profile is None:
+            raise ActionExecutionError(f"unknown Forge project: {project_id!r}")
+        return profile
+
+    def __contains__(self, project_id: object) -> bool:
+        return isinstance(project_id, str) and project_id.strip() in self._profiles
+
+
+def forge_task_action_spec() -> ActionSpec:
+    """Expose run_forge_task as one REVERSIBLE action that requires confirmation."""
+
+    return ActionSpec(
+        name=FORGE_RUN_ACTION,
+        description=(
+            "Dispatch one bounded engineering task to Forge for a pre-registered "
+            "trusted project. The model supplies project_id, goal, constraints, and "
+            "acceptance; Forge implements and verifies the change in its own worktree."
+        ),
+        risk=ActionRisk.REVERSIBLE,
+        requires_confirmation=True,
+    )
+
+
+def build_forge_task_yaml(
+    *,
+    goal: str,
+    constraints: Iterable[str],
+    acceptance: Iterable[str],
+    verification: Iterable[str],
+) -> str:
+    """Render one task file in the YAML shape Forge's current Task.load consumes.
+
+    goal is a plain string; constraints, acceptance, and verification are YAML
+    lists. Verification is accepted here only from a trusted profile.
+    """
+
+    payload = {
+        "goal": goal,
+        "constraints": list(constraints),
+        "acceptance": list(acceptance),
+        "verification": list(verification),
+    }
+    return yaml.safe_dump(
+        payload,
+        allow_unicode=True,
+        sort_keys=False,
+        default_flow_style=False,
+    )
+
+
+def build_forge_argv(
+    *,
+    executable: str,
+    task_file: Path,
+    profile: ForgeProjectProfile,
+) -> list[str]:
+    """Build the current Forge CLI argument list.
+
+    Shape: forge run <task-file> --repo <repository> --backend <claude|codex>
+    --max-attempts <n>, plus optional trusted supervisor flags. Every element is
+    one argv item; nothing is ever joined into a shell command.
+    """
+
+    argv = [
+        executable,
+        "run",
+        str(task_file),
+        "--repo", str(profile.repository),
+        "--backend", profile.backend,
+        "--max-attempts", str(profile.max_attempts),
+    ]
+    if profile.supervisor is not None:
+        argv.extend(profile.supervisor.argv_flags())
+    return argv
+
+
+ForgeRunner = Callable[[list[str]], int]
+
+
+def _default_forge_runner(argv: list[str]) -> int:
+    """Run Forge from an argument list only. shell=True is never used."""
+
+    completed = subprocess.run(argv, shell=False)
+    return completed.returncode
+
+
+def _validated_forge_arguments(arguments: dict[str, object]) -> dict[str, object]:
+    unexpected = sorted(str(name) for name in arguments if name not in _ALLOWED_FORGE_ARGUMENTS)
+    if unexpected:
+        raise ActionExecutionError(
+            "run_forge_task arguments are limited to project_id, goal, constraints, "
+            f"acceptance; rejected: {', '.join(unexpected)}"
+        )
+    missing = sorted(_ALLOWED_FORGE_ARGUMENTS - set(arguments))
+    if missing:
+        raise ActionExecutionError(f"run_forge_task missing argument(s): {', '.join(missing)}")
+
+    project_id = arguments["project_id"]
+    if not isinstance(project_id, str) or not project_id.strip():
+        raise ActionExecutionError("run_forge_task project_id must be a non-empty string")
+
+    goal = arguments["goal"]
+    if not isinstance(goal, str) or not goal.strip():
+        raise ActionExecutionError("run_forge_task goal must be a non-empty string")
+
+    return {
+        "project_id": project_id.strip(),
+        "goal": goal.strip(),
+        "constraints": _forge_string_list(arguments["constraints"], "constraints", allow_empty=True),
+        "acceptance": _forge_string_list(arguments["acceptance"], "acceptance", allow_empty=False),
+    }
+
+
+def _forge_string_list(value: object, label: str, *, allow_empty: bool) -> list[str]:
+    if not isinstance(value, list):
+        raise ActionExecutionError(f"run_forge_task {label} must be a list of strings")
+    items: list[str] = []
+    for item in value:
+        if not isinstance(item, str) or not item.strip():
+            raise ActionExecutionError(
+                f"run_forge_task {label} entries must be non-empty strings"
+            )
+        items.append(item.strip())
+    if not allow_empty and not items:
+        raise ActionExecutionError(f"run_forge_task {label} must contain at least one entry")
+    return items
+
+
+class ForgeTaskAdapter:
+    """Dispatch one confirmed run_forge_task through Forge's real CLI contract.
+
+    The model supplies only project_id, goal, constraints, and acceptance.
+    Repository, verification, executable, backend, attempt limits, and supervisor
+    settings are resolved from the caller-owned registry, and Forge is invoked
+    without a shell.
+    """
+
+    action_name = FORGE_RUN_ACTION
+
+    def __init__(
+        self,
+        registry: ForgeProjectRegistry,
+        *,
+        work_dir: str | Path | None = None,
+        runner: ForgeRunner | None = None,
+    ) -> None:
+        if not isinstance(registry, ForgeProjectRegistry):
+            raise TypeError("ForgeTaskAdapter requires a ForgeProjectRegistry")
+        self.registry = registry
+        self.work_dir = (
+            Path(work_dir)
+            if work_dir is not None
+            else Path(tempfile.gettempdir()) / "hikari-forge-tasks"
+        )
+        self._runner = runner or _default_forge_runner
+
+    def execute(self, action: AuthorizedAction) -> ExecutionResult:
+        if not isinstance(action, AuthorizedAction):
+            raise TypeError("ForgeTaskAdapter accepts only AuthorizedAction")
+
+        proposal = action.proposal
+        if proposal.action_name != self.action_name:
+            raise ActionExecutionError(
+                f"ForgeTaskAdapter cannot execute {proposal.action_name!r}"
+            )
+
+        arguments = _validated_forge_arguments(proposal.arguments)
+        profile = self.registry.resolve(arguments["project_id"])
+
+        task_yaml = build_forge_task_yaml(
+            goal=arguments["goal"],
+            constraints=arguments["constraints"],
+            acceptance=arguments["acceptance"],
+            verification=profile.verification,
+        )
+        task_file = self._write_task_file(profile.project_id, task_yaml)
+
+        argv = build_forge_argv(
+            executable=profile.executable,
+            task_file=task_file,
+            profile=profile,
+        )
+        try:
+            returncode = self._runner(argv)
+        except OSError as exc:
+            raise ActionExecutionError(f"Forge executable failed to start: {exc}") from exc
+        return ExecutionResult(
+            action_name=self.action_name,
+            success=returncode == 0,
+            summary=(
+                f"Forge run for project {profile.project_id!r} "
+                f"finished with exit code {returncode}"
+            ),
+        )
+
+    def _write_task_file(self, project_id: str, task_yaml: str) -> Path:
+        try:
+            self.work_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            raise ActionExecutionError(
+                f"Forge task directory unavailable: {self.work_dir}"
+            ) from exc
+
+        safe_id = "".join(ch if ch.isalnum() or ch in "-_" else "-" for ch in project_id)
+        task_file = self.work_dir / f"hikari-forge-{safe_id}-{time.time_ns()}.yaml"
+        try:
+            task_file.write_text(task_yaml, encoding="utf-8", newline="\n")
+        except OSError as exc:
+            raise ActionExecutionError(f"Forge task file write failed: {task_file}") from exc
+        return task_file
