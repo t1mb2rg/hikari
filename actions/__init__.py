@@ -5,11 +5,21 @@ from .authorization import (
     AuthorizedAction,
 )
 from .contract import ActionCatalog, ActionProposal, ActionRisk, ActionSpec
+from .execution import (
+    ActionAdapter,
+    ActionExecutionError,
+    ActionExecutor,
+    ConsoleNotifyAdapter,
+    ExecutionResult,
+)
 from .planner import ActionPlanningError, ModelActionPlanner
 
 __all__ = [
+    "ActionAdapter",
     "ActionAuthorizationPolicy",
     "ActionCatalog",
+    "ActionExecutionError",
+    "ActionExecutor",
     "ActionPlanningError",
     "ActionProposal",
     "ActionRisk",
@@ -17,5 +27,7 @@ __all__ = [
     "AuthorizationDecision",
     "AuthorizationResult",
     "AuthorizedAction",
+    "ConsoleNotifyAdapter",
+    "ExecutionResult",
     "ModelActionPlanner",
 ]
