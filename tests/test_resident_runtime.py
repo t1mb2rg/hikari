@@ -141,8 +141,8 @@ def test_run_forever_starts_cycles_sleeps_and_stops_cleanly(capsys):
     assert sensor.polls == 1
     assert sleeps == [0.25]
     output = capsys.readouterr().out
-    assert "Hikari is present." in output
-    assert "Hikari is resting." in output
+    assert "Hikari 在这里。" in output
+    assert "Hikari 休息了。" in output
 
 
 def test_resident_runtime_rejects_non_positive_interval():
