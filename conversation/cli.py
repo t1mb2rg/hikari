@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import argparse
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 
 from awareness import (
@@ -24,6 +24,10 @@ from .models import UserTurn
 
 
 DEFAULT_CHAT_TEMPERATURE = 0.65
+EXIT_COMMANDS = {"/exit", "/quit"}
+PASTE_COMMAND = "/paste"
+PASTE_SEND_COMMAND = "/send"
+PASTE_CANCEL_COMMAND = "/cancel"
 
 
 def build_chat_provider(environment: Mapping[str, str]) -> ChatProvider:
@@ -75,6 +79,34 @@ def default_context_collector(*, include_desktop_activity: bool = False) -> Cont
             ]
         )
     return ContextCollector(providers)
+
+
+def collect_multiline_turn(
+    *,
+    input_fn: Callable[[str], str] = input,
+    output_fn: Callable[[str], None] = print,
+) -> str | None:
+    """Collect a pasted multiline block and return it as one user turn."""
+
+    output_fn("多行粘贴模式：粘贴完成后单独输入 /send 发送，/cancel 取消。")
+    lines: list[str] = []
+
+    while True:
+        line = input_fn("│ ")
+        command = line.strip().lower()
+
+        if command == PASTE_SEND_COMMAND:
+            text = "\n".join(lines)
+            if not text.strip():
+                output_fn("没有可发送的内容，已退出多行粘贴模式。")
+                return None
+            return text
+
+        if command == PASTE_CANCEL_COMMAND:
+            output_fn("已取消多行粘贴。")
+            return None
+
+        lines.append(line)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -134,7 +166,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"Hikari 对话启动失败：{exc}")
         return 2
 
-    print("Hikari 对话已连接。输入 /exit 退出。")
+    print("Hikari 对话已连接。输入 /exit 退出，/paste 粘贴多行内容。")
     if runtime_environment.env_file is not None:
         print(f"环境文件：{runtime_environment.env_file}")
     print(f"对话记忆：{memory_path}")
@@ -146,9 +178,18 @@ def main(argv: Sequence[str] | None = None) -> int:
             print("\nHikari 对话已断开。")
             return 0
 
-        if text.strip().lower() in {"/exit", "/quit"}:
+        command = text.strip().lower()
+        if command in EXIT_COMMANDS:
             print("Hikari 对话已断开。")
             return 0
+        if command == PASTE_COMMAND:
+            try:
+                text = collect_multiline_turn()
+            except (EOFError, KeyboardInterrupt):
+                print("\nHikari 对话已断开。")
+                return 0
+            if text is None:
+                continue
         if not text.strip():
             continue
 
