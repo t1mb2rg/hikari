@@ -25,15 +25,16 @@ class Reasoner(Protocol):
 
 
 class SimpleReasoner:
-    """Deterministic M0 reasoner used to prove the proactive loop.
+    """Deterministic fallback reasoner used to prove the proactive loop.
 
-    A model-backed implementation can replace this later without changing the
-    surrounding Presence pipeline.
+    Chinese is Hikari's default user-facing language. A model-backed reasoner
+    can later adapt language from explicit user/context signals without changing
+    the surrounding Presence pipeline.
     """
 
     def reason(self, event: Event, decision: AttentionDecision) -> Feedback:
         return Feedback(
-            text=f"I noticed something worth your attention: {event.content}",
+            text=f"我注意到一件值得你看一眼的事：{event.content}",
             event_type=event.event_type,
             importance=decision.importance,
         )
