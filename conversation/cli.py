@@ -19,7 +19,7 @@ from personality import load_personality, load_voice
 from resident.environment import load_runtime_environment
 from resident.windows_host import default_state_dir
 
-from .engine import ConversationEngine
+from .engine import ConversationEngine, THIN_HIKARI_SYSTEM_INSTRUCTIONS
 from .models import UserTurn
 
 
@@ -28,6 +28,7 @@ EXIT_COMMANDS = {"/exit", "/quit"}
 PASTE_COMMAND = "/paste"
 PASTE_SEND_COMMAND = "/send"
 PASTE_CANCEL_COMMAND = "/cancel"
+PROMPT_PROFILES = ("production", "thin")
 
 
 def build_chat_provider(environment: Mapping[str, str]) -> ChatProvider:
@@ -120,6 +121,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--conversation", default="local")
     parser.add_argument("--history-limit", type=int, default=12)
     parser.add_argument(
+        "--prompt-profile",
+        choices=PROMPT_PROFILES,
+        default="production",
+        help="production 使用完整 Hikari 语气约束；thin 用于底模盲测，只保留核心身份、边界与记忆真实性。",
+    )
+    parser.add_argument(
         "--desktop-context",
         action="store_true",
         help="显式允许直接聊天读取当前前台窗口和输入活跃度。默认关闭。",
@@ -138,14 +145,15 @@ def main(argv: Sequence[str] | None = None) -> int:
             if args.db
             else (default_state_dir() / "memory.db").resolve()
         )
+        thin_prompt = args.prompt_profile == "thin"
         engine = ConversationEngine(
             provider,
             MemoryStore(memory_path),
             context_collector=default_context_collector(
                 include_desktop_activity=args.desktop_context,
             ),
-            personality_profile=load_personality(),
-            voice_profile=load_voice(),
+            personality_profile=None if thin_prompt else load_personality(),
+            voice_profile=None if thin_prompt else load_voice(),
             relationship_context={
                 "kind": "primary_local_user",
                 "basis": "trusted_runtime_binding",
@@ -161,6 +169,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                 ),
             },
             history_limit=args.history_limit,
+            system_instructions=(
+                THIN_HIKARI_SYSTEM_INSTRUCTIONS if thin_prompt else None
+            ) or ConversationEngine.__init__.__kwdefaults__["system_instructions"],
         )
     except ValueError as exc:
         print(f"Hikari 对话启动失败：{exc}")
@@ -169,6 +180,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     print("Hikari 对话已连接。输入 /exit 退出，/paste 粘贴多行内容。")
     if runtime_environment.env_file is not None:
         print(f"环境文件：{runtime_environment.env_file}")
+    print(f"模型：{getattr(provider, 'model', type(provider).__name__)}")
+    print(f"Prompt：{args.prompt_profile}")
     print(f"对话记忆：{memory_path}")
 
     while True:
