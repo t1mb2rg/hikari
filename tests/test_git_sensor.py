@@ -2,6 +2,7 @@ from pathlib import Path
 import subprocess
 
 from events.sensors import GitSensor, GitSensorError
+from events.sensors.git import _git_creationflags
 
 
 def _git(repo: Path, *args: str) -> str:
@@ -61,3 +62,8 @@ def test_git_sensor_rejects_non_repository(tmp_path):
         pass
     else:
         raise AssertionError("GitSensor should reject a non-Git directory")
+
+
+def test_git_polling_uses_no_window_flag_only_on_windows():
+    assert _git_creationflags("nt") == 0x08000000
+    assert _git_creationflags("posix") == 0
