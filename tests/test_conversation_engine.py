@@ -59,6 +59,8 @@ def _engine(
         voice_profile=load_voice(),
         relationship_context={
             "kind": "primary_local_user",
+            "basis": "trusted_runtime_binding",
+            "memory_claim": "continuity_without_implied_episode_recall",
             "continuity": "trusted local continuity",
         },
         history_limit=history_limit,
@@ -102,6 +104,9 @@ def test_fresh_engine_rehydrates_same_session_history(tmp_path: Path):
         ("assistant", "第一句回复"),
         ("user", "第二句"),
     ]
+    metadata = json.loads(call[1].content)
+    assert metadata["memory_provenance"]["recent_history"]["count"] == 2
+    assert metadata["memory_provenance"]["recent_history"]["recalled"] is True
 
 
 def test_history_is_isolated_by_channel_and_conversation(tmp_path: Path):
@@ -119,6 +124,8 @@ def test_history_is_isolated_by_channel_and_conversation(tmp_path: Path):
     assert "只属于A" not in serialized
     assert "A回复" not in serialized
     assert "只属于B" in serialized
+    metadata = json.loads(provider.calls[0][1].content)
+    assert metadata["memory_provenance"]["recent_history"]["count"] == 0
 
 
 def test_prompt_attaches_identity_relationship_capabilities_personality_voice_and_context(
@@ -133,6 +140,7 @@ def test_prompt_attaches_identity_relationship_capabilities_personality_voice_an
     metadata = json.loads(provider.calls[0][1].content)
     assert metadata["identity"]["name"] == "Hikari"
     assert metadata["relationship"]["kind"] == "primary_local_user"
+    assert metadata["relationship"]["basis"] == "trusted_runtime_binding"
     assert metadata["capabilities"]["memory"]["available"] is True
     assert metadata["capabilities"]["current_chat_authority"]["filesystem"] is False
     assert metadata["ambient_context"]["providers"]["test_context"] == {
@@ -142,21 +150,29 @@ def test_prompt_attaches_identity_relationship_capabilities_personality_voice_an
     assert metadata["personality"]["traits"]["curiosity"] == 0.9
     assert metadata["voice"]["stance"]["relation"] == "familiar"
     assert metadata["voice"]["cadence"]["headings_in_casual_chat"] is False
+    provenance = metadata["memory_provenance"]
+    assert provenance["current_user_turn"]["source"] == "user_supplied_current_turn"
+    assert provenance["current_user_turn"]["recalled"] is False
+    assert provenance["relationship"]["source"] == "trusted_runtime_binding"
+    assert provenance["relationship"]["recalled"] is False
     assert "customer-service chatbot" in system
     assert "Do not narrate ambient desktop context" in system
     assert "Never claim that every conversation starts from scratch" in system
     assert "Do not end most replies with a question" in system
+    assert "Quoted transcripts" in system
+    assert "do not prove that you independently remember" in system
+    assert "Do not turn runtime grounding or pasted logs into invented autobiography" in system
 
 
 def test_prompt_attaches_bounded_durable_user_and_relationship_memory(tmp_path: Path):
     memory_path = tmp_path / "memory.db"
     memory = MemoryStore(memory_path)
-    memory.remember_memory(
+    user_memory = memory.remember_memory(
         MemoryKind.USER_MODEL,
         "用户偏好自然、直接的中文交流。",
         confidence=0.9,
     )
-    memory.remember_memory(
+    episode = memory.remember_memory(
         MemoryKind.EPISODIC,
         "Hikari 和用户一起完成了一次后台驻留验收。",
         confidence=0.8,
@@ -166,11 +182,36 @@ def test_prompt_attaches_bounded_durable_user_and_relationship_memory(tmp_path: 
     _engine(memory_path, provider).respond(UserTurn("cli", "main", "你了解我吗"))
 
     metadata = json.loads(provider.calls[0][1].content)
+    assert metadata["known_user"][0]["id"] == user_memory.id
     assert metadata["known_user"][0]["content"] == "用户偏好自然、直接的中文交流。"
     assert metadata["known_user"][0]["confidence"] == 0.9
+    assert metadata["known_user"][0]["provenance"] == "durable_memory"
+    assert metadata["relationship_memories"][0]["id"] == episode.id
     assert metadata["relationship_memories"][0]["content"] == (
         "Hikari 和用户一起完成了一次后台驻留验收。"
     )
+    assert metadata["relationship_memories"][0]["provenance"] == "durable_memory"
+    assert metadata["memory_provenance"]["known_user"]["count"] == 1
+    assert metadata["memory_provenance"]["relationship_memories"]["count"] == 1
+
+
+def test_pasted_transcript_is_marked_user_supplied_not_recalled(tmp_path: Path):
+    provider = FakeProvider(["从你贴的记录看，这句确实很像早期版本。"])
+    _engine(tmp_path / "memory.db", provider).respond(
+        UserTurn(
+            "cli",
+            "fresh",
+            "Hikari> 嗨，你好呀！😊 我是 Hikari，很高兴见到你。",
+        )
+    )
+
+    call = provider.calls[0]
+    metadata = json.loads(call[1].content)
+    provenance = metadata["memory_provenance"]
+    assert provenance["current_user_turn"]["recalled"] is False
+    assert provenance["recent_history"]["count"] == 0
+    assert provenance["relationship"]["recalled"] is False
+    assert "Hikari> 嗨，你好呀" in call[-1].content
 
 
 def test_empty_message_rejected_before_model_call(tmp_path: Path):
