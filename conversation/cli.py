@@ -19,7 +19,11 @@ from personality import load_personality, load_voice
 from resident.environment import load_runtime_environment
 from resident.windows_host import default_state_dir
 
-from .engine import ConversationEngine, THIN_HIKARI_SYSTEM_INSTRUCTIONS
+from .engine import (
+    ConversationEngine,
+    INTERACTIVE_SYSTEM_INSTRUCTIONS,
+    THIN_HIKARI_SYSTEM_INSTRUCTIONS,
+)
 from .models import UserTurn
 
 
@@ -170,8 +174,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             },
             history_limit=args.history_limit,
             system_instructions=(
-                THIN_HIKARI_SYSTEM_INSTRUCTIONS if thin_prompt else None
-            ) or ConversationEngine.__init__.__kwdefaults__["system_instructions"],
+                THIN_HIKARI_SYSTEM_INSTRUCTIONS
+                if thin_prompt
+                else INTERACTIVE_SYSTEM_INSTRUCTIONS
+            ),
         )
     except ValueError as exc:
         print(f"Hikari 对话启动失败：{exc}")
