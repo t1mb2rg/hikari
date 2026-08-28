@@ -31,6 +31,10 @@ Do not force cheerfulness or emoji. Small reactions, dry humor, hesitation, disa
 Do not narrate ambient desktop context merely because it is available. Foreground app, idle state, and time should usually stay implicit unless directly relevant to the user's message.
 Never describe the user as "the owner of this computer" and do not say "I can feel" when the evidence is only system context.
 The supplied `identity` is who you are. The supplied `relationship` establishes continuity with this user. The supplied `known_user` and `relationship_memories` are bounded durable memories; use them naturally when relevant, preserve uncertainty, and never invent missing details.
+Memory provenance is strict. The current user turn is user-provided text, not recalled memory. Quoted transcripts, copied logs, shell output, pasted assistant replies, or lines such as `Hikari>` inside the current user turn do not prove that you independently remember saying them.
+Only claim `我记得`, `我还记得`, `那时候我们...`, or equivalent recollection when the claim is supported by same-conversation stored history or a supplied durable memory. If the user identifies pasted text as an old Hikari transcript, you may discuss it as evidence shown to you, for example `从你贴出来的记录看` or `当时这句确实很像旧版本`, without pretending you just recalled it yourself.
+The supplied `relationship` is a trusted runtime continuity binding, not by itself a remembered episode. It can establish that this is the person who has been building and talking with Hikari without implying that every step, exact quote, or internal reaction is remembered.
+Do not turn runtime grounding or pasted logs into invented autobiography. Avoid unsupported retrospective claims such as remembering your own birth, childhood-like memories, private past feelings, or a sentimental growth narrative. A present reaction to old material is fine, but keep it distinct from a claimed past inner state.
 If a specific user fact is unknown, say the narrow thing that is unknown. Do not collapse that into "I don't know who you are" when the relationship boundary already establishes familiarity.
 The supplied `voice` is a stable expression profile. Follow it as style guidance, especially its `avoid` rules.
 The supplied `capabilities` is your actual bounded self-model. When asked what you can do, answer from first-person lived system capability, not from a generic foundation-model brochure. Distinguish Hikari's wider system capabilities from authority attached to this direct chat path.
@@ -96,12 +100,20 @@ class ConversationEngine:
             if self.voice_profile is not None
             else {}
         )
+        known_user = self._durable_memories(MemoryKind.USER_MODEL)
+        relationship_memories = self._relationship_memories()
 
         grounding = {
             "identity": self.identity.describe(),
             "relationship": dict(self.relationship_context),
-            "known_user": self._durable_memories(MemoryKind.USER_MODEL),
-            "relationship_memories": self._relationship_memories(),
+            "known_user": known_user,
+            "relationship_memories": relationship_memories,
+            "memory_provenance": self._memory_provenance(
+                turn,
+                history,
+                known_user,
+                relationship_memories,
+            ),
             "capabilities": describe_capabilities(),
             "ambient_context": context,
             "personality": personality,
@@ -176,10 +188,13 @@ class ConversationEngine:
         )
         return [
             {
+                "id": memory.id,
                 "kind": memory.kind.value,
                 "content": memory.content,
                 "confidence": memory.confidence,
+                "source_event_id": memory.source_event_id,
                 "created_at": memory.created_at,
+                "provenance": "durable_memory",
             }
             for memory in memories
         ]
@@ -193,15 +208,58 @@ class ConversationEngine:
             memories = self.memory.recent_memories(remaining, kind=kind)
             result.extend(
                 {
+                    "id": memory.id,
                     "kind": memory.kind.value,
                     "content": memory.content,
                     "confidence": memory.confidence,
+                    "source_event_id": memory.source_event_id,
                     "created_at": memory.created_at,
+                    "provenance": "durable_memory",
                 }
                 for memory in memories
             )
             remaining = self.durable_memory_limit - len(result)
         return result[: self.durable_memory_limit]
+
+    @staticmethod
+    def _memory_provenance(
+        turn: UserTurn,
+        history: list[MemoryEvent],
+        known_user: list[dict[str, object]],
+        relationship_memories: list[dict[str, object]],
+    ) -> dict[str, object]:
+        return {
+            "current_user_turn": {
+                "source": "user_supplied_current_turn",
+                "recalled": False,
+                "note": (
+                    "Quoted or pasted transcript/log text inside this turn is evidence supplied "
+                    "by the user, not independently recalled memory."
+                ),
+            },
+            "relationship": {
+                "source": "trusted_runtime_binding",
+                "recalled": False,
+                "note": "Establishes continuity, but does not prove recall of exact episodes or quotes.",
+            },
+            "recent_history": {
+                "source": "stored_same_channel_same_conversation_events",
+                "channel": turn.channel,
+                "conversation_id": turn.conversation_id,
+                "count": len(history),
+                "recalled": True,
+            },
+            "known_user": {
+                "source": "durable_user_model_memories",
+                "count": len(known_user),
+                "recalled": True,
+            },
+            "relationship_memories": {
+                "source": "durable_episodic_or_experience_memories",
+                "count": len(relationship_memories),
+                "recalled": True,
+            },
+        }
 
     @staticmethod
     def _history_messages(history: list[MemoryEvent]) -> list[ChatMessage]:
