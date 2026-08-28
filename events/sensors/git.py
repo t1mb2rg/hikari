@@ -1,9 +1,22 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 import subprocess
 
 from ..models import Event
+
+
+_WINDOWS_CREATE_NO_WINDOW = 0x08000000
+
+
+def _git_creationflags(platform_name: str | None = None) -> int:
+    """Keep Git probes invisible when the resident is hosted by pythonw."""
+
+    name = os.name if platform_name is None else platform_name
+    if name != "nt":
+        return 0
+    return int(getattr(subprocess, "CREATE_NO_WINDOW", _WINDOWS_CREATE_NO_WINDOW))
 
 
 class GitSensorError(RuntimeError):
@@ -32,6 +45,7 @@ class GitSensor:
                 capture_output=True,
                 text=True,
                 encoding="utf-8",
+                creationflags=_git_creationflags(),
             )
         except (OSError, subprocess.CalledProcessError) as exc:
             raise GitSensorError(f"Unable to inspect Git repository: {self.repository}") from exc
@@ -42,38 +56,44 @@ class GitSensor:
         if self._git("rev-parse", "--is-inside-work-tree") != "true":
             raise GitSensorError(f"Not a Git working tree: {self.repository}")
 
-    def _snapshot(self) -> dict[str, str]:
+    def _commit_metadata(self) -> dict[str, str]:
+        metadata = self._git("log", "-1", "--format=%s%x00%an%x00%aI").split("\x00")
+        if len(metadata) != 3:
+            raise GitSensorError(f"Unable to read commit metadata: {self.repository}")
+        subject, author, authored_at = metadata
         return {
-            "sha": self._git("rev-parse", "HEAD"),
-            "subject": self._git("log", "-1", "--format=%s"),
-            "author": self._git("log", "-1", "--format=%an"),
-            "authored_at": self._git("log", "-1", "--format=%aI"),
+            "subject": subject,
+            "author": author,
+            "authored_at": authored_at,
         }
 
     def poll(self) -> list[Event]:
-        current = self._snapshot()
+        # Quiet cycles need only one Git process. Metadata is fetched only after
+        # HEAD changes, which keeps a resident polling loop cheap and silent.
+        current_sha = self._git("rev-parse", "HEAD")
 
         if self._last_sha is None:
-            self._last_sha = current["sha"]
+            self._last_sha = current_sha
             return []
 
-        if current["sha"] == self._last_sha:
+        if current_sha == self._last_sha:
             return []
 
         previous_sha = self._last_sha
-        self._last_sha = current["sha"]
+        self._last_sha = current_sha
+        metadata = self._commit_metadata()
 
         return [
             Event(
                 event_type="git.commit",
                 source=self.name,
-                content=current["subject"],
+                content=metadata["subject"],
                 context={
                     "repository": str(self.repository),
-                    "sha": current["sha"],
+                    "sha": current_sha,
                     "previous_sha": previous_sha,
-                    "author": current["author"],
-                    "authored_at": current["authored_at"],
+                    "author": metadata["author"],
+                    "authored_at": metadata["authored_at"],
                 },
             )
         ]
