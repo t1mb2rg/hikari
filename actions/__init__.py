@@ -15,6 +15,7 @@ from .execution import (
     WindowsNotificationUnavailable,
     WindowsToastNotifyAdapter,
 )
+from .feedback import ActionFeedbackSink
 from .forge import (
     ForgeProjectProfile,
     ForgeProjectRegistry,
@@ -32,6 +33,7 @@ __all__ = [
     "ActionCatalog",
     "ActionExecutionError",
     "ActionExecutor",
+    "ActionFeedbackSink",
     "ActionPlanningError",
     "ActionProposal",
     "ActionRisk",
