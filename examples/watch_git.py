@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
-import time
 
 from attention import AttentionPolicy
 from awareness import (
@@ -15,12 +14,19 @@ from awareness import (
 )
 from brain import SimpleReasoner
 from core.presence import ConsoleFeedbackSink, PresencePipeline
-from events.runner import SensorRunner
+from core.runtime import ResidentPresenceRuntime
 from events.sensors import GitSensor
 from memory.store import MemoryStore
 
 
-def build_runner(repository: Path, memory_path: Path) -> SensorRunner:
+def build_runtime(
+    repository: Path,
+    memory_path: Path,
+    *,
+    interval: float = 2.0,
+) -> ResidentPresenceRuntime:
+    """Build the concrete Git-backed resident Presence runtime used by this gate."""
+
     pipeline = PresencePipeline(
         memory=MemoryStore(memory_path),
         attention=AttentionPolicy(
@@ -39,15 +45,16 @@ def build_runner(repository: Path, memory_path: Path) -> SensorRunner:
             ]
         ),
     )
-    return SensorRunner(
+    return ResidentPresenceRuntime(
         [GitSensor(repository)],
-        on_event=pipeline.handle,
+        pipeline,
+        poll_interval=max(0.1, interval),
     )
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Run Hikari's proactive loop against a Git repository.",
+        description="Run Hikari's resident proactive loop against a Git repository.",
     )
     parser.add_argument(
         "repository",
@@ -70,18 +77,10 @@ def main() -> None:
 
     repository = Path(args.repository).resolve()
     memory_path = Path(args.db).resolve()
-    runner = build_runner(repository, memory_path)
+    runtime = build_runtime(repository, memory_path, interval=args.interval)
 
-    # Establish sensor baselines before announcing that observation is active.
-    runner.poll_once()
     print(f"Hikari is watching {repository}")
-
-    try:
-        while True:
-            time.sleep(max(0.1, args.interval))
-            runner.poll_once()
-    except KeyboardInterrupt:
-        print("Hikari stopped watching.")
+    runtime.run_forever()
 
 
 if __name__ == "__main__":
