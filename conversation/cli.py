@@ -61,16 +61,20 @@ def build_chat_provider(environment: Mapping[str, str]) -> ChatProvider:
     )
 
 
-def default_context_collector() -> ContextCollector:
-    return ContextCollector(
-        [
-            TimeContextProvider(),
-            ChineseCalendarContextProvider(),
-            HostContextProvider(),
-            InputActivityContextProvider(),
-            ForegroundContextProvider(),
-        ]
-    )
+def default_context_collector(*, include_desktop_activity: bool = False) -> ContextCollector:
+    providers = [
+        TimeContextProvider(),
+        ChineseCalendarContextProvider(),
+        HostContextProvider(),
+    ]
+    if include_desktop_activity:
+        providers.extend(
+            [
+                InputActivityContextProvider(),
+                ForegroundContextProvider(),
+            ]
+        )
+    return ContextCollector(providers)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -83,6 +87,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--channel", default="cli")
     parser.add_argument("--conversation", default="local")
     parser.add_argument("--history-limit", type=int, default=12)
+    parser.add_argument(
+        "--desktop-context",
+        action="store_true",
+        help="显式允许直接聊天读取当前前台窗口和输入活跃度。默认关闭。",
+    )
     return parser
 
 
@@ -100,7 +109,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         engine = ConversationEngine(
             provider,
             MemoryStore(memory_path),
-            context_collector=default_context_collector(),
+            context_collector=default_context_collector(
+                include_desktop_activity=args.desktop_context,
+            ),
             personality_profile=load_personality(),
             voice_profile=load_voice(),
             relationship_context={
