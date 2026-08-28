@@ -23,6 +23,8 @@ from events.sensors import GitSensor
 from memory.store import MemoryStore
 from personality import load_personality
 
+from .environment import load_runtime_environment
+
 
 def feedback_sink(output: str) -> FeedbackSink:
     """Build one user-facing feedback channel without widening Presence authority."""
@@ -139,7 +141,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--reasoner",
         choices=("simple", "model"),
         default="simple",
-        help="认知模式；model 使用 HIKARI_MODEL_* 运行时环境变量",
+        help="认知模式；model 使用 HIKARI_MODEL_* 运行时配置",
+    )
+    parser.add_argument(
+        "--env-file",
+        default=None,
+        help="可选 dotenv 文件；进程环境变量优先于文件中的同名值",
     )
     return parser
 
@@ -150,7 +157,11 @@ def main(argv: Sequence[str] | None = None) -> None:
     repository = Path(args.repository).resolve()
     memory_path = Path(args.db).resolve()
     try:
-        reasoner = build_reasoner(args.reasoner)
+        runtime_environment = load_runtime_environment(env_file=args.env_file)
+        reasoner = build_reasoner(
+            args.reasoner,
+            environment=runtime_environment.values,
+        )
     except ValueError as exc:
         raise SystemExit(str(exc)) from exc
 
@@ -165,6 +176,8 @@ def main(argv: Sequence[str] | None = None) -> None:
     print(f"Hikari 正在观察：{repository}", flush=True)
     print(f"Hikari 主动反馈通道：{args.output}", flush=True)
     print(f"Hikari 认知模式：{args.reasoner}", flush=True)
+    if runtime_environment.env_file is not None:
+        print(f"Hikari 环境文件：{runtime_environment.env_file}", flush=True)
     runtime.run_forever()
 
 
