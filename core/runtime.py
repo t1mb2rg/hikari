@@ -19,7 +19,7 @@ from events.sensor import Sensor
 
 def heartbeat() -> str:
     """Return the minimal liveness signal used by early M0 checks."""
-    return "Hikari is awake."
+    return "Hikari 醒着。"
 
 
 @dataclass
@@ -41,7 +41,7 @@ class HikariRuntime:
         """Initialize Hikari and enter the running state."""
         identity = self.initialize()
         self.running = True
-        return f"{identity.name} is awake."
+        return f"{identity.name} 醒着。"
 
     def stop(self) -> None:
         """Leave the running state without discarding loaded identity."""
@@ -57,7 +57,7 @@ class HikariRuntime:
             pass
         finally:
             self.stop()
-            print("Hikari is resting.")
+            print("Hikari 休息了。")
 
 
 @dataclass(frozen=True)
@@ -119,7 +119,7 @@ class ResidentPresenceRuntime:
         """Enter the resident running state."""
         identity = self.initialize()
         self.running = True
-        return f"{identity.name} is present."
+        return f"{identity.name} 在这里。"
 
     def stop(self) -> None:
         """Stop future resident cycles without discarding identity."""
@@ -182,7 +182,7 @@ class ResidentPresenceRuntime:
             pass
         finally:
             self.stop()
-            print("Hikari is resting.")
+            print("Hikari 休息了。")
 
 
 def main() -> None:
