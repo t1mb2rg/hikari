@@ -15,6 +15,7 @@ dependencies = [
 
 [project.scripts]
 hikari-resident = "resident.windows_host:main"
+hikari-autostart = "resident.windows_autostart:main"
 
 [project.optional-dependencies]
 dev = [
