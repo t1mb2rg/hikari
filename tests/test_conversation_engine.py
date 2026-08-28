@@ -8,6 +8,7 @@ import pytest
 from awareness import ContextCollector
 from brain.model_reasoner import ChatMessage
 from conversation import ConversationEngine, ConversationGateway, UserTurn
+from memory.models import MemoryKind
 from memory.store import MemoryStore
 from personality import PersonalityProfile
 
@@ -55,6 +56,10 @@ def _engine(
         MemoryStore(path),
         context_collector=ContextCollector([StaticContextProvider()]),
         personality_profile=_personality(),
+        relationship_context={
+            "kind": "primary_local_user",
+            "continuity": "trusted local continuity",
+        },
         history_limit=history_limit,
     )
 
@@ -115,18 +120,53 @@ def test_history_is_isolated_by_channel_and_conversation(tmp_path: Path):
     assert "只属于B" in serialized
 
 
-def test_prompt_attaches_personality_and_ambient_context(tmp_path: Path):
+def test_prompt_attaches_identity_relationship_capabilities_personality_and_context(
+    tmp_path: Path,
+):
     provider = FakeProvider(["好"])
     _engine(tmp_path / "memory.db", provider).respond(
         UserTurn("cli", "main", "看看上下文")
     )
 
+    system = provider.calls[0][0].content
     metadata = json.loads(provider.calls[0][1].content)
+    assert metadata["identity"]["name"] == "Hikari"
+    assert metadata["relationship"]["kind"] == "primary_local_user"
+    assert metadata["capabilities"]["memory"]["available"] is True
+    assert metadata["capabilities"]["current_chat_authority"]["filesystem"] is False
     assert metadata["ambient_context"]["providers"]["test_context"] == {
         "foreground": "editor",
         "idle": False,
     }
     assert metadata["personality"]["traits"]["curiosity"] == 0.9
+    assert "generic customer-service chatbot" in system
+    assert "Do not repeatedly narrate ambient desktop context" in system
+    assert "Never claim that every conversation starts from scratch" in system
+
+
+def test_prompt_attaches_bounded_durable_user_and_relationship_memory(tmp_path: Path):
+    memory_path = tmp_path / "memory.db"
+    memory = MemoryStore(memory_path)
+    memory.remember_memory(
+        MemoryKind.USER_MODEL,
+        "用户偏好自然、直接的中文交流。",
+        confidence=0.9,
+    )
+    memory.remember_memory(
+        MemoryKind.EPISODIC,
+        "Hikari 和用户一起完成了一次后台驻留验收。",
+        confidence=0.8,
+    )
+
+    provider = FakeProvider(["知道了"])
+    _engine(memory_path, provider).respond(UserTurn("cli", "main", "你了解我吗"))
+
+    metadata = json.loads(provider.calls[0][1].content)
+    assert metadata["known_user"][0]["content"] == "用户偏好自然、直接的中文交流。"
+    assert metadata["known_user"][0]["confidence"] == 0.9
+    assert metadata["relationship_memories"][0]["content"] == (
+        "Hikari 和用户一起完成了一次后台驻留验收。"
+    )
 
 
 def test_empty_message_rejected_before_model_call(tmp_path: Path):
