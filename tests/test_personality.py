@@ -1,6 +1,6 @@
 import pytest
 
-from personality import PersonalityProfile, load_personality
+from personality import PersonalityProfile, load_personality, load_voice
 
 
 def test_default_personality_profile_loads_deterministically():
@@ -17,6 +17,18 @@ def test_default_personality_profile_loads_deterministically():
             "patience": 0.8,
         },
     }
+
+
+def test_default_voice_profile_loads_with_non_service_chat_defaults():
+    voice = load_voice()
+
+    assert voice.version == "0.1.0"
+    assert voice.stance["relation"] == "familiar"
+    assert voice.stance["service_posture"] is False
+    assert voice.cadence["headings_in_casual_chat"] is False
+    assert voice.cadence["follow_up_question_by_default"] is False
+    assert any("有什么我能帮忙的吗" in item for item in voice.avoid)
+    assert any("这台电脑的主人" in item for item in voice.avoid)
 
 
 def test_missing_trait_is_rejected():
