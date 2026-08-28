@@ -162,6 +162,8 @@ def test_prompt_attaches_identity_relationship_capabilities_personality_voice_an
     assert "Quoted transcripts" in system
     assert "do not prove that you independently remember" in system
     assert "Do not turn runtime grounding or pasted logs into invented autobiography" in system
+    assert "participate directly instead of repeatedly advertising" in system
+    assert "The user is never responsible for regulating Hikari's emotional state" in system
 
 
 def test_prompt_attaches_bounded_durable_user_and_relationship_memory(tmp_path: Path):
