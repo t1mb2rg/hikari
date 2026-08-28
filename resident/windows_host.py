@@ -121,6 +121,34 @@ def default_state_dir(environment: Mapping[str, str] | None = None) -> Path:
     return Path.home() / ".hikari" / "resident"
 
 
+def _select_background_python(
+    python_executable: str,
+    *,
+    platform_name: str | None = None,
+) -> str:
+    """Prefer the windowless interpreter for a detached Windows resident.
+
+    Windows Terminal can surface a new console window even when a console
+    interpreter is launched with detached creation flags. A venv ships a
+    sibling ``pythonw.exe`` specifically for GUI/background processes. Using it
+    keeps the resident independent of any visible console while stdout/stderr
+    remain explicitly redirected to the host log.
+    """
+
+    platform_name = os.name if platform_name is None else platform_name
+    executable = Path(python_executable)
+    if platform_name != "nt":
+        return str(executable)
+
+    if executable.name.lower() not in {"python.exe", "pythonw.exe"}:
+        return str(executable)
+
+    pythonw = executable.with_name("pythonw.exe")
+    if pythonw.is_file():
+        return str(pythonw)
+    return str(executable)
+
+
 def _default_launcher(
     argv: list[str],
     cwd: Path,
@@ -231,9 +259,10 @@ class WindowsResidentHost:
         self._launcher = launcher or _default_launcher
         self._process_probe = process_probe or _default_process_probe
         self._terminator = terminator or _default_terminator
-        self.python_executable = (python_executable or sys.executable).strip()
-        if not self.python_executable:
+        selected_python = (python_executable or sys.executable).strip()
+        if not selected_python:
             raise ValueError("python_executable must not be empty")
+        self.python_executable = _select_background_python(selected_python)
 
     def child_argv(self) -> list[str]:
         """Build the exact shell-free argv used for the background resident."""
