@@ -5,7 +5,11 @@ from pathlib import Path
 
 import pytest
 
-from resident.windows_host import ResidentHostConfig, WindowsResidentHost
+from resident.windows_host import (
+    ResidentHostConfig,
+    WindowsResidentHost,
+    _select_background_python,
+)
 
 
 def _config(tmp_path: Path, **overrides: object) -> ResidentHostConfig:
@@ -21,6 +25,28 @@ def _config(tmp_path: Path, **overrides: object) -> ResidentHostConfig:
     }
     values.update(overrides)
     return ResidentHostConfig(**values)  # type: ignore[arg-type]
+
+
+def test_windows_background_python_prefers_pythonw_when_available(tmp_path: Path):
+    scripts = tmp_path / "Scripts"
+    scripts.mkdir()
+    python = scripts / "python.exe"
+    pythonw = scripts / "pythonw.exe"
+    python.write_text("", encoding="utf-8")
+    pythonw.write_text("", encoding="utf-8")
+
+    selected = _select_background_python(str(python), platform_name="nt")
+
+    assert selected == str(pythonw)
+
+
+def test_windows_background_python_falls_back_when_pythonw_is_missing(tmp_path: Path):
+    python = tmp_path / "python.exe"
+    python.write_text("", encoding="utf-8")
+
+    selected = _select_background_python(str(python), platform_name="nt")
+
+    assert selected == str(python)
 
 
 def test_start_detaches_one_trusted_child_and_persists_minimal_state(tmp_path: Path):
