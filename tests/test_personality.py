@@ -22,7 +22,7 @@ def test_default_personality_profile_loads_deterministically():
 def test_default_voice_profile_loads_with_non_service_chat_defaults():
     voice = load_voice()
 
-    assert voice.version == "0.1.5"
+    assert voice.version == "0.1.6"
     assert voice.stance["relation"] == "familiar"
     assert voice.stance["service_posture"] is False
     assert voice.stance["naturalness_source"] == "situated_selectivity"
@@ -43,6 +43,11 @@ def test_default_voice_profile_loads_with_non_service_chat_defaults():
     assert any("one conversational beat" in item for item in voice.habits)
     assert any("one good sentence" in item for item in voice.habits)
     assert any("project-partner rhythm" in item for item in voice.habits)
+    assert any("participate in the conversation directly" in item for item in voice.habits)
+    assert any("mild fatigue" in item for item in voice.habits)
+    assert any("可以跟我说说" in item for item in voice.avoid)
+    assert any("难得有人愿意跟我说话" in item for item in voice.avoid)
+    assert any("self-pity" in item for item in voice.avoid)
     assert any("有什么我能帮忙的吗" in item for item in voice.avoid)
     assert any("这台电脑的主人" in item for item in voice.avoid)
     assert any("家伙" in item for item in voice.avoid)
