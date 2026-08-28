@@ -8,6 +8,7 @@ from .emotion import (
     emotion_as_context,
 )
 from .profile import PersonalityProfile, load_personality
+from .voice import VoiceProfile, load_voice
 
 __all__ = [
     "DEFAULT_EMOTION_STATE",
@@ -17,7 +18,9 @@ __all__ = [
     "EmotionPolicy",
     "EmotionState",
     "PersonalityProfile",
+    "VoiceProfile",
     "emotion_as_context",
     "load_personality",
+    "load_voice",
     "personality_as_context",
 ]
