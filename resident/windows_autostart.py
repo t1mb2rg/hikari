@@ -3,36 +3,30 @@ from __future__ import annotations
 import argparse
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+import json
 import os
 from pathlib import Path
 import subprocess
 import sys
+from typing import Any
 
 from .app import build_reasoner
 from .environment import load_runtime_environment
-from .windows_host import default_state_dir
+from .windows_host import ResidentHostConfig, WindowsResidentHost, default_state_dir
 
 
-TASK_NAME = "Hikari Resident"
+RUN_KEY_PATH = r"Software\Microsoft\Windows\CurrentVersion\Run"
+RUN_VALUE_NAME = "Hikari Resident"
+AUTOSTART_CONFIG_VERSION = 1
 
 
 class WindowsAutostartUnavailable(RuntimeError):
-    """Raised when real Windows Task Scheduler control is requested elsewhere."""
-
-
-@dataclass(frozen=True)
-class CommandResult:
-    returncode: int
-    stdout: str = ""
-    stderr: str = ""
-
-
-CommandRunner = Callable[[list[str]], CommandResult]
+    """Raised when real Windows login-autostart control is requested elsewhere."""
 
 
 @dataclass(frozen=True)
 class AutostartConfig:
-    """Caller-owned startup settings persisted only as a scheduled task action."""
+    """Caller-owned settings persisted without model secret values."""
 
     repository: Path
     state_dir: Path
@@ -83,71 +77,186 @@ class AutostartConfig:
                 return str(pythonw)
         return str(executable)
 
-    def task_action_argv(self) -> list[str]:
-        argv = [
-            self.windowless_python,
-            "-m",
-            "resident.windows_host",
-            "start",
-            str(self.repository),
-            "--interval",
-            str(self.interval),
-            "--output",
-            self.output,
-            "--reasoner",
-            self.reasoner,
-            "--state-dir",
-            str(self.state_dir),
-        ]
-        if self.env_file is not None:
-            argv.extend(["--env-file", str(self.env_file)])
-        return argv
+    def to_mapping(self) -> dict[str, object]:
+        return {
+            "version": AUTOSTART_CONFIG_VERSION,
+            "repository": str(self.repository),
+            "state_dir": str(self.state_dir),
+            "interval": self.interval,
+            "output": self.output,
+            "reasoner": self.reasoner,
+            "env_file": str(self.env_file) if self.env_file is not None else None,
+            "python_executable": self.python_executable,
+        }
 
-    def task_action_command(self) -> str:
-        return subprocess.list2cmdline(self.task_action_argv())
+    @classmethod
+    def from_mapping(cls, data: Mapping[str, Any]) -> "AutostartConfig":
+        if data.get("version") != AUTOSTART_CONFIG_VERSION:
+            raise ValueError("unsupported autostart config version")
+        repository = data.get("repository")
+        state_dir = data.get("state_dir")
+        interval = data.get("interval", 2.0)
+        output = data.get("output", "windows")
+        reasoner = data.get("reasoner", "model")
+        env_file = data.get("env_file")
+        python_executable = data.get("python_executable")
+        if not isinstance(repository, str) or not repository.strip():
+            raise ValueError("autostart config requires repository")
+        if not isinstance(state_dir, str) or not state_dir.strip():
+            raise ValueError("autostart config requires state_dir")
+        if not isinstance(output, str) or not isinstance(reasoner, str):
+            raise ValueError("autostart config requires string output/reasoner")
+        if env_file is not None and not isinstance(env_file, str):
+            raise ValueError("autostart config env_file must be a string or null")
+        if not isinstance(python_executable, str) or not python_executable.strip():
+            raise ValueError("autostart config requires python_executable")
+        return cls(
+            repository=Path(repository),
+            state_dir=Path(state_dir),
+            interval=float(interval),
+            output=output,
+            reasoner=reasoner,
+            env_file=Path(env_file) if env_file else None,
+            python_executable=python_executable,
+        )
 
 
-def _default_runner(argv: list[str]) -> CommandResult:
+RegistrationReader = Callable[[], str | None]
+RegistrationWriter = Callable[[str], None]
+RegistrationDeleter = Callable[[], bool]
+ConfigLauncher = Callable[[AutostartConfig], None]
+
+
+def default_autostart_config_path(
+    environment: Mapping[str, str] | None = None,
+) -> Path:
+    env = os.environ if environment is None else environment
+    local_app_data = env.get("LOCALAPPDATA", "").strip()
+    if local_app_data:
+        return Path(local_app_data) / "Hikari" / "autostart.json"
+    return Path.home() / ".hikari" / "autostart.json"
+
+
+def _default_registration_reader() -> str | None:
     if os.name != "nt":
         raise WindowsAutostartUnavailable(
             "Windows login autostart is only available on Windows"
         )
 
-    completed = subprocess.run(
-        argv,
-        check=False,
-        capture_output=True,
-        text=True,
-        shell=False,
-        creationflags=int(getattr(subprocess, "CREATE_NO_WINDOW", 0)),
+    import winreg
+
+    try:
+        with winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER,
+            RUN_KEY_PATH,
+            0,
+            winreg.KEY_QUERY_VALUE,
+        ) as key:
+            value, value_type = winreg.QueryValueEx(key, RUN_VALUE_NAME)
+    except FileNotFoundError:
+        return None
+    if value_type != winreg.REG_SZ or not isinstance(value, str):
+        return None
+    return value
+
+
+def _default_registration_writer(command: str) -> None:
+    if os.name != "nt":
+        raise WindowsAutostartUnavailable(
+            "Windows login autostart is only available on Windows"
+        )
+
+    import winreg
+
+    with winreg.CreateKeyEx(
+        winreg.HKEY_CURRENT_USER,
+        RUN_KEY_PATH,
+        0,
+        winreg.KEY_SET_VALUE,
+    ) as key:
+        winreg.SetValueEx(key, RUN_VALUE_NAME, 0, winreg.REG_SZ, command)
+
+
+def _default_registration_deleter() -> bool:
+    if os.name != "nt":
+        raise WindowsAutostartUnavailable(
+            "Windows login autostart is only available on Windows"
+        )
+
+    import winreg
+
+    try:
+        with winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER,
+            RUN_KEY_PATH,
+            0,
+            winreg.KEY_SET_VALUE,
+        ) as key:
+            winreg.DeleteValue(key, RUN_VALUE_NAME)
+    except FileNotFoundError:
+        return False
+    return True
+
+
+def _launch_config(config: AutostartConfig) -> None:
+    host_config = ResidentHostConfig(
+        repository=config.repository,
+        memory_path=config.state_dir / "memory.db",
+        state_dir=config.state_dir,
+        interval=config.interval,
+        output=config.output,
+        reasoner=config.reasoner,
+        env_file=config.env_file,
     )
-    return CommandResult(
-        returncode=int(completed.returncode),
-        stdout=completed.stdout or "",
-        stderr=completed.stderr or "",
-    )
+    WindowsResidentHost(
+        host_config,
+        python_executable=config.python_executable,
+    ).start()
 
 
 class WindowsLoginAutostart:
-    """Explicit, reversible user-logon registration through Task Scheduler."""
+    """Explicit, reversible current-user login registration through HKCU Run.
+
+    Task Scheduler creation is not a reliable standard-user boundary on modern
+    Windows: local task registration can require administrator permission even
+    when the task itself is configured for limited privileges. HKCU Run is the
+    native per-user logon boundary we need here: it requires no elevation, runs
+    only after this user signs in, and is independently removable.
+    """
 
     def __init__(
         self,
         *,
-        runner: CommandRunner | None = None,
-        task_name: str = TASK_NAME,
+        config_path: str | Path | None = None,
+        registration_reader: RegistrationReader | None = None,
+        registration_writer: RegistrationWriter | None = None,
+        registration_deleter: RegistrationDeleter | None = None,
+        launcher: ConfigLauncher | None = None,
     ) -> None:
-        task_name = task_name.strip()
-        if not task_name:
-            raise ValueError("task_name must not be empty")
-        self.task_name = task_name
-        self._runner = runner or _default_runner
+        self.config_path = (
+            Path(config_path).expanduser().resolve()
+            if config_path is not None
+            else default_autostart_config_path().resolve()
+        )
+        self._registration_reader = registration_reader or _default_registration_reader
+        self._registration_writer = registration_writer or _default_registration_writer
+        self._registration_deleter = registration_deleter or _default_registration_deleter
+        self._launcher = launcher or _launch_config
+
+    def registration_command(self, config: AutostartConfig) -> str:
+        argv = [
+            config.windowless_python,
+            "-m",
+            "resident.windows_autostart",
+            "launch",
+            "--config",
+            str(self.config_path),
+        ]
+        return subprocess.list2cmdline(argv)
 
     def status(self) -> bool:
-        result = self._runner(
-            ["schtasks.exe", "/Query", "/TN", self.task_name]
-        )
-        return result.returncode == 0
+        value = self._registration_reader()
+        return bool(value and self.config_path.is_file())
 
     def install(self, config: AutostartConfig) -> None:
         runtime_environment = load_runtime_environment(
@@ -159,48 +268,47 @@ class WindowsLoginAutostart:
             environment=runtime_environment.values,
         )
 
-        result = self._runner(
-            [
-                "schtasks.exe",
-                "/Create",
-                "/TN",
-                self.task_name,
-                "/TR",
-                config.task_action_command(),
-                "/SC",
-                "ONLOGON",
-                "/RL",
-                "LIMITED",
-                "/IT",
-                "/F",
-            ]
-        )
-        if result.returncode != 0:
-            raise RuntimeError(self._format_failure("register", result))
+        self._write_config(config)
+        try:
+            self._registration_writer(self.registration_command(config))
+        except Exception:
+            self._remove_config()
+            raise
 
     def run_now(self) -> None:
-        result = self._runner(
-            ["schtasks.exe", "/Run", "/TN", self.task_name]
-        )
-        if result.returncode != 0:
-            raise RuntimeError(self._format_failure("run", result))
+        config = self._read_config()
+        if config is None:
+            raise RuntimeError("Hikari autostart config is missing or invalid")
+        self._launcher(config)
 
     def uninstall(self) -> bool:
-        if not self.status():
-            return False
-        result = self._runner(
-            ["schtasks.exe", "/Delete", "/TN", self.task_name, "/F"]
-        )
-        if result.returncode != 0:
-            raise RuntimeError(self._format_failure("delete", result))
-        return True
+        removed = self._registration_deleter()
+        self._remove_config()
+        return removed
 
-    @staticmethod
-    def _format_failure(operation: str, result: CommandResult) -> str:
-        detail = (result.stderr or result.stdout).strip()
-        if detail:
-            return f"Task Scheduler {operation} failed: {detail}"
-        return f"Task Scheduler {operation} failed with exit code {result.returncode}"
+    def _read_config(self) -> AutostartConfig | None:
+        if not self.config_path.is_file():
+            return None
+        try:
+            data = json.loads(self.config_path.read_text(encoding="utf-8"))
+            if not isinstance(data, dict):
+                raise ValueError("autostart config must be an object")
+            return AutostartConfig.from_mapping(data)
+        except (OSError, json.JSONDecodeError, TypeError, ValueError):
+            return None
+
+    def _write_config(self, config: AutostartConfig) -> None:
+        self.config_path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = self.config_path.with_suffix(".tmp")
+        payload = json.dumps(config.to_mapping(), ensure_ascii=False, indent=2)
+        temporary.write_text(payload + "\n", encoding="utf-8", newline="\n")
+        temporary.replace(self.config_path)
+
+    def _remove_config(self) -> None:
+        try:
+            self.config_path.unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -219,8 +327,11 @@ def build_parser() -> argparse.ArgumentParser:
     install.add_argument("--state-dir", default=None)
 
     subparsers.add_parser("status", help="查看登录自启动是否已注册")
-    subparsers.add_parser("run-now", help="立即触发一次已注册的任务")
+    subparsers.add_parser("run-now", help="立即按已保存配置启动一次")
     subparsers.add_parser("uninstall", help="移除登录自启动")
+
+    launch = subparsers.add_parser("launch", help=argparse.SUPPRESS)
+    launch.add_argument("--config", required=True)
     return parser
 
 
@@ -230,8 +341,24 @@ def _state_dir(value: str | None) -> Path:
     return default_state_dir().resolve()
 
 
+def _launch_from_path(path: str | Path) -> int:
+    autostart = WindowsLoginAutostart(config_path=path)
+    config = autostart._read_config()
+    if config is None:
+        return 2
+    try:
+        autostart._launcher(config)
+    except (ValueError, RuntimeError, WindowsAutostartUnavailable):
+        return 2
+    return 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+
+    if args.command == "launch":
+        return _launch_from_path(args.config)
+
     autostart = WindowsLoginAutostart()
 
     try:
@@ -260,7 +387,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 print("Hikari 登录自启动尚未注册。")
                 return 1
             autostart.run_now()
-            print("已请求 Task Scheduler 启动 Hikari。")
+            print("已按登录自启动配置请求 Hikari 启动。")
             return 0
 
         removed = autostart.uninstall()
@@ -269,7 +396,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         else:
             print("Hikari 登录自启动原本就未注册。")
         return 0
-    except (ValueError, RuntimeError, WindowsAutostartUnavailable) as exc:
+    except (OSError, ValueError, RuntimeError, WindowsAutostartUnavailable) as exc:
         print(f"Hikari 登录自启动操作失败：{exc}")
         return 2
 
