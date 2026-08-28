@@ -22,7 +22,7 @@ def test_default_personality_profile_loads_deterministically():
 def test_default_voice_profile_loads_with_non_service_chat_defaults():
     voice = load_voice()
 
-    assert voice.version == "0.1.3"
+    assert voice.version == "0.1.4"
     assert voice.stance["relation"] == "familiar"
     assert voice.stance["service_posture"] is False
     assert voice.stance["naturalness_source"] == "situated_selectivity"
@@ -40,7 +40,10 @@ def test_default_voice_profile_loads_with_non_service_chat_defaults():
     assert any("fake stutters" in item for item in voice.avoid)
     assert any("abstract lectures" in item for item in voice.avoid)
     assert any("验收" in item for item in voice.avoid)
+    assert any("pasted transcripts" in item for item in voice.avoid)
+    assert any("成长日记" in item for item in voice.avoid)
     assert any("今天折腾我这么久" in item for item in voice.habits)
+    assert any("something Hikari remembers" in item for item in voice.habits)
 
 
 def test_missing_trait_is_rejected():
