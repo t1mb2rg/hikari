@@ -7,7 +7,6 @@ from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
-import signal
 import subprocess
 import sys
 from typing import Any
@@ -146,15 +145,67 @@ def _default_launcher(
 
 
 def _default_process_probe(pid: int) -> bool:
-    try:
-        os.kill(pid, 0)
-    except (OSError, ProcessLookupError):
+    """Check a Windows PID without sending it any signal.
+
+    `os.kill(pid, 0)` is a normal liveness probe on POSIX, but Windows maps
+    non-console `os.kill` signals to TerminateProcess. Use a waitable process
+    handle instead so asking for status can never kill the resident.
+    """
+
+    if os.name != "nt":
+        raise WindowsResidentHostUnavailable(
+            "resident process probing is only available on Windows"
+        )
+
+    import ctypes
+    from ctypes import wintypes
+
+    synchronize = 0x00100000
+    wait_timeout = 0x00000102
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    kernel32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+    kernel32.WaitForSingleObject.restype = wintypes.DWORD
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+
+    handle = kernel32.OpenProcess(synchronize, False, pid)
+    if not handle:
         return False
-    return True
+    try:
+        return int(kernel32.WaitForSingleObject(handle, 0)) == wait_timeout
+    finally:
+        kernel32.CloseHandle(handle)
 
 
 def _default_terminator(pid: int) -> None:
-    os.kill(pid, signal.SIGTERM)
+    if os.name != "nt":
+        raise WindowsResidentHostUnavailable(
+            "resident process termination is only available on Windows"
+        )
+
+    import ctypes
+    from ctypes import wintypes
+
+    process_terminate = 0x0001
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    kernel32.TerminateProcess.argtypes = [wintypes.HANDLE, wintypes.UINT]
+    kernel32.TerminateProcess.restype = wintypes.BOOL
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+
+    handle = kernel32.OpenProcess(process_terminate, False, pid)
+    if not handle:
+        raise ProcessLookupError(pid)
+    try:
+        if not kernel32.TerminateProcess(handle, 0):
+            error = ctypes.get_last_error()
+            raise OSError(error, f"failed to terminate resident process {pid}")
+    finally:
+        kernel32.CloseHandle(handle)
 
 
 class WindowsResidentHost:
