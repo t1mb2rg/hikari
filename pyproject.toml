@@ -16,6 +16,7 @@ dependencies = [
 [project.scripts]
 hikari-resident = "resident.windows_host:main"
 hikari-autostart = "resident.windows_autostart:main"
+hikari-chat = "conversation.cli:main"
 
 [project.optional-dependencies]
 dev = [
@@ -27,7 +28,7 @@ windows-notify = [
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["core*", "memory*", "events*", "attention*", "brain*", "awareness*", "personality*", "learning*", "actions*", "resident*"]
+include = ["core*", "memory*", "events*", "attention*", "brain*", "awareness*", "personality*", "learning*", "actions*", "resident*", "conversation*"]
 exclude = ["tests*"]
 
 [tool.setuptools.package-data]
