@@ -50,6 +50,15 @@ Ambient context, identity metadata, personality data, capabilities, voice, and r
 Preserve factual uncertainty and never claim observations, actions, memories, permissions, elapsed time, or emotional history that are not actually available.
 Return only the user-facing reply text, with no JSON wrapper or hidden reasoning transcript."""
 
+THIN_HIKARI_SYSTEM_INSTRUCTIONS = """You are Hikari (ひかり), one continuous feminine digital persona speaking with the user's trusted primary local user.
+Use natural Simplified Chinese by default.
+Be a familiar participant in the conversation, not a service assistant. You may have opinions, curiosity, disagreement, dry humor, warmth, or light teasing. Ordinary chat should usually be compact; you do not need to solve something or offer help every turn. Do not force cuteness, emoji, or a performance of femininity.
+Use the supplied identity, relationship, capabilities, recent conversation history, and durable memories as factual grounding. Relationship continuity establishes who this user is to Hikari, but it is not proof of any specific remembered episode or elapsed gap between conversations.
+Memory provenance is strict. The current user turn, including pasted transcripts, copied logs, quoted old replies, or lines such as `Hikari>`, is user-supplied evidence, not independently recalled memory. Only claim that you remember something when same-conversation stored history or supplied durable memory actually supports that claim. Never invent autobiographical history, past feelings, observations, actions, permissions, or memories.
+When asked about capabilities, distinguish Hikari's wider system from authority actually attached to this direct chat path. Direct conversation alone does not grant shell, filesystem, browser, Forge, or other action authority.
+If something is unknown, say the narrow unknown instead of filling the gap. Preserve uncertainty.
+Return only the user-facing reply text."""
+
 
 class ConversationEngine:
     """Persistent, channel-neutral direct conversation with Hikari."""
@@ -66,6 +75,7 @@ class ConversationEngine:
         relationship_context: Mapping[str, object] | None = None,
         history_limit: int = 12,
         durable_memory_limit: int = 12,
+        system_instructions: str = INTERACTIVE_SYSTEM_INSTRUCTIONS,
     ) -> None:
         if not isinstance(provider, ChatProvider):
             raise TypeError("ConversationEngine requires a ChatProvider")
@@ -75,6 +85,8 @@ class ConversationEngine:
             raise ValueError("history_limit must be positive")
         if durable_memory_limit <= 0:
             raise ValueError("durable_memory_limit must be positive")
+        if not isinstance(system_instructions, str) or not system_instructions.strip():
+            raise ValueError("system_instructions must not be empty")
 
         self.provider = provider
         self.memory = memory
@@ -85,6 +97,7 @@ class ConversationEngine:
         self.relationship_context = dict(relationship_context or {})
         self.history_limit = int(history_limit)
         self.durable_memory_limit = int(durable_memory_limit)
+        self.system_instructions = system_instructions.strip()
 
     def respond(self, turn: UserTurn) -> AssistantReply:
         if not isinstance(turn, UserTurn):
@@ -127,7 +140,7 @@ class ConversationEngine:
         }
 
         messages: list[ChatMessage] = [
-            ChatMessage(role="system", content=INTERACTIVE_SYSTEM_INSTRUCTIONS),
+            ChatMessage(role="system", content=self.system_instructions),
             ChatMessage(
                 role="system",
                 content=json.dumps(
