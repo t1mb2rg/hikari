@@ -23,6 +23,9 @@ from .engine import ConversationEngine
 from .models import UserTurn
 
 
+DEFAULT_CHAT_TEMPERATURE = 0.65
+
+
 def build_chat_provider(environment: Mapping[str, str]) -> ChatProvider:
     base_url = environment.get("HIKARI_MODEL_BASE_URL", "").strip()
     model = environment.get("HIKARI_MODEL_NAME", "").strip()
@@ -39,10 +42,22 @@ def build_chat_provider(environment: Mapping[str, str]) -> ChatProvider:
             + ", ".join(missing)
         )
 
+    temperature_text = environment.get(
+        "HIKARI_CHAT_TEMPERATURE",
+        str(DEFAULT_CHAT_TEMPERATURE),
+    ).strip()
+    try:
+        temperature = float(temperature_text)
+    except ValueError as exc:
+        raise ValueError("HIKARI_CHAT_TEMPERATURE must be numeric") from exc
+    if not 0.0 <= temperature <= 2.0:
+        raise ValueError("HIKARI_CHAT_TEMPERATURE must be between 0.0 and 2.0")
+
     return OpenAICompatibleProvider(
         base_url=base_url,
         model=model,
         api_key=api_key,
+        temperature=temperature,
     )
 
 
