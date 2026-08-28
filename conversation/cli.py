@@ -87,6 +87,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             MemoryStore(memory_path),
             context_collector=default_context_collector(),
             personality_profile=load_personality(),
+            relationship_context={
+                "kind": "primary_local_user",
+                "continuity": (
+                    "This local CLI is an explicit trusted conversation with "
+                    "Hikari's primary local user. The user's legal name or other "
+                    "personal details are unknown unless durable memory supplies them."
+                ),
+            },
             history_limit=args.history_limit,
         )
     except ValueError as exc:
