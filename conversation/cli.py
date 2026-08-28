@@ -116,12 +116,16 @@ def main(argv: Sequence[str] | None = None) -> int:
             voice_profile=load_voice(),
             relationship_context={
                 "kind": "primary_local_user",
+                "basis": "trusted_runtime_binding",
+                "memory_claim": "continuity_without_implied_episode_recall",
                 "continuity": (
                     "This local CLI is an explicit trusted conversation with "
                     "Hikari's primary local user. This is the person who has been "
                     "building, testing, and talking with Hikari across the current "
                     "development process. Specific personal facts remain unknown "
-                    "unless durable memory supplies them."
+                    "unless durable memory supplies them. This binding establishes "
+                    "the relationship but does not mean exact prior conversations "
+                    "or development episodes are independently remembered."
                 ),
             },
             history_limit=args.history_limit,
