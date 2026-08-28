@@ -6,8 +6,8 @@ import pytest
 
 from resident.windows_autostart import (
     AutostartConfig,
-    CommandResult,
-    TASK_NAME,
+    RUN_KEY_PATH,
+    RUN_VALUE_NAME,
     WindowsLoginAutostart,
 )
 
@@ -28,7 +28,22 @@ def _python_pair(tmp_path: Path) -> tuple[Path, Path]:
     return python, pythonw
 
 
-def test_install_registers_current_user_logon_task_without_secret_in_action(tmp_path: Path):
+def _registry_fakes():
+    state: dict[str, str] = {}
+
+    def reader() -> str | None:
+        return state.get("value")
+
+    def writer(command: str) -> None:
+        state["value"] = command
+
+    def deleter() -> bool:
+        return state.pop("value", None) is not None
+
+    return state, reader, writer, deleter
+
+
+def test_install_registers_current_user_run_value_without_secret(tmp_path: Path):
     repository = _repo(tmp_path)
     python, pythonw = _python_pair(tmp_path)
     env_file = tmp_path / ".env"
@@ -39,11 +54,8 @@ def test_install_registers_current_user_logon_task_without_secret_in_action(tmp_
         f"HIKARI_MODEL_API_KEY={secret}\n",
         encoding="utf-8",
     )
-    commands: list[list[str]] = []
-
-    def runner(argv: list[str]) -> CommandResult:
-        commands.append(list(argv))
-        return CommandResult(0)
+    state, reader, writer, deleter = _registry_fakes()
+    config_path = tmp_path / "local" / "autostart.json"
 
     config = AutostartConfig(
         repository=repository,
@@ -54,24 +66,31 @@ def test_install_registers_current_user_logon_task_without_secret_in_action(tmp_
         env_file=env_file,
         python_executable=str(python),
     )
-    WindowsLoginAutostart(runner=runner).install(config)
+    autostart = WindowsLoginAutostart(
+        config_path=config_path,
+        registration_reader=reader,
+        registration_writer=writer,
+        registration_deleter=deleter,
+    )
+    autostart.install(config)
 
-    assert len(commands) == 1
-    command = commands[0]
-    assert command[:4] == ["schtasks.exe", "/Create", "/TN", TASK_NAME]
-    assert command[command.index("/SC") + 1] == "ONLOGON"
-    assert command[command.index("/RL") + 1] == "LIMITED"
-    assert "/IT" in command
-    assert "/F" in command
+    command = state["value"]
+    assert str(pythonw) in command
+    assert "resident.windows_autostart" in command
+    assert "launch" in command
+    assert str(config_path.resolve()) in command
+    assert secret not in command
 
-    action = command[command.index("/TR") + 1]
-    assert str(pythonw) in action
-    assert "resident.windows_host" in action
-    assert "start" in action
-    assert str(repository.resolve()) in action
-    assert str(env_file.resolve()) in action
-    assert secret not in action
-    assert secret not in " ".join(command)
+    persisted = config_path.read_text(encoding="utf-8")
+    assert str(repository.resolve()) in persisted
+    assert str(env_file.resolve()) in persisted
+    assert secret not in persisted
+    assert autostart.status() is True
+
+
+def test_registry_boundary_is_current_user_run_key():
+    assert RUN_KEY_PATH == r"Software\Microsoft\Windows\CurrentVersion\Run"
+    assert RUN_VALUE_NAME == "Hikari Resident"
 
 
 def test_model_autostart_requires_explicit_env_file(tmp_path: Path):
@@ -83,82 +102,110 @@ def test_model_autostart_requires_explicit_env_file(tmp_path: Path):
         )
 
 
-def test_reinstall_is_idempotent_by_forcing_only_hikari_task(tmp_path: Path):
+def test_reinstall_is_idempotent_and_replaces_only_hikari_value(tmp_path: Path):
     repository = _repo(tmp_path)
-    commands: list[list[str]] = []
+    writes: list[str] = []
+    state, reader, _, deleter = _registry_fakes()
 
-    def runner(argv: list[str]) -> CommandResult:
-        commands.append(list(argv))
-        return CommandResult(0)
+    def writer(command: str) -> None:
+        writes.append(command)
+        state["value"] = command
 
     config = AutostartConfig(
         repository=repository,
         state_dir=tmp_path / "state",
         reasoner="simple",
     )
-    autostart = WindowsLoginAutostart(runner=runner)
+    autostart = WindowsLoginAutostart(
+        config_path=tmp_path / "autostart.json",
+        registration_reader=reader,
+        registration_writer=writer,
+        registration_deleter=deleter,
+    )
     autostart.install(config)
     autostart.install(config)
 
-    assert len(commands) == 2
-    assert all(command[command.index("/TN") + 1] == TASK_NAME for command in commands)
-    assert all("/F" in command for command in commands)
-
-
-def test_status_distinguishes_registered_and_unregistered():
-    results = iter([CommandResult(0), CommandResult(1)])
-    commands: list[list[str]] = []
-
-    def runner(argv: list[str]) -> CommandResult:
-        commands.append(list(argv))
-        return next(results)
-
-    autostart = WindowsLoginAutostart(runner=runner)
-
+    assert len(writes) == 2
+    assert writes[0] == writes[1]
     assert autostart.status() is True
+
+
+def test_status_requires_registration_and_config(tmp_path: Path):
+    state, reader, writer, deleter = _registry_fakes()
+    config_path = tmp_path / "autostart.json"
+    autostart = WindowsLoginAutostart(
+        config_path=config_path,
+        registration_reader=reader,
+        registration_writer=writer,
+        registration_deleter=deleter,
+    )
+
     assert autostart.status() is False
-    assert commands == [
-        ["schtasks.exe", "/Query", "/TN", TASK_NAME],
-        ["schtasks.exe", "/Query", "/TN", TASK_NAME],
-    ]
+    state["value"] = "registered"
+    assert autostart.status() is False
+    config_path.write_text("{}", encoding="utf-8")
+    assert autostart.status() is True
 
 
-def test_run_now_uses_registered_task_boundary():
-    commands: list[list[str]] = []
+def test_run_now_uses_saved_config_without_shell(tmp_path: Path):
+    repository = _repo(tmp_path)
+    state, reader, writer, deleter = _registry_fakes()
+    launched: list[AutostartConfig] = []
+    config_path = tmp_path / "autostart.json"
+    config = AutostartConfig(
+        repository=repository,
+        state_dir=tmp_path / "state",
+        reasoner="simple",
+    )
+    autostart = WindowsLoginAutostart(
+        config_path=config_path,
+        registration_reader=reader,
+        registration_writer=writer,
+        registration_deleter=deleter,
+        launcher=launched.append,
+    )
+    autostart.install(config)
 
-    def runner(argv: list[str]) -> CommandResult:
-        commands.append(list(argv))
-        return CommandResult(0)
+    autostart.run_now()
 
-    WindowsLoginAutostart(runner=runner).run_now()
-
-    assert commands == [["schtasks.exe", "/Run", "/TN", TASK_NAME]]
+    assert len(launched) == 1
+    assert launched[0].repository == repository.resolve()
+    assert launched[0].reasoner == "simple"
 
 
-def test_uninstall_removes_only_hikari_task_when_registered():
-    commands: list[list[str]] = []
+def test_uninstall_removes_registration_and_local_config(tmp_path: Path):
+    repository = _repo(tmp_path)
+    state, reader, writer, deleter = _registry_fakes()
+    config_path = tmp_path / "autostart.json"
+    config = AutostartConfig(
+        repository=repository,
+        state_dir=tmp_path / "state",
+        reasoner="simple",
+    )
+    autostart = WindowsLoginAutostart(
+        config_path=config_path,
+        registration_reader=reader,
+        registration_writer=writer,
+        registration_deleter=deleter,
+    )
+    autostart.install(config)
 
-    def runner(argv: list[str]) -> CommandResult:
-        commands.append(list(argv))
-        return CommandResult(0)
-
-    removed = WindowsLoginAutostart(runner=runner).uninstall()
+    removed = autostart.uninstall()
 
     assert removed is True
-    assert commands == [
-        ["schtasks.exe", "/Query", "/TN", TASK_NAME],
-        ["schtasks.exe", "/Delete", "/TN", TASK_NAME, "/F"],
-    ]
+    assert "value" not in state
+    assert not config_path.exists()
+    assert autostart.status() is False
 
 
-def test_uninstall_is_noop_when_task_is_absent():
-    commands: list[list[str]] = []
+def test_uninstall_is_noop_when_registration_is_absent(tmp_path: Path):
+    state, reader, writer, deleter = _registry_fakes()
+    autostart = WindowsLoginAutostart(
+        config_path=tmp_path / "autostart.json",
+        registration_reader=reader,
+        registration_writer=writer,
+        registration_deleter=deleter,
+    )
 
-    def runner(argv: list[str]) -> CommandResult:
-        commands.append(list(argv))
-        return CommandResult(1)
-
-    removed = WindowsLoginAutostart(runner=runner).uninstall()
-
-    assert removed is False
-    assert commands == [["schtasks.exe", "/Query", "/TN", TASK_NAME]]
+    assert autostart.uninstall() is False
+    assert state == {}
