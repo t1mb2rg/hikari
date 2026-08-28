@@ -108,8 +108,6 @@ class ResidentPresenceRuntime:
         for sensor in self._sensors:
             if not isinstance(sensor, Sensor):
                 raise TypeError("ResidentPresenceRuntime accepts only Sensor implementations")
-        if not isinstance(self.pipeline, PresencePipeline):
-            raise TypeError("ResidentPresenceRuntime requires a PresencePipeline")
 
     def initialize(self) -> HikariIdentity:
         """Load stable identity without starting observation yet."""
