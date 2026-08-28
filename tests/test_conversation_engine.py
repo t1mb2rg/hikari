@@ -10,7 +10,7 @@ from brain.model_reasoner import ChatMessage
 from conversation import ConversationEngine, ConversationGateway, UserTurn
 from memory.models import MemoryKind
 from memory.store import MemoryStore
-from personality import PersonalityProfile
+from personality import PersonalityProfile, load_voice
 
 
 class FakeProvider:
@@ -56,6 +56,7 @@ def _engine(
         MemoryStore(path),
         context_collector=ContextCollector([StaticContextProvider()]),
         personality_profile=_personality(),
+        voice_profile=load_voice(),
         relationship_context={
             "kind": "primary_local_user",
             "continuity": "trusted local continuity",
@@ -120,7 +121,7 @@ def test_history_is_isolated_by_channel_and_conversation(tmp_path: Path):
     assert "只属于B" in serialized
 
 
-def test_prompt_attaches_identity_relationship_capabilities_personality_and_context(
+def test_prompt_attaches_identity_relationship_capabilities_personality_voice_and_context(
     tmp_path: Path,
 ):
     provider = FakeProvider(["好"])
@@ -139,9 +140,12 @@ def test_prompt_attaches_identity_relationship_capabilities_personality_and_cont
         "idle": False,
     }
     assert metadata["personality"]["traits"]["curiosity"] == 0.9
-    assert "generic customer-service chatbot" in system
-    assert "Do not repeatedly narrate ambient desktop context" in system
+    assert metadata["voice"]["stance"]["relation"] == "familiar"
+    assert metadata["voice"]["cadence"]["headings_in_casual_chat"] is False
+    assert "customer-service chatbot" in system
+    assert "Do not narrate ambient desktop context" in system
     assert "Never claim that every conversation starts from scratch" in system
+    assert "Do not end most replies with a question" in system
 
 
 def test_prompt_attaches_bounded_durable_user_and_relationship_memory(tmp_path: Path):
