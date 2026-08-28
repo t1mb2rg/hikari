@@ -10,6 +10,7 @@ class HikariIdentity:
         self.name = data.get("name")
         self.name_japanese = data.get("name_japanese")
         self.version = data.get("version")
+        self.presentation = dict(data.get("presentation", {}))
         self.purpose = data.get("purpose", [])
         self.principles = data.get("principles", [])
 
@@ -18,6 +19,7 @@ class HikariIdentity:
             "name": self.name,
             "name_japanese": self.name_japanese,
             "version": self.version,
+            "presentation": dict(self.presentation),
             "purpose": self.purpose,
             "principles": self.principles,
         }
