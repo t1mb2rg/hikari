@@ -12,6 +12,7 @@ import sys
 from typing import Any
 
 from .app import build_reasoner
+from .environment import load_runtime_environment
 
 
 class WindowsResidentHostUnavailable(RuntimeError):
@@ -28,11 +29,17 @@ class ResidentHostConfig:
     interval: float = 2.0
     output: str = "windows"
     reasoner: str = "model"
+    env_file: Path | None = None
 
     def __post_init__(self) -> None:
         repository = Path(self.repository).expanduser().resolve()
         memory_path = Path(self.memory_path).expanduser().resolve()
         state_dir = Path(self.state_dir).expanduser().resolve()
+        env_file = (
+            Path(self.env_file).expanduser().resolve()
+            if self.env_file is not None
+            else None
+        )
         interval = float(self.interval)
 
         if not repository.is_dir():
@@ -47,6 +54,7 @@ class ResidentHostConfig:
         object.__setattr__(self, "repository", repository)
         object.__setattr__(self, "memory_path", memory_path)
         object.__setattr__(self, "state_dir", state_dir)
+        object.__setattr__(self, "env_file", env_file)
         object.__setattr__(self, "interval", interval)
 
     @property
@@ -145,12 +153,7 @@ def _default_launcher(
 
 
 def _default_process_probe(pid: int) -> bool:
-    """Check a Windows PID without sending it any signal.
-
-    `os.kill(pid, 0)` is a normal liveness probe on POSIX, but Windows maps
-    non-console `os.kill` signals to TerminateProcess. Use a waitable process
-    handle instead so asking for status can never kill the resident.
-    """
+    """Check a Windows PID without sending it any signal."""
 
     if os.name != "nt":
         raise WindowsResidentHostUnavailable(
@@ -209,12 +212,7 @@ def _default_terminator(pid: int) -> None:
 
 
 class WindowsResidentHost:
-    """Own only the Windows process lifecycle around Hikari's resident app.
-
-    Cognition, Presence, memory, notification, and action authority remain in
-    their existing layers. This host only launches one trusted child argv,
-    records minimal local process state, and later probes/stops that PID.
-    """
+    """Own only the Windows process lifecycle around Hikari's resident app."""
 
     def __init__(
         self,
@@ -240,7 +238,7 @@ class WindowsResidentHost:
     def child_argv(self) -> list[str]:
         """Build the exact shell-free argv used for the background resident."""
 
-        return [
+        argv = [
             self.python_executable,
             "-m",
             "resident.app",
@@ -254,6 +252,9 @@ class WindowsResidentHost:
             "--reasoner",
             self.config.reasoner,
         ]
+        if self.config.env_file is not None:
+            argv.extend(["--env-file", str(self.config.env_file)])
+        return argv
 
     def status(self) -> HostStatus:
         state = self._read_state()
@@ -271,16 +272,21 @@ class WindowsResidentHost:
         if current.running:
             return HostStartResult(started=False, status=current)
 
-        # Validate model-mode runtime configuration before detaching. This does
-        # not perform a network call and never persists credentials.
-        build_reasoner(self.config.reasoner, environment=self.environment)
+        runtime_environment = load_runtime_environment(
+            env_file=self.config.env_file,
+            environment=self.environment,
+        )
+        build_reasoner(
+            self.config.reasoner,
+            environment=runtime_environment.values,
+        )
 
         self.config.state_dir.mkdir(parents=True, exist_ok=True)
         pid = self._launcher(
             self.child_argv(),
             self.config.repository,
             self.config.log_file,
-            self.environment,
+            runtime_environment.values,
         )
         if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
             raise RuntimeError("resident launcher returned an invalid pid")
@@ -345,6 +351,14 @@ def _add_state_dir_argument(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def _add_env_file_argument(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--env-file",
+        default=None,
+        help="dotenv 配置文件；当前进程中的同名环境变量优先",
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="hikari-resident",
@@ -359,12 +373,16 @@ def build_parser() -> argparse.ArgumentParser:
     start.add_argument("--output", choices=("console", "windows"), default="windows")
     start.add_argument("--reasoner", choices=("simple", "model"), default="model")
     _add_state_dir_argument(start)
+    _add_env_file_argument(start)
 
     status = subparsers.add_parser("status", help="查看后台状态")
     _add_state_dir_argument(status)
 
     stop = subparsers.add_parser("stop", help="停止后台 Hikari")
     _add_state_dir_argument(stop)
+
+    doctor = subparsers.add_parser("doctor", help="检查 Python/CLI/runtime env，不显示密钥")
+    _add_env_file_argument(doctor)
     return parser
 
 
@@ -387,10 +405,9 @@ def _host_for_cli(args: argparse.Namespace) -> WindowsResidentHost:
             interval=args.interval,
             output=args.output,
             reasoner=args.reasoner,
+            env_file=Path(args.env_file) if args.env_file else None,
         )
     else:
-        # status/stop only need the state location. The repository/memory fields
-        # are inert because no child argv is built for these commands.
         config = ResidentHostConfig(
             repository=Path.cwd(),
             memory_path=state_dir / "memory.db",
@@ -400,8 +417,33 @@ def _host_for_cli(args: argparse.Namespace) -> WindowsResidentHost:
     return WindowsResidentHost(config)
 
 
+def _doctor(env_file: str | None) -> int:
+    try:
+        runtime_environment = load_runtime_environment(env_file=env_file)
+    except ValueError as exc:
+        print(f"Hikari 环境检查失败：{exc}")
+        return 2
+
+    print(f"Python：{Path(sys.executable).resolve()}")
+    print(f"CLI：{Path(sys.argv[0]).resolve()}")
+    if runtime_environment.env_file is None:
+        print("Env：未找到 .env；仅使用当前进程环境")
+    else:
+        print(f"Env：{runtime_environment.env_file}")
+
+    presence = runtime_environment.model_presence()
+    for key in ("HIKARI_MODEL_BASE_URL", "HIKARI_MODEL_NAME", "HIKARI_MODEL_API_KEY"):
+        print(f"{key}：{'已配置' if presence[key] else '未配置'}")
+
+    return 0 if presence["HIKARI_MODEL_BASE_URL"] and presence["HIKARI_MODEL_NAME"] else 1
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+
+    if args.command == "doctor":
+        return _doctor(args.env_file)
+
     host = _host_for_cli(args)
 
     if args.command == "start":
