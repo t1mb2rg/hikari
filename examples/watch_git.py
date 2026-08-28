@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import argparse
+import os
+from collections.abc import Mapping
 from pathlib import Path
 
 from actions import ActionExecutor, ActionFeedbackSink, WindowsToastNotifyAdapter
@@ -13,11 +15,13 @@ from awareness import (
     InputActivityContextProvider,
     TimeContextProvider,
 )
-from brain import SimpleReasoner
+from brain import ModelReasoner, Reasoner, SimpleReasoner
+from brain.providers import OpenAICompatibleProvider
 from core.presence import ConsoleFeedbackSink, FeedbackSink, PresencePipeline
 from core.runtime import ResidentPresenceRuntime
 from events.sensors import GitSensor
 from memory.store import MemoryStore
+from personality import load_personality
 
 
 def _feedback_sink(output: str) -> FeedbackSink:
@@ -28,12 +32,49 @@ def _feedback_sink(output: str) -> FeedbackSink:
     raise ValueError(f"unsupported feedback output: {output}")
 
 
+def build_reasoner(
+    mode: str,
+    *,
+    environment: Mapping[str, str] | None = None,
+) -> Reasoner:
+    """Build the selected cognition path from runtime-only configuration."""
+
+    if mode == "simple":
+        return SimpleReasoner()
+    if mode != "model":
+        raise ValueError(f"unsupported reasoner mode: {mode}")
+
+    env = os.environ if environment is None else environment
+    base_url = env.get("HIKARI_MODEL_BASE_URL", "").strip()
+    model = env.get("HIKARI_MODEL_NAME", "").strip()
+    api_key = env.get("HIKARI_MODEL_API_KEY")
+
+    missing: list[str] = []
+    if not base_url:
+        missing.append("HIKARI_MODEL_BASE_URL")
+    if not model:
+        missing.append("HIKARI_MODEL_NAME")
+    if missing:
+        raise ValueError(
+            "model reasoner requires runtime environment variable(s): "
+            + ", ".join(missing)
+        )
+
+    provider = OpenAICompatibleProvider(
+        base_url=base_url,
+        model=model,
+        api_key=api_key,
+    )
+    return ModelReasoner(provider)
+
+
 def build_runtime(
     repository: Path,
     memory_path: Path,
     *,
     interval: float = 2.0,
     output: str = "console",
+    reasoner: Reasoner | None = None,
 ) -> ResidentPresenceRuntime:
     """Build the concrete Git-backed resident Presence runtime used by this gate."""
 
@@ -43,7 +84,7 @@ def build_runtime(
             threshold=0.7,
             event_importance={"git.commit": 0.8},
         ),
-        reasoner=SimpleReasoner(),
+        reasoner=reasoner or SimpleReasoner(),
         feedback_sink=_feedback_sink(output),
         context_collector=ContextCollector(
             [
@@ -54,6 +95,7 @@ def build_runtime(
                 ForegroundContextProvider(),
             ]
         ),
+        personality_profile=load_personality(),
     )
     return ResidentPresenceRuntime(
         [GitSensor(repository)],
@@ -89,19 +131,32 @@ def main() -> None:
         default="console",
         help="proactive feedback channel (default: console)",
     )
+    parser.add_argument(
+        "--reasoner",
+        choices=("simple", "model"),
+        default="simple",
+        help="cognition mode; model uses HIKARI_MODEL_* runtime variables",
+    )
     args = parser.parse_args()
 
     repository = Path(args.repository).resolve()
     memory_path = Path(args.db).resolve()
+    try:
+        reasoner = build_reasoner(args.reasoner)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
+
     runtime = build_runtime(
         repository,
         memory_path,
         interval=args.interval,
         output=args.output,
+        reasoner=reasoner,
     )
 
-    print(f"Hikari is watching {repository}")
-    print(f"Hikari feedback output: {args.output}")
+    print(f"Hikari 正在观察：{repository}")
+    print(f"Hikari 主动反馈通道：{args.output}")
+    print(f"Hikari 认知模式：{args.reasoner}")
     runtime.run_forever()
 
 
