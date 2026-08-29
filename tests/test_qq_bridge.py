@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from pathlib import Path
+import subprocess
+import sys
 
 import pytest
 
@@ -174,3 +177,32 @@ def test_runtime_delivers_each_onebot_message_once(tmp_path: Path):
     assert bot.sent[0]["user_id"] == 7
     assert bot.sent[0]["message"] == "在呢。"
     assert bot.sent[0]["auto_escape"] is True
+
+
+def test_standalone_cli_check_assembles_nonebot_runtime(tmp_path: Path):
+    repository = Path(__file__).resolve().parents[1]
+    environment = os.environ.copy()
+    environment["HIKARI_ONEBOT_ALLOWED_USER_IDS"] = "7"
+    environment["HIKARI_ONEBOT_HOST"] = "127.0.0.1"
+    environment["HIKARI_ONEBOT_PORT"] = "18081"
+    environment["HIKARI_CONVERSATION_URL"] = "ws://127.0.0.1:18765"
+    environment["XDG_STATE_HOME"] = str(tmp_path / "state")
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "integrations.qq_bridge.app",
+            "--check",
+        ],
+        cwd=repository,
+        env=environment,
+        capture_output=True,
+        text=True,
+        timeout=20,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "Hikari QQ Bridge check：PASS" in result.stdout
+    assert "ws://127.0.0.1:18081/onebot/v11/ws" in result.stdout
