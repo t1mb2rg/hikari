@@ -68,9 +68,9 @@ class QQBridgeConfig:
             raise ValueError("HIKARI_CONVERSATION_URL must use ws:// or wss://")
         if not self.adapter_id.strip():
             raise ValueError("adapter_id must not be empty")
-        if not _is_loopback(host) and not self.onebot_access_token:
+        if not _is_loopback(host):
             raise ValueError(
-                "HIKARI_ONEBOT_ACCESS_TOKEN is required when the OneBot listener is not loopback"
+                "M6-08D OneBot listener is loopback-only; keep NapCat and hikari-qq on the same host"
             )
         if self.link_timeout_seconds <= 0 or self.link_check_seconds <= 0:
             raise ValueError("link monitor intervals must be > 0")
