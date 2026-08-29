@@ -4,7 +4,8 @@ from dataclasses import dataclass
 
 import pytest
 
-from core.runtime import ResidentPresenceRuntime, SensorFailure
+from brain.model_reasoner import ModelCognitionError
+from core.runtime import CognitionFailure, ResidentPresenceRuntime, SensorFailure
 from events import Event
 
 
@@ -39,6 +40,17 @@ class _FailingPipeline(_RecordingPipeline):
         raise RuntimeError("presence failed")
 
 
+class _CognitionFailingPipeline(_RecordingPipeline):
+    def handle(self, event: Event):
+        self.events.append(event)
+        if event.content == "provider-down":
+            raise ModelCognitionError(
+                "model provider is temporarily unavailable",
+                provider_error_type="URLError",
+            )
+        return f"handled:{event.content}"
+
+
 def _event(content: str, *, source: str = "test") -> Event:
     return Event(event_type="test.event", source=source, content=content)
 
@@ -53,6 +65,7 @@ def test_quiet_cycle_does_not_call_presence_pipeline():
     assert result.events == ()
     assert result.interventions == ()
     assert result.sensor_failures == ()
+    assert result.cognition_failures == ()
     assert pipeline.events == []
 
 
@@ -77,6 +90,7 @@ def test_cycle_processes_multiple_sensor_events_in_order():
         "handled:second",
         "handled:third",
     )
+    assert result.cognition_failures == ()
     assert pipeline.events == [first, second, third]
 
 
@@ -105,7 +119,32 @@ def test_failed_sensor_is_recorded_without_blocking_healthy_sensor():
     assert reported == [failure]
 
 
-def test_presence_pipeline_failure_is_not_silently_swallowed():
+def test_expected_model_cognition_failure_is_bounded_and_later_event_continues():
+    failed = _event("provider-down")
+    healthy = _event("provider-back")
+    reported: list[CognitionFailure] = []
+    pipeline = _CognitionFailingPipeline()
+    runtime = ResidentPresenceRuntime(
+        [_Sensor("sensor", [[failed, healthy]])],
+        pipeline,  # type: ignore[arg-type]
+        on_cognition_failure=reported.append,
+    )
+
+    result = runtime.cycle_once()
+
+    assert result.events == (failed, healthy)
+    assert result.interventions == ("handled:provider-back",)
+    assert len(result.cognition_failures) == 1
+    failure = result.cognition_failures[0]
+    assert failure.event_type == "test.event"
+    assert failure.source == "test"
+    assert failure.error_type == "ModelCognitionError"
+    assert failure.provider_error_type == "URLError"
+    assert reported == [failure]
+    assert pipeline.events == [failed, healthy]
+
+
+def test_presence_pipeline_programming_failure_is_not_silently_swallowed():
     event = _event("important")
     runtime = ResidentPresenceRuntime(
         [_Sensor("sensor", [[event]])],
