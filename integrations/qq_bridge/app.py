@@ -6,6 +6,7 @@ from collections.abc import Sequence
 import nonebot
 from nonebot.adapters.onebot.v11 import Adapter as OneBotV11Adapter
 
+from core.delivery import DeliveryOutbox
 from resident.environment import load_runtime_environment
 
 from .config import QQBridgeConfig
@@ -49,6 +50,8 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if config.spool_path is None:
         raise RuntimeError("QQ bridge spool path is not configured")
+    if config.delivery_outbox_path is None:
+        raise RuntimeError("QQ proactive delivery outbox path is not configured")
     bridge = QQBridgeRuntime(
         config,
         ConversationCoreClient(
@@ -59,6 +62,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         ),
         BridgeSpool(config.spool_path),
         OneBotLinkHealth(timeout_seconds=config.link_timeout_seconds),
+        DeliveryOutbox(config.delivery_outbox_path),
     )
     install_nonebot_handlers(bridge)
 
@@ -69,7 +73,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     print(f"NapCat Reverse WebSocket：{reverse_websocket_url}")
     print(f"Hikari Conversation Host：{config.core_url}")
     print(f"QQ allowlist：{len(config.allowed_user_ids)} 个用户")
+    print(
+        "QQ 主动投递目标："
+        + (config.proactive_user_id if config.proactive_user_id is not None else "未配置")
+    )
     print(f"Bridge spool：{config.spool_path}")
+    print(f"Proactive outbox：{config.delivery_outbox_path}")
     if args.check:
         print("Hikari QQ Bridge check：PASS")
         return 0

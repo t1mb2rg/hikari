@@ -21,6 +21,7 @@ hikari-chat = "conversation.cli:main"
 hikari-bakeoff = "conversation.bakeoff:main"
 hikari-conversation-host = "conversation.remote:main"
 hikari-qq = "integrations.qq_bridge.app:main"
+hikari-deliver = "resident.delivery_cli:main"
 
 [project.optional-dependencies]
 qq = [
