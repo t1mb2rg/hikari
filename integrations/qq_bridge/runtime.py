@@ -118,8 +118,10 @@ class QQBridgeRuntime:
         if outbox is None:
             return
         self._validate_proactive(item)
-        claimed = outbox.claim(item.request.delivery_id)
-        if claimed.state != "sending":
+        try:
+            claimed = outbox.claim(item.request.delivery_id)
+        except ValueError:
+            # Another drain task already owns this delivery, or its state moved on.
             return
         request = claimed.request
         try:
