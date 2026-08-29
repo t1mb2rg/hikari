@@ -121,6 +121,19 @@ class AutostartConfig:
         )
 
 
+@dataclass(frozen=True)
+class AutostartStatus:
+    """Inspectable health of the per-user login registration."""
+
+    installed: bool
+    healthy: bool
+    reason: str
+    detail: str = ""
+    registration_command: str | None = None
+    expected_command: str | None = None
+    config: AutostartConfig | None = None
+
+
 RegistrationReader = Callable[[], str | None]
 RegistrationWriter = Callable[[str], None]
 RegistrationDeleter = Callable[[], bool]
@@ -254,9 +267,82 @@ class WindowsLoginAutostart:
         ]
         return subprocess.list2cmdline(argv)
 
+    def inspect(self) -> AutostartStatus:
+        registration = self._registration_reader()
+        config_exists = self.config_path.is_file()
+
+        if not registration:
+            if config_exists:
+                return AutostartStatus(
+                    installed=False,
+                    healthy=False,
+                    reason="orphan_config",
+                    detail=f"registration is missing but config remains: {self.config_path}",
+                )
+            return AutostartStatus(
+                installed=False,
+                healthy=False,
+                reason="missing",
+                detail="login registration is not installed",
+            )
+
+        if not config_exists:
+            return AutostartStatus(
+                installed=True,
+                healthy=False,
+                reason="missing_config",
+                detail=f"registration exists but config is missing: {self.config_path}",
+                registration_command=registration,
+            )
+
+        try:
+            config = self._read_config_strict()
+        except (OSError, json.JSONDecodeError, TypeError, ValueError) as exc:
+            return AutostartStatus(
+                installed=True,
+                healthy=False,
+                reason="stale_config",
+                detail=str(exc),
+                registration_command=registration,
+            )
+
+        python_path = Path(config.python_executable).expanduser()
+        if not python_path.is_file():
+            return AutostartStatus(
+                installed=True,
+                healthy=False,
+                reason="stale_python",
+                detail=f"configured Python no longer exists: {python_path}",
+                registration_command=registration,
+                config=config,
+            )
+
+        expected = self.registration_command(config)
+        if registration != expected:
+            return AutostartStatus(
+                installed=True,
+                healthy=False,
+                reason="registration_mismatch",
+                detail="HKCU Run command does not match the saved Hikari config",
+                registration_command=registration,
+                expected_command=expected,
+                config=config,
+            )
+
+        return AutostartStatus(
+            installed=True,
+            healthy=True,
+            reason="ready",
+            detail="login registration and saved paths are valid",
+            registration_command=registration,
+            expected_command=expected,
+            config=config,
+        )
+
     def status(self) -> bool:
-        value = self._registration_reader()
-        return bool(value and self.config_path.is_file())
+        """Compatibility boolean for callers that only need ready/not-ready."""
+
+        return self.inspect().healthy
 
     def install(self, config: AutostartConfig) -> None:
         runtime_environment = load_runtime_environment(
@@ -268,6 +354,10 @@ class WindowsLoginAutostart:
             environment=runtime_environment.values,
         )
 
+        python_path = Path(config.python_executable).expanduser()
+        if not python_path.is_file():
+            raise ValueError(f"autostart Python does not exist: {python_path}")
+
         self._write_config(config)
         try:
             self._registration_writer(self.registration_command(config))
@@ -276,24 +366,29 @@ class WindowsLoginAutostart:
             raise
 
     def run_now(self) -> None:
-        config = self._read_config()
-        if config is None:
-            raise RuntimeError("Hikari autostart config is missing or invalid")
-        self._launcher(config)
+        status = self.inspect()
+        if not status.healthy or status.config is None:
+            raise RuntimeError(
+                f"Hikari autostart is not ready: {status.reason}: {status.detail}"
+            )
+        self._launcher(status.config)
 
     def uninstall(self) -> bool:
         removed = self._registration_deleter()
         self._remove_config()
         return removed
 
+    def _read_config_strict(self) -> AutostartConfig:
+        data = json.loads(self.config_path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            raise ValueError("autostart config must be an object")
+        return AutostartConfig.from_mapping(data)
+
     def _read_config(self) -> AutostartConfig | None:
         if not self.config_path.is_file():
             return None
         try:
-            data = json.loads(self.config_path.read_text(encoding="utf-8"))
-            if not isinstance(data, dict):
-                raise ValueError("autostart config must be an object")
-            return AutostartConfig.from_mapping(data)
+            return self._read_config_strict()
         except (OSError, json.JSONDecodeError, TypeError, ValueError):
             return None
 
@@ -326,7 +421,7 @@ def build_parser() -> argparse.ArgumentParser:
     install.add_argument("--env-file", default=None)
     install.add_argument("--state-dir", default=None)
 
-    subparsers.add_parser("status", help="查看登录自启动是否已注册")
+    subparsers.add_parser("status", help="检查登录自启动注册与保存路径是否健康")
     subparsers.add_parser("run-now", help="立即按已保存配置启动一次")
     subparsers.add_parser("uninstall", help="移除登录自启动")
 
@@ -353,6 +448,30 @@ def _launch_from_path(path: str | Path) -> int:
     return 0
 
 
+def _print_status(status: AutostartStatus) -> int:
+    if status.healthy:
+        print("Hikari 登录自启动已注册，配置有效。")
+        if status.config is not None:
+            print(f"仓库：{status.config.repository}")
+            print(f"Python：{status.config.windowless_python}")
+            if status.config.env_file is not None:
+                print(f"环境文件：{status.config.env_file}")
+        return 0
+
+    messages = {
+        "missing": "Hikari 登录自启动尚未注册。",
+        "orphan_config": "Hikari 登录自启动未注册，但残留了本地配置。",
+        "missing_config": "Hikari 登录自启动注册存在，但本地配置文件缺失。",
+        "stale_config": "Hikari 登录自启动注册存在，但保存的路径/配置已失效。",
+        "stale_python": "Hikari 登录自启动注册存在，但保存的 Python 已失效。",
+        "registration_mismatch": "Hikari 登录自启动注册与保存配置不一致。",
+    }
+    print(messages.get(status.reason, "Hikari 登录自启动状态异常。"))
+    if status.detail:
+        print(f"诊断：{status.detail}")
+    return 1 if not status.installed else 2
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
 
@@ -376,16 +495,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 0
 
         if args.command == "status":
-            if autostart.status():
-                print("Hikari 登录自启动已注册。")
-                return 0
-            print("Hikari 登录自启动尚未注册。")
-            return 1
+            return _print_status(autostart.inspect())
 
         if args.command == "run-now":
-            if not autostart.status():
-                print("Hikari 登录自启动尚未注册。")
-                return 1
+            status = autostart.inspect()
+            if not status.healthy:
+                return _print_status(status)
             autostart.run_now()
             print("已按登录自启动配置请求 Hikari 启动。")
             return 0
