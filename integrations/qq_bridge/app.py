@@ -21,6 +21,11 @@ def build_parser() -> argparse.ArgumentParser:
         description="通过 NapCat / OneBot V11 反向 WebSocket 接入 Hikari Conversation Host。",
     )
     parser.add_argument("--env-file", default=None)
+    parser.add_argument(
+        "--check",
+        action="store_true",
+        help="初始化并校验 QQ Bridge 运行时装配，然后在启动网络服务前退出。",
+    )
     return parser
 
 
@@ -57,14 +62,18 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     install_nonebot_handlers(bridge)
 
-    print("Hikari QQ Bridge 已启动。")
-    print(
-        "NapCat Reverse WebSocket："
+    reverse_websocket_url = (
         f"ws://{config.onebot_host}:{config.onebot_port}/onebot/v11/ws"
     )
+    print("Hikari QQ Bridge 运行时装配完成。")
+    print(f"NapCat Reverse WebSocket：{reverse_websocket_url}")
     print(f"Hikari Conversation Host：{config.core_url}")
     print(f"QQ allowlist：{len(config.allowed_user_ids)} 个用户")
     print(f"Bridge spool：{config.spool_path}")
+    if args.check:
+        print("Hikari QQ Bridge check：PASS")
+        return 0
+
     nonebot.run()
     return 0
 
