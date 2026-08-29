@@ -5,6 +5,7 @@ from collections import deque
 from pathlib import Path
 
 import pytest
+from websockets.asyncio.server import serve
 
 from brain.model_reasoner import ChatMessage
 from conversation.engine import ConversationEngine
@@ -17,6 +18,7 @@ from conversation.protocol import (
 )
 from conversation.receipts import ConversationReceiptStore
 from conversation.remote import ConversationRequestProcessor, ConversationWebSocketHost
+from integrations.qq_bridge.core_client import ConversationCoreClient
 from memory.store import MemoryStore
 
 
@@ -136,3 +138,41 @@ def test_websocket_host_rejects_wrong_secret(tmp_path: Path):
 
     assert decode_envelope(websocket.sent[0])["type"] == "error"
     assert websocket.closed == (1008, "unauthorized")
+
+
+def test_real_loopback_websocket_client_reaches_conversation_engine(tmp_path: Path):
+    async def scenario() -> None:
+        provider = FakeProvider(["loopback ok"])
+        host = ConversationWebSocketHost(
+            _processor(tmp_path, provider),
+            shared_secret="gate-secret",
+        )
+        async with serve(
+            host.handle,
+            "127.0.0.1",
+            0,
+            ping_interval=20,
+            ping_timeout=20,
+        ) as server:
+            assert server.sockets
+            port = server.sockets[0].getsockname()[1]
+            client = ConversationCoreClient(
+                f"ws://127.0.0.1:{port}",
+                adapter_id="qq.test",
+                channel="qq",
+                shared_secret="gate-secret",
+            )
+            try:
+                reply = await client.request(
+                    "qq:100:777",
+                    UserTurn("qq", "private:7", "physical-preflight"),
+                )
+            finally:
+                await client.close()
+
+        assert reply.text == "loopback ok"
+        assert reply.channel == "qq"
+        assert reply.conversation_id == "private:7"
+        assert len(provider.calls) == 1
+
+    asyncio.run(scenario())
