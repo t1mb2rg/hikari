@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ast
 from pathlib import Path
+import tomllib
 
 
 CORE_ROOTS = ("core", "brain", "memory", "personality", "conversation")
@@ -32,3 +33,18 @@ def test_core_packages_do_not_depend_on_qq_or_nonebot():
                     violations.append(f"{path.relative_to(repository)} -> {imported}")
 
     assert violations == []
+
+
+def test_core_install_does_not_require_nonebot():
+    repository = Path(__file__).resolve().parents[1]
+    project = tomllib.loads((repository / "pyproject.toml").read_text(encoding="utf-8"))
+    dependencies = project["project"].get("dependencies", [])
+    normalized = [str(item).lower() for item in dependencies]
+
+    assert not any("nonebot" in item for item in normalized)
+    qq_dependencies = [
+        str(item).lower()
+        for item in project["project"]["optional-dependencies"]["qq"]
+    ]
+    assert any(item.startswith("nonebot2") for item in qq_dependencies)
+    assert any(item.startswith("nonebot-adapter-onebot") for item in qq_dependencies)
