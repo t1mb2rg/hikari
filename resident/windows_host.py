@@ -13,6 +13,7 @@ from typing import Any
 
 from .app import build_reasoner
 from .environment import load_runtime_environment
+from .windows_process_tree import snapshot_windows_process_tree
 
 
 class WindowsResidentHostUnavailable(RuntimeError):
@@ -111,6 +112,7 @@ class HostStartResult:
 Launcher = Callable[[list[str], Path, Path, Mapping[str, str]], int]
 ProcessProbe = Callable[[int], bool]
 Terminator = Callable[[int], None]
+ProcessTreeResolver = Callable[[int], Sequence[int]]
 
 
 def default_state_dir(environment: Mapping[str, str] | None = None) -> Path:
@@ -250,6 +252,7 @@ class WindowsResidentHost:
         launcher: Launcher | None = None,
         process_probe: ProcessProbe | None = None,
         terminator: Terminator | None = None,
+        process_tree_resolver: ProcessTreeResolver | None = None,
         python_executable: str | None = None,
     ) -> None:
         if not isinstance(config, ResidentHostConfig):
@@ -259,6 +262,7 @@ class WindowsResidentHost:
         self._launcher = launcher or _default_launcher
         self._process_probe = process_probe or _default_process_probe
         self._terminator = terminator or _default_terminator
+        self._process_tree_resolver = process_tree_resolver or snapshot_windows_process_tree
         selected_python = (python_executable or sys.executable).strip()
         if not selected_python:
             raise ValueError("python_executable must not be empty")
@@ -337,10 +341,25 @@ class WindowsResidentHost:
         if not current.running or current.state is None:
             return current
 
+        root_pid = current.state.pid
         try:
-            self._terminator(current.state.pid)
-        except ProcessLookupError:
-            pass
+            process_tree = [
+                int(pid)
+                for pid in self._process_tree_resolver(root_pid)
+                if isinstance(pid, int) and not isinstance(pid, bool) and pid > 0
+            ]
+            if root_pid not in process_tree:
+                process_tree.insert(0, root_pid)
+
+            seen: set[int] = set()
+            for pid in process_tree:
+                if pid in seen:
+                    continue
+                seen.add(pid)
+                try:
+                    self._terminator(pid)
+                except ProcessLookupError:
+                    pass
         finally:
             self._remove_state()
         return HostStatus(running=False, reason="stopped")

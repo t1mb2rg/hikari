@@ -9,7 +9,7 @@ from pathlib import Path
 
 from memory.store import MemoryStore
 from resident.environment import load_runtime_environment
-from resident.windows_host import default_state_dir
+from resident.paths import default_state_dir
 from websockets.asyncio.server import ServerConnection, serve
 
 from .cli import build_chat_provider, default_context_collector

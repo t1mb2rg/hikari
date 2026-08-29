@@ -17,7 +17,7 @@ from brain.providers import OpenAICompatibleProvider
 from memory.store import MemoryStore
 from personality import load_personality, load_voice
 from resident.environment import load_runtime_environment
-from resident.windows_host import default_state_dir
+from resident.paths import default_state_dir
 
 from .engine import (
     ConversationEngine,
