@@ -35,6 +35,39 @@ HIKARI_MODEL_API_KEY=...
 
 运行时优先级是：**当前进程环境变量 > env 文件**。因此 CI / 部署可以安全注入变量，本地开发则不必每开一个 PowerShell 都重新 `$env:...`。
 
+### QQ / NapCat OneBot
+
+M6-08A 使用 OneBot 11 HTTP 边界接入 QQ。当前只接受 allowlist 中用户的**私聊纯文本**；群聊、notice、附件和非白名单用户会被忽略。
+
+NapCat 侧需要两条本地链路：
+
+- HTTP API：`http://127.0.0.1:3000`，用于 Hikari 调用 `send_private_msg`
+- Reverse HTTP：事件 POST 到 `http://127.0.0.1:8081/`
+
+`.env` 至少配置自己的 QQ 号：
+
+```dotenv
+HIKARI_ONEBOT_ALLOWED_USER_IDS=123456789
+HIKARI_ONEBOT_API_BASE_URL=http://127.0.0.1:3000
+HIKARI_ONEBOT_WEBHOOK_HOST=127.0.0.1
+HIKARI_ONEBOT_WEBHOOK_PORT=8081
+```
+
+NapCat 若启用了 access token / webhook secret，再同步设置：
+
+```dotenv
+HIKARI_ONEBOT_ACCESS_TOKEN=...
+HIKARI_ONEBOT_WEBHOOK_SECRET=...
+```
+
+启动：
+
+```powershell
+hikari-qq --env-file .\.env
+```
+
+QQ 只是 Hikari 的 transport edge。OneBot/NapCat 细节不应进入共享 conversation core。
+
 后台启动示例：
 
 ```powershell

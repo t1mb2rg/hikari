@@ -7,7 +7,7 @@ import hmac
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 from pathlib import Path
-from queue import Queue
+from queue import Empty, Queue
 from threading import Thread
 from urllib.request import Request, urlopen
 
@@ -25,6 +25,7 @@ DEFAULT_ONEBOT_API_BASE_URL = "http://127.0.0.1:3000"
 DEFAULT_ONEBOT_WEBHOOK_HOST = "127.0.0.1"
 DEFAULT_ONEBOT_WEBHOOK_PORT = 8081
 MAX_EVENT_BYTES = 1024 * 1024
+RECEIVE_POLL_SECONDS = 0.25
 
 PRIMARY_LOCAL_RELATIONSHIP_CONTEXT = {
     "kind": "primary_local_user",
@@ -133,13 +134,22 @@ class OneBotTransport:
         return True
 
     def receive(self) -> UserTurn | None:
-        return self._queue.get()
+        try:
+            return self._queue.get(timeout=RECEIVE_POLL_SECONDS)
+        except Empty:
+            return None
 
     def send(self, reply: AssistantReply) -> None:
+        if reply.channel != "qq":
+            raise ValueError("OneBot reply requires channel='qq'")
+
         prefix = "private:"
         if not reply.conversation_id.startswith(prefix):
             raise ValueError("OneBot reply requires a private QQ conversation id")
         user_id_text = reply.conversation_id[len(prefix):]
+        if user_id_text not in self.allowed_user_ids:
+            raise ValueError("OneBot reply target must be allowlisted")
+
         try:
             user_id: int | str = int(user_id_text)
         except ValueError:
