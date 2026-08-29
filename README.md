@@ -37,36 +37,58 @@ HIKARI_MODEL_API_KEY=...
 
 ### QQ / NapCat OneBot
 
-M6-08A 使用 OneBot 11 HTTP 边界接入 QQ。当前只接受 allowlist 中用户的**私聊纯文本**；群聊、notice、附件和非白名单用户会被忽略。
+M6-08D 将显式聊天与 QQ transport 分成两个进程。QQ 私聊仍然进入 M6-07 的 `ConversationEngine`，不会伪装成 Presence Sensor Event，也不会经过 Attention 决定是否值得回复。
 
-NapCat 侧需要两条本地链路：
+```text
+QQ
+ ↓
+NapCatQQ Desktop
+ ↓ OneBot V11 Reverse WebSocket
+hikari-qq
+ ↓ hikari.conversation.v1 WebSocket
+hikari-conversation-host
+ ↓
+ConversationEngine / Memory / Hikari identity
+```
 
-- HTTP API：`http://127.0.0.1:3000`，用于 Hikari 调用 `send_private_msg`
-- Reverse HTTP：事件 POST 到 `http://127.0.0.1:8081/`
+`hikari-qq` 使用 NoneBot2 + OneBot V11 adapter，但这些平台 SDK 只存在于 `integrations/qq_bridge/`。共享 `conversation/`、`brain/`、`memory/` 和 `personality/` 不依赖 NoneBot、NapCat 或 OneBot。
 
-`.env` 至少配置自己的 QQ 号：
+第一道 Physical Gate 故意很窄：只接受 allowlist 中用户的**私聊纯文本**。群聊、notice、图片、文件和非白名单用户不会触发模型调用。
+
+`.env` 至少配置自己的 QQ 号和模型：
 
 ```dotenv
 HIKARI_ONEBOT_ALLOWED_USER_IDS=123456789
-HIKARI_ONEBOT_API_BASE_URL=http://127.0.0.1:3000
-HIKARI_ONEBOT_WEBHOOK_HOST=127.0.0.1
-HIKARI_ONEBOT_WEBHOOK_PORT=8081
+HIKARI_CONVERSATION_HOST=127.0.0.1
+HIKARI_CONVERSATION_PORT=8765
+HIKARI_CONVERSATION_URL=ws://127.0.0.1:8765
+HIKARI_ONEBOT_HOST=127.0.0.1
+HIKARI_ONEBOT_PORT=8081
 ```
 
-NapCat 若启用了 access token / webhook secret，再同步设置：
+M6-08D 的 Conversation Host 和 NapCat reverse WebSocket listener 都强制保持在 loopback。`HIKARI_CONVERSATION_SHARED_SECRET` 与 `HIKARI_ONEBOT_ACCESS_TOKEN` 可以继续用于本机边界鉴权，但它们不是 TLS 的替代品。以后 Core 真正迁移到远端时，再通过 `wss://` / secure ingress 正式开放，而不是把明文 `ws://` 暴露到局域网或公网。
 
-```dotenv
-HIKARI_ONEBOT_ACCESS_TOKEN=...
-HIKARI_ONEBOT_WEBHOOK_SECRET=...
+先启动 Hikari Conversation Host：
+
+```powershell
+hikari-conversation-host --env-file .\.env
 ```
 
-启动：
+再开第二个终端启动 QQ Bridge：
 
 ```powershell
 hikari-qq --env-file .\.env
 ```
 
-QQ 只是 Hikari 的 transport edge。OneBot/NapCat 细节不应进入共享 conversation core。
+NapCatQQ Desktop 由用户自行安装、登录和处理二维码/风控。Hikari 不启动、不登录、也不自动重启 NapCat。NapCat 中新增 **WebSocket 客户端 / Reverse WebSocket**，URL 配置为：
+
+```text
+ws://127.0.0.1:8081/onebot/v11/ws
+```
+
+若启用了 OneBot access token，NapCat 与 `.env` 的 `HIKARI_ONEBOT_ACCESS_TOKEN` 必须一致。
+
+QQ Bridge 会把待处理 turn 和待发送 reply 存进本地 `qq_bridge.db`；Conversation Host 会用独立 receipt store 按 request id 去重。短暂断线后可以重试，而不会因为同一个 OneBot `message_id` 再次上报就重复调用模型。OneBot 链路长时间没有任何事件时，Bridge 会主动调用 `get_status()` 区分“群/账号很安静”和“链路真的断了”，但不会替用户重启 NapCat。
 
 后台启动示例：
 
