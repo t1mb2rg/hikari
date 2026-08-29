@@ -44,6 +44,8 @@ class FakeBot:
         self.failures = failures
 
     async def send_private_msg(self, **kwargs):
+        # Yield once so parallel drain tasks can exercise the single-winner claim.
+        await asyncio.sleep(0)
         if self.failures > 0:
             self.failures -= 1
             raise ConnectionError("transport offline")
@@ -109,6 +111,24 @@ def test_delivery_outbox_is_idempotent_and_rejects_id_reuse(tmp_path: Path):
         outbox.enqueue(DeliveryRequest("presence:1", "qq", "7", "另一条消息"))
 
 
+def test_delivery_outbox_claim_has_exactly_one_winner(tmp_path: Path):
+    outbox = DeliveryOutbox(tmp_path / "delivery.db")
+    request = DeliveryRequest("presence:claim:1", "qq", "7", "只许一个发送者。")
+    outbox.enqueue(request)
+
+    first = outbox.claim(request.delivery_id)
+    assert first.state == "sending"
+    assert first.attempts == 1
+
+    with pytest.raises(ValueError, match="already claimed"):
+        outbox.claim(request.delivery_id)
+
+    persisted = outbox.get(request.delivery_id)
+    assert persisted is not None
+    assert persisted.state == "sending"
+    assert persisted.attempts == 1
+
+
 def test_delivery_router_supports_immediate_windows_boundary(tmp_path: Path):
     outbox = DeliveryOutbox(tmp_path / "delivery.db")
     sink = FakeSink()
@@ -149,6 +169,30 @@ def test_qq_runtime_sends_proactive_without_inbound_conversation(tmp_path: Path)
     assert record is not None
     assert record.state == "sent"
     assert record.attempts == 1
+
+
+def test_parallel_qq_drains_send_one_proactive_message(tmp_path: Path):
+    outbox = DeliveryOutbox(tmp_path / "delivery.db")
+    request = DeliveryRequest("presence:qq:race", "qq", "7", "并发也只能来一次。")
+    outbox.enqueue(request)
+    item = outbox.pending(channel="qq")[0]
+    runtime, core = _runtime(tmp_path, outbox)
+    bot = FakeBot()
+
+    async def scenario() -> None:
+        await asyncio.gather(
+            runtime._deliver_proactive(bot, item),  # type: ignore[arg-type]
+            runtime._deliver_proactive(bot, item),  # type: ignore[arg-type]
+        )
+
+    asyncio.run(scenario())
+
+    assert core.requests == []
+    assert len(bot.sent) == 1
+    delivered = outbox.get(request.delivery_id)
+    assert delivered is not None
+    assert delivered.state == "sent"
+    assert delivered.attempts == 1
 
 
 def test_qq_runtime_retries_pending_after_transport_recovery(tmp_path: Path):
