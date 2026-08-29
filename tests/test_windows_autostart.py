@@ -85,6 +85,9 @@ def test_install_registers_current_user_run_value_without_secret(tmp_path: Path)
     assert str(repository.resolve()) in persisted
     assert str(env_file.resolve()) in persisted
     assert secret not in persisted
+    inspected = autostart.inspect()
+    assert inspected.healthy is True
+    assert inspected.reason == "ready"
     assert autostart.status() is True
 
 
@@ -100,6 +103,30 @@ def test_model_autostart_requires_explicit_env_file(tmp_path: Path):
             state_dir=tmp_path / "state",
             reasoner="model",
         )
+
+
+def test_install_rejects_missing_python_before_persisting(tmp_path: Path):
+    repository = _repo(tmp_path)
+    state, reader, writer, deleter = _registry_fakes()
+    config_path = tmp_path / "autostart.json"
+    config = AutostartConfig(
+        repository=repository,
+        state_dir=tmp_path / "state",
+        reasoner="simple",
+        python_executable=str(tmp_path / "missing-python.exe"),
+    )
+    autostart = WindowsLoginAutostart(
+        config_path=config_path,
+        registration_reader=reader,
+        registration_writer=writer,
+        registration_deleter=deleter,
+    )
+
+    with pytest.raises(ValueError, match="Python does not exist"):
+        autostart.install(config)
+
+    assert state == {}
+    assert not config_path.exists()
 
 
 def test_reinstall_is_idempotent_and_replaces_only_hikari_value(tmp_path: Path):
@@ -130,7 +157,7 @@ def test_reinstall_is_idempotent_and_replaces_only_hikari_value(tmp_path: Path):
     assert autostart.status() is True
 
 
-def test_status_requires_registration_and_config(tmp_path: Path):
+def test_inspect_distinguishes_missing_registration_and_missing_config(tmp_path: Path):
     state, reader, writer, deleter = _registry_fakes()
     config_path = tmp_path / "autostart.json"
     autostart = WindowsLoginAutostart(
@@ -140,11 +167,111 @@ def test_status_requires_registration_and_config(tmp_path: Path):
         registration_deleter=deleter,
     )
 
-    assert autostart.status() is False
+    missing = autostart.inspect()
+    assert missing.installed is False
+    assert missing.healthy is False
+    assert missing.reason == "missing"
+
     state["value"] = "registered"
-    assert autostart.status() is False
+    missing_config = autostart.inspect()
+    assert missing_config.installed is True
+    assert missing_config.healthy is False
+    assert missing_config.reason == "missing_config"
+
+
+def test_inspect_reports_orphan_config_when_registration_is_missing(tmp_path: Path):
+    state, reader, writer, deleter = _registry_fakes()
+    config_path = tmp_path / "autostart.json"
     config_path.write_text("{}", encoding="utf-8")
-    assert autostart.status() is True
+    autostart = WindowsLoginAutostart(
+        config_path=config_path,
+        registration_reader=reader,
+        registration_writer=writer,
+        registration_deleter=deleter,
+    )
+
+    inspected = autostart.inspect()
+    assert inspected.installed is False
+    assert inspected.healthy is False
+    assert inspected.reason == "orphan_config"
+
+
+def test_inspect_reports_stale_config_when_saved_repo_disappears(tmp_path: Path):
+    repository = _repo(tmp_path)
+    state, reader, writer, deleter = _registry_fakes()
+    config_path = tmp_path / "autostart.json"
+    config = AutostartConfig(
+        repository=repository,
+        state_dir=tmp_path / "state",
+        reasoner="simple",
+    )
+    autostart = WindowsLoginAutostart(
+        config_path=config_path,
+        registration_reader=reader,
+        registration_writer=writer,
+        registration_deleter=deleter,
+    )
+    autostart.install(config)
+    repository.rmdir()
+
+    inspected = autostart.inspect()
+    assert inspected.installed is True
+    assert inspected.healthy is False
+    assert inspected.reason == "stale_config"
+    assert "existing directory" in inspected.detail
+
+
+def test_inspect_reports_stale_python_when_saved_venv_disappears(tmp_path: Path):
+    repository = _repo(tmp_path)
+    python, pythonw = _python_pair(tmp_path)
+    state, reader, writer, deleter = _registry_fakes()
+    config_path = tmp_path / "autostart.json"
+    config = AutostartConfig(
+        repository=repository,
+        state_dir=tmp_path / "state",
+        reasoner="simple",
+        python_executable=str(python),
+    )
+    autostart = WindowsLoginAutostart(
+        config_path=config_path,
+        registration_reader=reader,
+        registration_writer=writer,
+        registration_deleter=deleter,
+    )
+    autostart.install(config)
+    python.unlink()
+    pythonw.unlink()
+
+    inspected = autostart.inspect()
+    assert inspected.installed is True
+    assert inspected.healthy is False
+    assert inspected.reason == "stale_python"
+    assert str(python) in inspected.detail
+
+
+def test_inspect_reports_registration_mismatch(tmp_path: Path):
+    repository = _repo(tmp_path)
+    state, reader, writer, deleter = _registry_fakes()
+    config_path = tmp_path / "autostart.json"
+    config = AutostartConfig(
+        repository=repository,
+        state_dir=tmp_path / "state",
+        reasoner="simple",
+    )
+    autostart = WindowsLoginAutostart(
+        config_path=config_path,
+        registration_reader=reader,
+        registration_writer=writer,
+        registration_deleter=deleter,
+    )
+    autostart.install(config)
+    state["value"] = "pythonw.exe -m somebody.else"
+
+    inspected = autostart.inspect()
+    assert inspected.installed is True
+    assert inspected.healthy is False
+    assert inspected.reason == "registration_mismatch"
+    assert inspected.expected_command is not None
 
 
 def test_run_now_uses_saved_config_without_shell(tmp_path: Path):
@@ -171,6 +298,27 @@ def test_run_now_uses_saved_config_without_shell(tmp_path: Path):
     assert len(launched) == 1
     assert launched[0].repository == repository.resolve()
     assert launched[0].reasoner == "simple"
+
+
+def test_run_now_rejects_stale_registration(tmp_path: Path):
+    repository = _repo(tmp_path)
+    state, reader, writer, deleter = _registry_fakes()
+    config = AutostartConfig(
+        repository=repository,
+        state_dir=tmp_path / "state",
+        reasoner="simple",
+    )
+    autostart = WindowsLoginAutostart(
+        config_path=tmp_path / "autostart.json",
+        registration_reader=reader,
+        registration_writer=writer,
+        registration_deleter=deleter,
+    )
+    autostart.install(config)
+    state["value"] = "wrong command"
+
+    with pytest.raises(RuntimeError, match="registration_mismatch"):
+        autostart.run_now()
 
 
 def test_uninstall_removes_registration_and_local_config(tmp_path: Path):
