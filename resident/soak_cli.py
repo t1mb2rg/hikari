@@ -81,7 +81,8 @@ def _interesting_file_sizes(root: Path) -> dict[str, int]:
 
 
 def _query_rows(path: Path, query: str) -> list[tuple[object, ...]]:
-    connection = sqlite3.connect(path, timeout=5)
+    uri = path.expanduser().resolve().as_uri() + "?mode=ro"
+    connection = sqlite3.connect(uri, uri=True, timeout=5)
     try:
         connection.execute("PRAGMA query_only = ON")
         rows = connection.execute(query).fetchall()
