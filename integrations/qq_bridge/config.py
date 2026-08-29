@@ -14,6 +14,7 @@ DEFAULT_CORE_URL = "ws://127.0.0.1:8765"
 DEFAULT_ADAPTER_ID = "qq.main"
 DEFAULT_LINK_TIMEOUT_SECONDS = 300.0
 DEFAULT_LINK_CHECK_SECONDS = 60.0
+DEFAULT_DELIVERY_POLL_SECONDS = 1.0
 
 
 def parse_allowed_user_ids(value: str | None) -> frozenset[str]:
@@ -53,6 +54,9 @@ class QQBridgeConfig:
     onebot_access_token: str | None = None
     core_shared_secret: str | None = None
     spool_path: Path | None = None
+    proactive_user_id: str | None = None
+    delivery_outbox_path: Path | None = None
+    delivery_poll_seconds: float = DEFAULT_DELIVERY_POLL_SECONDS
     link_timeout_seconds: float = DEFAULT_LINK_TIMEOUT_SECONDS
     link_check_seconds: float = DEFAULT_LINK_CHECK_SECONDS
 
@@ -72,8 +76,20 @@ class QQBridgeConfig:
             raise ValueError(
                 "M6-08D OneBot listener is loopback-only; keep NapCat and hikari-qq on the same host"
             )
+        proactive_user_id = (
+            self.proactive_user_id.strip()
+            if isinstance(self.proactive_user_id, str) and self.proactive_user_id.strip()
+            else None
+        )
+        if proactive_user_id is not None and proactive_user_id not in self.allowed_user_ids:
+            raise ValueError(
+                "HIKARI_QQ_PROACTIVE_USER_ID must be present in HIKARI_ONEBOT_ALLOWED_USER_IDS"
+            )
+        if self.delivery_poll_seconds <= 0:
+            raise ValueError("delivery poll interval must be > 0")
         if self.link_timeout_seconds <= 0 or self.link_check_seconds <= 0:
             raise ValueError("link monitor intervals must be > 0")
+        object.__setattr__(self, "proactive_user_id", proactive_user_id)
 
     @classmethod
     def from_mapping(
@@ -94,6 +110,12 @@ class QQBridgeConfig:
         access_token = access_token.strip() if access_token and access_token.strip() else None
         core_secret = values.get("HIKARI_CONVERSATION_SHARED_SECRET")
         core_secret = core_secret.strip() if core_secret and core_secret.strip() else None
+        proactive_user_id = values.get("HIKARI_QQ_PROACTIVE_USER_ID")
+        proactive_user_id = (
+            proactive_user_id.strip()
+            if proactive_user_id and proactive_user_id.strip()
+            else None
+        )
         root = (state_dir or default_state_dir()).expanduser().resolve()
 
         return cls(
@@ -105,6 +127,13 @@ class QQBridgeConfig:
             onebot_access_token=access_token,
             core_shared_secret=core_secret,
             spool_path=(root / "qq_bridge.db").resolve(),
+            proactive_user_id=proactive_user_id,
+            delivery_outbox_path=(root / "proactive_delivery.db").resolve(),
+            delivery_poll_seconds=_float_value(
+                values,
+                "HIKARI_QQ_DELIVERY_POLL_SECONDS",
+                DEFAULT_DELIVERY_POLL_SECONDS,
+            ),
             link_timeout_seconds=_float_value(
                 values,
                 "HIKARI_ONEBOT_LINK_TIMEOUT_SECONDS",
