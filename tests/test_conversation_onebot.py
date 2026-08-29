@@ -116,6 +116,16 @@ def test_transport_enqueue_only_accepts_approved_private_text():
     assert turn.conversation_id == "private:7"
 
 
+def test_transport_receive_returns_none_when_idle(monkeypatch):
+    monkeypatch.setattr("conversation.onebot.RECEIVE_POLL_SECONDS", 0.001)
+    transport = OneBotTransport(
+        api_base_url="http://127.0.0.1:3000",
+        allowed_user_ids=frozenset({"7"}),
+    )
+
+    assert transport.receive() is None
+
+
 def test_onebot_signature_verification():
     body = b'{"hello":"world"}'
     secret = "local-secret"
@@ -125,6 +135,33 @@ def test_onebot_signature_verification():
     assert verify_onebot_signature(body, "sha1=wrong", secret) is False
     assert verify_onebot_signature(body, None, secret) is False
     assert verify_onebot_signature(body, None, None) is True
+
+
+@pytest.mark.parametrize(
+    ("reply", "error"),
+    [
+        (
+            AssistantReply(channel="desktop", conversation_id="private:123", text="no"),
+            "channel='qq'",
+        ),
+        (
+            AssistantReply(channel="qq", conversation_id="group:123", text="no"),
+            "private QQ conversation",
+        ),
+        (
+            AssistantReply(channel="qq", conversation_id="private:999", text="no"),
+            "allowlisted",
+        ),
+    ],
+)
+def test_transport_send_rejects_cross_channel_or_unapproved_targets(reply, error):
+    transport = OneBotTransport(
+        api_base_url="http://127.0.0.1:3000",
+        allowed_user_ids=frozenset({"123"}),
+    )
+
+    with pytest.raises(ValueError, match=error):
+        transport.send(reply)
 
 
 def test_transport_send_posts_private_message(monkeypatch):
