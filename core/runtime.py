@@ -11,6 +11,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Callable, Iterable
 
+from brain.model_reasoner import ModelCognitionError
 from core.identity import HikariIdentity, load_identity
 from core.presence import InterventionResult, PresencePipeline
 from events.models import Event
@@ -70,24 +71,35 @@ class SensorFailure:
 
 
 @dataclass(frozen=True)
+class CognitionFailure:
+    """Bounded evidence that external model cognition failed for one event."""
+
+    event_type: str
+    source: str
+    error_type: str
+    provider_error_type: str | None
+
+
+@dataclass(frozen=True)
 class PresenceCycleResult:
     """Observable result of one cheap resident polling cycle."""
 
     events: tuple[Event, ...]
     interventions: tuple[InterventionResult, ...]
     sensor_failures: tuple[SensorFailure, ...]
+    cognition_failures: tuple[CognitionFailure, ...]
 
 
 @dataclass
 class ResidentPresenceRuntime:
     """Continuously connect environmental sensors to Hikari's PresencePipeline.
 
-    M6-01 deliberately stays synchronous. Sensors are polled sequentially and
-    each normalized Event is handed to the existing PresencePipeline in order.
-    A sensor polling failure is isolated and reported so one flaky input source
-    cannot stop other sensors or later cycles. Core PresencePipeline failures
-    are intentionally not swallowed: memory/cognition failures should fail loud
-    rather than being mistaken for an ordinary sensor outage.
+    Sensors are polled sequentially and each normalized Event is handed to the
+    existing PresencePipeline in order. Sensor failures are isolated. Expected
+    external-model failures raised as `ModelCognitionError` are also isolated so
+    a temporary provider outage cannot kill Conversation, QQ supervision, or the
+    resident shell. Other PresencePipeline exceptions still fail loud because
+    they may represent state corruption or a programming invariant violation.
     """
 
     sensors: Iterable[Sensor]
@@ -95,6 +107,7 @@ class ResidentPresenceRuntime:
     poll_interval: float = 2.0
     sleeper: Callable[[float], None] = time.sleep
     on_sensor_failure: Callable[[SensorFailure], None] | None = None
+    on_cognition_failure: Callable[[CognitionFailure], None] | None = None
     identity: HikariIdentity | None = field(default=None, init=False)
     running: bool = field(default=False, init=False)
     _sensors: list[Sensor] = field(default_factory=list, init=False, repr=False)
@@ -135,7 +148,8 @@ class ResidentPresenceRuntime:
 
         events: list[Event] = []
         interventions: list[InterventionResult] = []
-        failures: list[SensorFailure] = []
+        sensor_failures: list[SensorFailure] = []
+        cognition_failures: list[CognitionFailure] = []
 
         for sensor in self._sensors:
             try:
@@ -146,7 +160,7 @@ class ResidentPresenceRuntime:
                     error_type=type(exc).__name__,
                     message=str(exc),
                 )
-                failures.append(failure)
+                sensor_failures.append(failure)
                 if self.on_sensor_failure is not None:
                     self.on_sensor_failure(failure)
                 continue
@@ -157,12 +171,33 @@ class ResidentPresenceRuntime:
                         f"sensor {sensor.name!r} returned non-Event value: {type(event).__name__}"
                     )
                 events.append(event)
-                interventions.append(self.pipeline.handle(event))
+                try:
+                    intervention = self.pipeline.handle(event)
+                except ModelCognitionError as exc:
+                    failure = CognitionFailure(
+                        event_type=event.event_type,
+                        source=event.source,
+                        error_type=type(exc).__name__,
+                        provider_error_type=exc.provider_error_type,
+                    )
+                    cognition_failures.append(failure)
+                    if self.on_cognition_failure is not None:
+                        self.on_cognition_failure(failure)
+                    else:
+                        provider = failure.provider_error_type or "unknown"
+                        print(
+                            "Hikari Presence cognition unavailable: "
+                            f"event={failure.event_type}, provider_error={provider}",
+                            flush=True,
+                        )
+                    continue
+                interventions.append(intervention)
 
         return PresenceCycleResult(
             events=tuple(events),
             interventions=tuple(interventions),
-            sensor_failures=tuple(failures),
+            sensor_failures=tuple(sensor_failures),
+            cognition_failures=tuple(cognition_failures),
         )
 
     def run_forever(self) -> None:
