@@ -192,8 +192,8 @@ def test_active_schedule_and_foreground_patterns_suppress_nonurgent(tmp_path: Pa
     )
     assert scheduled.should_deliver is False
     assert scheduled.user_state is not None
-    assert scheduled.user_state.interruptibility == "likely_busy"
-    assert scheduled.reason == "active schedule suggests low interruptibility"
+    assert scheduled.user_state.interruptibility == "unknown"
+    assert scheduled.reason == "active schedule suppresses ordinary interruption"
 
     gaming = policy.evaluate(
         _event(foreground_title="Counter-Strike 2"),
