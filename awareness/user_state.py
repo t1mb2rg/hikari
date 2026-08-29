@@ -24,11 +24,10 @@ class UserState:
 
 
 class UserStateInferer:
-    """Cheap, deterministic user-state inference.
+    """Cheap, deterministic M1 user-state inference.
 
-    Evidence is combined conservatively. A current schedule item can justify a
-    `likely_busy` result, while foreground/input signals alone never claim that
-    the user is definitely free. Unknown remains an intentional result.
+    This layer combines evidence without claiming presence, intent, focus,
+    emotion, or absence from a single signal. Unknown is an intentional result.
     """
 
     def infer(self, snapshot: ContextSnapshot) -> UserState:
@@ -74,10 +73,9 @@ class UserStateInferer:
             engagement = "unknown"
             confidence = 0.2 if foreground_available else 0.1
 
-        if current_schedule:
-            interruptibility = "likely_busy"
-            confidence = max(confidence, 0.75)
-        elif recent_input is True and foreground_available:
+        # Recent interaction can suggest availability, but an active schedule item
+        # is enough uncertainty to keep this conservative in M1.
+        if recent_input is True and foreground_available and not current_schedule:
             interruptibility = "likely_available"
         else:
             interruptibility = "unknown"
