@@ -5,7 +5,7 @@ from dataclasses import dataclass
 import ipaddress
 from pathlib import Path
 
-from resident.windows_host import default_state_dir
+from resident.paths import default_state_dir
 
 
 DEFAULT_ONEBOT_HOST = "127.0.0.1"

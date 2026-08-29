@@ -10,6 +10,7 @@ from resident.windows_host import (
     WindowsResidentHost,
     _select_background_python,
 )
+from resident.windows_process_tree import ordered_process_tree
 
 
 def _config(tmp_path: Path, **overrides: object) -> ResidentHostConfig:
@@ -47,6 +48,22 @@ def test_windows_background_python_falls_back_when_pythonw_is_missing(tmp_path: 
     selected = _select_background_python(str(python), platform_name="nt")
 
     assert selected == str(python)
+
+
+def test_ordered_process_tree_is_parent_first_for_supervisor_shutdown():
+    parent_by_pid = {
+        32496: 53860,
+        55232: 32496,
+        53480: 55232,
+        90000: 1,
+    }
+
+    assert ordered_process_tree(53860, parent_by_pid) == [
+        53860,
+        32496,
+        55232,
+        53480,
+    ]
 
 
 def test_start_detaches_one_trusted_child_and_persists_minimal_state(tmp_path: Path):
@@ -149,17 +166,19 @@ def test_status_cleans_stale_state(tmp_path: Path):
     assert not config.state_file.exists()
 
 
-def test_stop_terminates_only_recorded_pid_and_removes_state(tmp_path: Path):
+def test_stop_terminates_recorded_process_tree_parent_first_and_removes_state(tmp_path: Path):
     config = _config(tmp_path)
     alive: set[int] = set()
     terminated: list[int] = []
 
     def launcher(argv, cwd, log_path, environment):
-        alive.add(8123)
+        alive.update({8123, 8124, 8125, 8126})
         return 8123
 
     def terminator(pid: int) -> None:
         terminated.append(pid)
+        if pid not in alive:
+            raise ProcessLookupError(pid)
         alive.discard(pid)
 
     host = WindowsResidentHost(
@@ -168,13 +187,44 @@ def test_stop_terminates_only_recorded_pid_and_removes_state(tmp_path: Path):
         launcher=launcher,
         process_probe=lambda pid: pid in alive,
         terminator=terminator,
+        process_tree_resolver=lambda pid: [8123, 8124, 8125, 8126],
     )
     host.start()
 
     status = host.stop()
 
     assert status.running is False
-    assert terminated == [8123]
+    assert terminated == [8123, 8124, 8125, 8126]
+    assert alive == set()
+    assert not config.state_file.exists()
+
+
+def test_stop_ignores_descendant_that_exits_after_tree_snapshot(tmp_path: Path):
+    config = _config(tmp_path)
+    alive = {9100, 9101}
+    terminated: list[int] = []
+
+    def terminator(pid: int) -> None:
+        terminated.append(pid)
+        if pid not in alive:
+            raise ProcessLookupError(pid)
+        alive.remove(pid)
+
+    host = WindowsResidentHost(
+        config,
+        environment={},
+        launcher=lambda *args: 9100,
+        process_probe=lambda pid: pid in alive,
+        process_tree_resolver=lambda pid: [9100, 9101, 9102],
+        terminator=terminator,
+    )
+    host.start()
+
+    status = host.stop()
+
+    assert status.running is False
+    assert terminated == [9100, 9101, 9102]
+    assert alive == set()
     assert not config.state_file.exists()
 
 
