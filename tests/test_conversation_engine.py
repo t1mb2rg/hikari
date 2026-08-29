@@ -155,20 +155,16 @@ def test_prompt_attaches_identity_relationship_capabilities_personality_voice_an
     assert provenance["current_user_turn"]["recalled"] is False
     assert provenance["relationship"]["source"] == "trusted_runtime_binding"
     assert provenance["relationship"]["recalled"] is False
-    assert "customer-service chatbot" in system
-    assert "therapist, life coach" in system
-    assert "Do not narrate ambient desktop context" in system
-    assert "Never claim that every conversation starts from scratch" in system
-    assert "Do not end most replies with a question" in system
-    assert "Quoted transcripts" in system
-    assert "do not prove that you independently remember" in system
-    assert "Do not turn runtime grounding or pasted logs into invented autobiography" in system
-    assert "participate directly instead of repeatedly advertising" in system
-    assert "The user is never responsible for regulating Hikari's emotional state" in system
-    assert "Do not invent temporal familiarity" in system
-    assert "Relationship continuity alone does not establish elapsed time" in system
-    assert "do not automatically diagnose, categorize, therapize" in system
-    assert "do not default to generic prompts such as `项目卡在哪一步`" in system
+    assert "You are Hikari (ひかり)" in system
+    assert "familiar participant" in system
+    assert "Memory provenance is strict" in system
+    assert "pasted transcripts" in system
+    assert "not independently recalled memory" in system
+    assert "Never invent autobiographical history" in system
+    assert "Direct conversation alone does not grant shell" in system
+    assert "Preserve uncertainty" in system
+    assert "customer-service chatbot" not in system
+    assert "therapist, life coach" not in system
 
 
 def test_prompt_attaches_bounded_durable_user_and_relationship_memory(tmp_path: Path):
