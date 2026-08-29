@@ -31,12 +31,13 @@ def test_config_builds_reverse_websocket_defaults(tmp_path: Path):
     assert config.spool_path == (tmp_path / "qq_bridge.db").resolve()
 
 
-def test_non_loopback_onebot_listener_requires_token(tmp_path: Path):
-    with pytest.raises(ValueError, match="ACCESS_TOKEN"):
+def test_non_loopback_onebot_listener_is_rejected_even_with_token(tmp_path: Path):
+    with pytest.raises(ValueError, match="loopback-only"):
         QQBridgeConfig.from_mapping(
             {
                 "HIKARI_ONEBOT_ALLOWED_USER_IDS": "7",
                 "HIKARI_ONEBOT_HOST": "0.0.0.0",
+                "HIKARI_ONEBOT_ACCESS_TOKEN": "still-not-a-tls-layer",
             },
             state_dir=tmp_path,
         )
