@@ -89,9 +89,12 @@ def test_bakeoff_hides_models_in_transcript_and_writes_separate_reveal(
     built: list[tuple[str, Path]] = []
 
     def fake_build_candidate(env_file: Path, memory_path: Path):
-        model = "model-31" if env_file == first else "model-26"
+        if env_file == first:
+            model, reply_label = "model-31", "first"
+        else:
+            model, reply_label = "model-26", "second"
         built.append((model, memory_path))
-        return FakeEngine(model), model
+        return FakeEngine(reply_label), model
 
     monkeypatch.setattr(bakeoff, "_build_candidate", fake_build_candidate)
 
@@ -109,8 +112,8 @@ def test_bakeoff_hides_models_in_transcript_and_writes_separate_reveal(
     assert "model-26" not in transcript
     assert str(first) not in transcript
     assert str(second) not in transcript
-    assert "A> reply-from-model-31-1" in transcript
-    assert "B> reply-from-model-26-2" in transcript
+    assert "A> reply-from-first-1" in transcript
+    assert "B> reply-from-second-2" in transcript
     assert reveal["A"]["model"] == "model-31"
     assert reveal["B"]["model"] == "model-26"
     assert reveal["A"]["env_file"] == str(first)
