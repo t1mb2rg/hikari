@@ -66,7 +66,7 @@ HIKARI_ONEBOT_HOST=127.0.0.1
 HIKARI_ONEBOT_PORT=8081
 ```
 
-若全部绑定在本机 loopback，可暂时不设置 bridge secret。只要 Conversation Host 或 OneBot listener 暴露到非 loopback 地址，就必须设置对应共享 secret / access token。
+M6-08D 的 Conversation Host 和 NapCat reverse WebSocket listener 都强制保持在 loopback。`HIKARI_CONVERSATION_SHARED_SECRET` 与 `HIKARI_ONEBOT_ACCESS_TOKEN` 可以继续用于本机边界鉴权，但它们不是 TLS 的替代品。以后 Core 真正迁移到远端时，再通过 `wss://` / secure ingress 正式开放，而不是把明文 `ws://` 暴露到局域网或公网。
 
 先启动 Hikari Conversation Host：
 
