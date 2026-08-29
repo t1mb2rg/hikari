@@ -228,6 +228,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                 DEFAULT_CONVERSATION_HOST,
             )
         )
+        if not _is_loopback_host(bind_host):
+            raise ValueError(
+                "M6-08D Conversation Host is loopback-only; remote deployment requires a secure WSS ingress"
+            )
+
         port_text = str(
             args.port
             if args.port is not None
@@ -243,10 +248,6 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         shared_secret = values.get("HIKARI_CONVERSATION_SHARED_SECRET")
         shared_secret = shared_secret.strip() if shared_secret else None
-        if not _is_loopback_host(bind_host) and not shared_secret:
-            raise ValueError(
-                "HIKARI_CONVERSATION_SHARED_SECRET is required for non-loopback binding"
-            )
 
         state_dir = default_state_dir()
         memory_path = (
