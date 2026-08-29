@@ -41,7 +41,23 @@ HIKARI_ONEBOT_HOST=127.0.0.1
 HIKARI_ONEBOT_PORT=8081
 ```
 
-5. Start the platform-neutral conversation host:
+M6-08D rejects non-loopback server binds. A shared secret/access token is useful for authentication but is not a substitute for TLS. Remote Core deployment belongs behind a future `wss://` / secure ingress boundary.
+
+5. Run the QQ integration assembly preflight:
+
+```powershell
+hikari-qq --env-file .\.env --check
+```
+
+Pass evidence:
+
+```text
+Hikari QQ Bridge check：PASS
+```
+
+This initializes NoneBot, registers the OneBot V11 adapter, builds the Hikari bridge runtime and persistent spool, then exits before opening the long-running service.
+
+6. Start the platform-neutral conversation host:
 
 ```powershell
 hikari-conversation-host --env-file .\.env
@@ -49,7 +65,7 @@ hikari-conversation-host --env-file .\.env
 
 Expected startup evidence includes the local WebSocket endpoint, configured model and memory path.
 
-6. In a second terminal, start the QQ bridge:
+7. In a second terminal, start the QQ bridge:
 
 ```powershell
 hikari-qq --env-file .\.env
