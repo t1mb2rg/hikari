@@ -11,6 +11,9 @@ dependencies = [
   "PyYAML>=6.0",
   "lunar_python>=1.4.8,<2",
   "python-dotenv>=1.0,<2",
+  "websockets>=15.0,<16",
+  "nonebot2[fastapi]>=2.5,<3",
+  "nonebot-adapter-onebot>=2.4.6,<3",
 ]
 
 [project.scripts]
@@ -18,7 +21,8 @@ hikari-resident = "resident.windows_host:main"
 hikari-autostart = "resident.windows_autostart:main"
 hikari-chat = "conversation.cli:main"
 hikari-bakeoff = "conversation.bakeoff:main"
-hikari-qq = "conversation.onebot:main"
+hikari-conversation-host = "conversation.remote:main"
+hikari-qq = "integrations.qq_bridge.app:main"
 
 [project.optional-dependencies]
 dev = [
@@ -30,7 +34,7 @@ windows-notify = [
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["core*", "memory*", "events*", "attention*", "brain*", "awareness*", "personality*", "learning*", "actions*", "resident*", "conversation*"]
+include = ["core*", "memory*", "events*", "attention*", "brain*", "awareness*", "personality*", "learning*", "actions*", "resident*", "conversation*", "integrations*"]
 exclude = ["tests*"]
 
 [tool.setuptools.package-data]
