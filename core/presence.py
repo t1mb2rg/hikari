@@ -6,6 +6,7 @@ from typing import Protocol, runtime_checkable
 from attention.policy import AttentionDecision, AttentionPolicy
 from awareness.context import ContextCollector
 from brain.reasoner import Feedback, Reasoner
+from core.presence_policy import PresenceDecision, PresencePolicy
 from events.models import Event
 from learning import (
     LEARNED_CONTEXT_KEY,
@@ -28,9 +29,22 @@ from personality import (
 
 @runtime_checkable
 class FeedbackSink(Protocol):
-    """Destination adapter for proactive feedback."""
+    """Destination adapter for legacy/direct proactive feedback."""
 
     def deliver(self, feedback: Feedback) -> None:
+        ...
+
+
+@runtime_checkable
+class ProactiveDeliverySink(Protocol):
+    """M6 delivery boundary for policy-approved Presence feedback."""
+
+    def deliver(
+        self,
+        event: Event,
+        feedback: Feedback,
+        decision: PresenceDecision,
+    ) -> object:
         ...
 
 
@@ -48,14 +62,15 @@ class InterventionResult:
     feedback: Feedback | None
     candidate: MemoryCandidate | None
     emotion: EmotionState | None = None
+    presence_decision: PresenceDecision | None = None
 
 
 class PresencePipeline:
     """Core proactive path from normalized Event to optional feedback.
 
-    The pipeline deliberately knows nothing about Git, calendars, devices, or
-    any other concrete sensor. It also knows nothing about the final feedback
-    destination beyond the FeedbackSink contract.
+    Attention answers whether an event is worth deeper cognition. When an M6
+    PresencePolicy is configured, it separately decides whether Hikari may
+    interrupt the user *now*. Suppressed events never invoke the Reasoner.
     """
 
     def __init__(
@@ -72,7 +87,11 @@ class PresencePipeline:
         personality_profile: PersonalityProfile | None = None,
         emotion_state: EmotionState | None = None,
         emotion_policy: EmotionPolicy | None = None,
+        presence_policy: PresencePolicy | None = None,
+        proactive_delivery_sink: ProactiveDeliverySink | None = None,
     ) -> None:
+        if proactive_delivery_sink is not None and presence_policy is None:
+            raise ValueError("proactive_delivery_sink requires presence_policy")
         self.memory = memory
         self.attention = attention
         self.reasoner = reasoner
@@ -83,6 +102,8 @@ class PresencePipeline:
         self.assimilation_policy = assimilation_policy
         self.personality_profile = personality_profile
         self.emotion_policy = emotion_policy
+        self.presence_policy = presence_policy
+        self.proactive_delivery_sink = proactive_delivery_sink
         self.emotion_state = (
             emotion_state
             if emotion_state is not None
@@ -127,7 +148,21 @@ class PresencePipeline:
                 feedback=None,
                 candidate=candidate,
                 emotion=self.emotion_state,
+                presence_decision=None,
             )
+
+        presence_decision: PresenceDecision | None = None
+        if self.presence_policy is not None:
+            presence_decision = self.presence_policy.evaluate(event, decision)
+            if not presence_decision.should_deliver:
+                return InterventionResult(
+                    remembered=remembered,
+                    decision=decision,
+                    feedback=None,
+                    candidate=candidate,
+                    emotion=self.emotion_state,
+                    presence_decision=presence_decision,
+                )
 
         reasoning_context = dict(event.context)
 
@@ -158,11 +193,23 @@ class PresencePipeline:
         )
 
         feedback = self.reasoner.reason(reasoning_event, decision)
-        self.feedback_sink.deliver(feedback)
+        if self.proactive_delivery_sink is not None:
+            if presence_decision is None:
+                raise RuntimeError("proactive delivery reached without PresenceDecision")
+            self.proactive_delivery_sink.deliver(event, feedback, presence_decision)
+        else:
+            self.feedback_sink.deliver(feedback)
+
+        if self.presence_policy is not None:
+            if presence_decision is None:
+                raise RuntimeError("PresencePolicy accepted without PresenceDecision")
+            self.presence_policy.mark_accepted(presence_decision)
+
         return InterventionResult(
             remembered=remembered,
             decision=decision,
             feedback=feedback,
             candidate=candidate,
             emotion=self.emotion_state,
+            presence_decision=presence_decision,
         )

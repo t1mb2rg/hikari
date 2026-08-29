@@ -30,7 +30,14 @@ from conversation.remote import (
     ConversationWebSocketHost,
     _is_loopback_host,
 )
-from core.presence import ConsoleFeedbackSink, FeedbackSink, PresencePipeline
+from core.delivery import DeliveryOutbox, DeliveryRouter
+from core.presence import (
+    ConsoleFeedbackSink,
+    FeedbackSink,
+    PresencePipeline,
+    ProactiveDeliverySink,
+)
+from core.presence_policy import PresencePolicy, PresencePolicyConfig, PresencePolicyStore
 from core.runtime import ResidentPresenceRuntime
 from events.sensors import GitSensor
 from integrations.qq_bridge.config import QQBridgeConfig
@@ -38,6 +45,7 @@ from memory.store import MemoryStore
 from personality import load_personality
 
 from .environment import load_runtime_environment
+from .presence_delivery import RoutedPresenceDelivery, WindowsDeliverySink
 from .unified import (
     QQBridgeProcessConfig,
     QQBridgeSupervisor,
@@ -47,7 +55,7 @@ from .unified import (
 
 
 def feedback_sink(output: str) -> FeedbackSink:
-    """Build one user-facing feedback channel without widening Presence authority."""
+    """Build one legacy/direct user-facing feedback channel."""
 
     if output == "console":
         return ConsoleFeedbackSink()
@@ -94,6 +102,49 @@ def build_reasoner(
     return ModelReasoner(provider)
 
 
+def build_presence_components(
+    values: Mapping[str, str],
+    *,
+    state_dir: Path,
+    qq_enabled: bool,
+    output: str,
+) -> tuple[PresencePolicyConfig | None, PresencePolicy | None, ProactiveDeliverySink | None]:
+    """Assemble governed Presence only for production-style or explicit use.
+
+    `resident.app --output console` remains a lightweight developer path unless a
+    Presence channel is explicitly configured. The detached Windows host uses
+    `--output windows`, so the governed M6 path is active there by default.
+    """
+
+    explicit_channel = values.get("HIKARI_PRESENCE_CHANNEL", "").strip()
+    if output == "console" and not explicit_channel:
+        return None, None, None
+
+    config = PresencePolicyConfig.from_mapping(values, default_channel="windows")
+    qq_recipient: str | None = None
+    if config.channel == "qq":
+        if not qq_enabled:
+            raise ValueError(
+                "HIKARI_PRESENCE_CHANNEL=qq requires HIKARI_QQ_ENABLED=true"
+            )
+        qq_config = QQBridgeConfig.from_mapping(values, state_dir=state_dir)
+        if qq_config.proactive_user_id is None:
+            raise ValueError(
+                "HIKARI_PRESENCE_CHANNEL=qq requires HIKARI_QQ_PROACTIVE_USER_ID"
+            )
+        qq_recipient = qq_config.proactive_user_id
+
+    outbox = DeliveryOutbox(state_dir / "proactive_delivery.db")
+    sinks = {"windows": WindowsDeliverySink()} if config.channel == "windows" else {}
+    router = DeliveryRouter(outbox, sinks=sinks)
+    policy = PresencePolicy(
+        config,
+        PresencePolicyStore(state_dir / "presence_policy.db"),
+    )
+    delivery = RoutedPresenceDelivery(router, qq_recipient=qq_recipient)
+    return config, policy, delivery
+
+
 def build_runtime(
     repository: Path,
     memory_path: Path,
@@ -102,6 +153,8 @@ def build_runtime(
     output: str = "console",
     reasoner: Reasoner | None = None,
     memory: MemoryStore | None = None,
+    presence_policy: PresencePolicy | None = None,
+    proactive_delivery_sink: ProactiveDeliverySink | None = None,
 ) -> ResidentPresenceRuntime:
     """Build Hikari's concrete Git-backed resident Presence runtime."""
 
@@ -123,6 +176,8 @@ def build_runtime(
             ]
         ),
         personality_profile=load_personality(),
+        presence_policy=presence_policy,
+        proactive_delivery_sink=proactive_delivery_sink,
     )
     return ResidentPresenceRuntime(
         [GitSensor(repository)],
@@ -156,7 +211,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--output",
         choices=("console", "windows"),
         default="console",
-        help="主动反馈通道（默认：console）",
+        help="旧版直接反馈通道；Windows host 会启用 governed Presence",
     )
     parser.add_argument(
         "--reasoner",
@@ -207,6 +262,15 @@ def _conversation_port(values: Mapping[str, str]) -> int:
     return port
 
 
+def _quiet_hours_description(config: PresencePolicyConfig) -> str:
+    if not config.quiet_hours_enabled:
+        return "关闭"
+    return (
+        f"{config.quiet_start.hour:02d}:{config.quiet_start.minute:02d}-"
+        f"{config.quiet_end.hour:02d}:{config.quiet_end.minute:02d}"
+    )
+
+
 def main(argv: Sequence[str] | None = None) -> None:
     args = build_parser().parse_args(argv)
 
@@ -235,7 +299,13 @@ def main(argv: Sequence[str] | None = None) -> None:
         )
         if qq_enabled and not conversation_enabled:
             raise ValueError("HIKARI_QQ_ENABLED requires Conversation Host to be enabled")
-    except ValueError as exc:
+        presence_config, presence_policy, proactive_delivery_sink = build_presence_components(
+            values,
+            state_dir=memory_path.parent,
+            qq_enabled=qq_enabled,
+            output=args.output,
+        )
+    except (TypeError, ValueError) as exc:
         raise SystemExit(str(exc)) from exc
 
     memory = MemoryStore(memory_path)
@@ -246,10 +316,26 @@ def main(argv: Sequence[str] | None = None) -> None:
         output=args.output,
         reasoner=reasoner,
         memory=memory,
+        presence_policy=presence_policy,
+        proactive_delivery_sink=proactive_delivery_sink,
     )
 
     print(f"Hikari 正在观察：{repository}", flush=True)
-    print(f"Hikari 主动反馈通道：{args.output}", flush=True)
+    if presence_config is None:
+        print(f"Hikari 主动反馈通道：{args.output}", flush=True)
+    else:
+        print(f"Hikari Presence 通道：{presence_config.channel}", flush=True)
+        print(
+            f"Hikari Presence 安静时段：{_quiet_hours_description(presence_config)}",
+            flush=True,
+        )
+        print(
+            "Hikari Presence 抑制："
+            f"cooldown={presence_config.cooldown_seconds:g}s, "
+            f"duplicate={presence_config.duplicate_window_seconds:g}s, "
+            f"urgent>={presence_config.urgent_threshold:g}",
+            flush=True,
+        )
     print(f"Hikari 认知模式：{args.reasoner}", flush=True)
     if runtime_environment.env_file is not None:
         print(f"Hikari 环境文件：{runtime_environment.env_file}", flush=True)
