@@ -22,6 +22,7 @@ from resident.windows_host import default_state_dir
 from .engine import (
     ConversationEngine,
     INTERACTIVE_SYSTEM_INSTRUCTIONS,
+    LEGACY_INTERACTIVE_SYSTEM_INSTRUCTIONS,
     THIN_HIKARI_SYSTEM_INSTRUCTIONS,
 )
 from .models import UserTurn
@@ -32,7 +33,7 @@ EXIT_COMMANDS = {"/exit", "/quit"}
 PASTE_COMMAND = "/paste"
 PASTE_SEND_COMMAND = "/send"
 PASTE_CANCEL_COMMAND = "/cancel"
-PROMPT_PROFILES = ("production", "thin")
+PROMPT_PROFILES = ("production", "thin", "legacy")
 
 
 def build_chat_provider(environment: Mapping[str, str]) -> ChatProvider:
@@ -128,7 +129,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--prompt-profile",
         choices=PROMPT_PROFILES,
         default="production",
-        help="production 使用完整 Hikari 语气约束；thin 用于底模盲测，只保留核心身份、边界与记忆真实性。",
+        help=(
+            "production 使用已通过模型盲测的最小 grounded Hikari 基线；"
+            "thin 与 production 等价并保留给盲测脚本；"
+            "legacy 显式启用旧版完整 voice/personality steering。"
+        ),
     )
     parser.add_argument(
         "--desktop-context",
@@ -149,15 +154,15 @@ def main(argv: Sequence[str] | None = None) -> int:
             if args.db
             else (default_state_dir() / "memory.db").resolve()
         )
-        thin_prompt = args.prompt_profile == "thin"
+        legacy_prompt = args.prompt_profile == "legacy"
         engine = ConversationEngine(
             provider,
             MemoryStore(memory_path),
             context_collector=default_context_collector(
                 include_desktop_activity=args.desktop_context,
             ),
-            personality_profile=None if thin_prompt else load_personality(),
-            voice_profile=None if thin_prompt else load_voice(),
+            personality_profile=load_personality() if legacy_prompt else None,
+            voice_profile=load_voice() if legacy_prompt else None,
             relationship_context={
                 "kind": "primary_local_user",
                 "basis": "trusted_runtime_binding",
@@ -174,9 +179,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             },
             history_limit=args.history_limit,
             system_instructions=(
-                THIN_HIKARI_SYSTEM_INSTRUCTIONS
-                if thin_prompt
-                else INTERACTIVE_SYSTEM_INSTRUCTIONS
+                LEGACY_INTERACTIVE_SYSTEM_INSTRUCTIONS
+                if legacy_prompt
+                else (
+                    THIN_HIKARI_SYSTEM_INSTRUCTIONS
+                    if args.prompt_profile == "thin"
+                    else INTERACTIVE_SYSTEM_INSTRUCTIONS
+                )
             ),
         )
     except ValueError as exc:
