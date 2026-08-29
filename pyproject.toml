@@ -18,6 +18,7 @@ hikari-resident = "resident.windows_host:main"
 hikari-autostart = "resident.windows_autostart:main"
 hikari-chat = "conversation.cli:main"
 hikari-bakeoff = "conversation.bakeoff:main"
+hikari-qq = "conversation.onebot:main"
 
 [project.optional-dependencies]
 dev = [
