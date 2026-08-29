@@ -50,13 +50,11 @@ def _parse_unit_interval(values: Mapping[str, str], name: str, *, default: float
 
 
 def _parse_clock(value: str, *, name: str) -> time:
-    text = value.strip()
-    pieces = text.split(":")
+    pieces = value.strip().split(":")
     if len(pieces) != 2:
         raise ValueError(f"{name} must use HH:MM")
     try:
-        hour = int(pieces[0])
-        minute = int(pieces[1])
+        hour, minute = int(pieces[0]), int(pieces[1])
     except ValueError as exc:
         raise ValueError(f"{name} must use HH:MM") from exc
     if not 0 <= hour <= 23 or not 0 <= minute <= 59:
@@ -92,20 +90,19 @@ class PresencePolicyConfig:
             raise ValueError("duplicate_window_seconds must be >= 0")
         if not 0 <= self.urgent_threshold <= 1:
             raise ValueError("urgent_threshold must be between 0 and 1")
-        patterns = tuple(
-            pattern.strip().casefold()
-            for pattern in self.busy_foreground_patterns
-            if pattern.strip()
-        )
         object.__setattr__(self, "channel", channel)
         object.__setattr__(self, "cooldown_seconds", float(self.cooldown_seconds))
+        object.__setattr__(self, "duplicate_window_seconds", float(self.duplicate_window_seconds))
+        object.__setattr__(self, "urgent_threshold", float(self.urgent_threshold))
         object.__setattr__(
             self,
-            "duplicate_window_seconds",
-            float(self.duplicate_window_seconds),
+            "busy_foreground_patterns",
+            tuple(
+                pattern.strip().casefold()
+                for pattern in self.busy_foreground_patterns
+                if pattern.strip()
+            ),
         )
-        object.__setattr__(self, "urgent_threshold", float(self.urgent_threshold))
-        object.__setattr__(self, "busy_foreground_patterns", patterns)
 
     @classmethod
     def from_mapping(
@@ -114,26 +111,22 @@ class PresencePolicyConfig:
         *,
         default_channel: str = "windows",
     ) -> "PresencePolicyConfig":
-        channel = values.get("HIKARI_PRESENCE_CHANNEL", default_channel).strip().lower()
-        start = _parse_clock(
-            values.get("HIKARI_PRESENCE_QUIET_START", "23:00"),
-            name="HIKARI_PRESENCE_QUIET_START",
-        )
-        end = _parse_clock(
-            values.get("HIKARI_PRESENCE_QUIET_END", "07:00"),
-            name="HIKARI_PRESENCE_QUIET_END",
-        )
         raw_patterns = values.get("HIKARI_PRESENCE_BUSY_FOREGROUND_PATTERNS", "")
-        patterns = tuple(part for part in raw_patterns.split(",") if part.strip())
         return cls(
-            channel=channel,
+            channel=values.get("HIKARI_PRESENCE_CHANNEL", default_channel),
             quiet_hours_enabled=_parse_bool(
                 values,
                 "HIKARI_PRESENCE_QUIET_HOURS_ENABLED",
                 default=False,
             ),
-            quiet_start=start,
-            quiet_end=end,
+            quiet_start=_parse_clock(
+                values.get("HIKARI_PRESENCE_QUIET_START", "23:00"),
+                name="HIKARI_PRESENCE_QUIET_START",
+            ),
+            quiet_end=_parse_clock(
+                values.get("HIKARI_PRESENCE_QUIET_END", "07:00"),
+                name="HIKARI_PRESENCE_QUIET_END",
+            ),
             cooldown_seconds=_parse_nonnegative(
                 values,
                 "HIKARI_PRESENCE_COOLDOWN_SECONDS",
@@ -149,7 +142,9 @@ class PresencePolicyConfig:
                 "HIKARI_PRESENCE_URGENT_THRESHOLD",
                 default=0.95,
             ),
-            busy_foreground_patterns=patterns,
+            busy_foreground_patterns=tuple(
+                part for part in raw_patterns.split(",") if part.strip()
+            ),
             suppress_active_schedule=_parse_bool(
                 values,
                 "HIKARI_PRESENCE_SUPPRESS_ACTIVE_SCHEDULE",
@@ -269,8 +264,7 @@ class PresencePolicy:
         if occurred.tzinfo is None:
             occurred = occurred.replace(tzinfo=timezone.utc)
         payload = f"{fingerprint}\0{occurred.astimezone(timezone.utc).isoformat()}"
-        digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()[:32]
-        return f"presence:{digest}"
+        return "presence:" + hashlib.sha256(payload.encode("utf-8")).hexdigest()[:32]
 
     def evaluate(self, event: Event, attention: AttentionDecision) -> PresenceDecision:
         fingerprint = self.fingerprint(event)
@@ -291,7 +285,6 @@ class PresencePolicy:
 
         now = self._now()
         timestamp = now.timestamp()
-
         previous = self.store.accepted_at(fingerprint)
         if previous is not None and self._inside_window(
             timestamp,
@@ -347,7 +340,7 @@ class PresencePolicy:
                 user_state,
             )
 
-        busy_reason = self._busy_reason(event, user_state)
+        busy_reason = self._busy_reason(event)
         if busy_reason is not None:
             return PresenceDecision(
                 False,
@@ -378,9 +371,7 @@ class PresencePolicy:
         value = self.clock()
         if not isinstance(value, datetime):
             raise TypeError("PresencePolicy clock must return datetime")
-        if value.tzinfo is None:
-            value = value.astimezone()
-        return value
+        return value.astimezone() if value.tzinfo is None else value
 
     @staticmethod
     def _inside_window(now: float, previous: float, window_seconds: float) -> bool:
@@ -410,9 +401,8 @@ class PresencePolicy:
         for name, value in providers_raw.items():
             if isinstance(name, str) and isinstance(value, Mapping):
                 providers[name] = dict(value)
-        captured_raw = raw.get("captured_at")
         try:
-            captured = datetime.fromisoformat(str(captured_raw))
+            captured = datetime.fromisoformat(str(raw.get("captured_at")))
         except (TypeError, ValueError):
             captured = datetime.now(timezone.utc)
         if captured.tzinfo is None:
@@ -421,37 +411,30 @@ class PresencePolicy:
 
     def _user_state(self, event: Event) -> UserState | None:
         snapshot = self._snapshot(event)
-        if snapshot is None:
-            return None
-        return self.user_state_inferer.infer(snapshot)
+        return None if snapshot is None else self.user_state_inferer.infer(snapshot)
 
     def _local_time(self, event: Event, *, fallback: datetime) -> datetime:
         snapshot = self._snapshot(event)
         if snapshot is not None:
-            time_context = snapshot.providers.get("time", {})
-            raw = time_context.get("local_iso")
+            raw = snapshot.providers.get("time", {}).get("local_iso")
             if isinstance(raw, str) and raw.strip():
                 try:
                     parsed = datetime.fromisoformat(raw.strip())
                 except ValueError:
                     pass
                 else:
-                    if parsed.tzinfo is None:
-                        parsed = parsed.astimezone()
-                    return parsed
+                    return parsed.astimezone() if parsed.tzinfo is None else parsed
         return fallback.astimezone()
 
-    def _busy_reason(self, event: Event, user_state: UserState | None) -> str | None:
+    def _busy_reason(self, event: Event) -> str | None:
         snapshot = self._snapshot(event)
         if snapshot is None:
             return None
 
-        if (
-            self.config.suppress_active_schedule
-            and user_state is not None
-            and user_state.interruptibility == "likely_busy"
-        ):
-            return "active schedule suggests low interruptibility"
+        if self.config.suppress_active_schedule:
+            current_schedule = snapshot.providers.get("schedule", {}).get("current", [])
+            if current_schedule:
+                return "active schedule suppresses ordinary interruption"
 
         foreground = snapshot.providers.get("foreground", {})
         if foreground.get("available") is True:
