@@ -185,6 +185,8 @@ class DeliveryOutbox:
         return [self._row_to_record(row) for row in rows]
 
     def claim(self, delivery_id: str) -> DeliveryRecord:
+        """Atomically acquire a pending delivery for exactly one transport worker."""
+
         delivery_id = _required_text(delivery_id, name="delivery_id")
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
@@ -200,16 +202,19 @@ class DeliveryOutbox:
             if row is None:
                 raise KeyError(delivery_id)
             record = self._row_to_record(row)
-            if record.state == "pending":
-                connection.execute(
-                    """
-                    UPDATE proactive_delivery_outbox
-                    SET state = 'sending', attempts = attempts + 1,
-                        last_error = NULL, updated_at = CURRENT_TIMESTAMP
-                    WHERE delivery_id = ? AND state = 'pending'
-                    """,
-                    (delivery_id,),
-                )
+            if record.state != "pending":
+                raise ValueError("proactive delivery is already claimed or not pending")
+            cursor = connection.execute(
+                """
+                UPDATE proactive_delivery_outbox
+                SET state = 'sending', attempts = attempts + 1,
+                    last_error = NULL, updated_at = CURRENT_TIMESTAMP
+                WHERE delivery_id = ? AND state = 'pending'
+                """,
+                (delivery_id,),
+            )
+            if cursor.rowcount != 1:
+                raise RuntimeError("failed to acquire proactive delivery claim")
         updated = self.get(delivery_id)
         if updated is None:
             raise RuntimeError("failed to claim proactive delivery")
@@ -328,9 +333,13 @@ class DeliveryRouter:
         if sink is None:
             return record
 
-        record = self.outbox.claim(request.delivery_id)
-        if record.state != "sending":
-            return record
+        try:
+            record = self.outbox.claim(request.delivery_id)
+        except ValueError:
+            current = self.outbox.get(request.delivery_id)
+            if current is None:
+                raise RuntimeError("proactive delivery disappeared while claiming")
+            return current
         try:
             sink.send(request)
         except Exception as exc:
