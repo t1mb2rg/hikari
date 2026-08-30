@@ -13,6 +13,8 @@ from core.runtime import ResidentPresenceRuntime
 from conversation.remote import ConversationWebSocketHost
 from websockets.asyncio.server import serve
 
+from .napcat_login_guard import NapCatLoginGuard
+
 
 ProcessFactory = Callable[..., subprocess.Popen[bytes]]
 Clock = Callable[[], float]
@@ -207,6 +209,7 @@ class UnifiedResidentService:
         bind_host: str,
         bind_port: int,
         qq_supervisor: QQBridgeSupervisor | None = None,
+        napcat_login_guard: NapCatLoginGuard | None = None,
     ) -> None:
         if not isinstance(presence, ResidentPresenceRuntime):
             raise TypeError("UnifiedResidentService requires ResidentPresenceRuntime")
@@ -222,6 +225,7 @@ class UnifiedResidentService:
         self.bind_host = bind_host.strip()
         self.bind_port = int(bind_port)
         self.qq_supervisor = qq_supervisor
+        self.napcat_login_guard = napcat_login_guard
         self.stop_event = asyncio.Event()
         self.started_event = asyncio.Event()
         self.bound_port: int | None = None
@@ -264,6 +268,12 @@ class UnifiedResidentService:
                 if self.qq_supervisor is not None:
                     tasks.append(
                         asyncio.create_task(self.qq_supervisor.run(self.stop_event))
+                    )
+                if self.napcat_login_guard is not None:
+                    tasks.append(
+                        asyncio.create_task(
+                            self.napcat_login_guard.run(self.stop_event)
+                        )
                     )
 
                 stop_waiter = asyncio.create_task(self.stop_event.wait())

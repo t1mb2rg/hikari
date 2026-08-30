@@ -9,6 +9,7 @@ from resident.doctor_cli import (
     collect_doctor_report,
     main,
 )
+from resident.napcat_login_guard import NapCatLoginStatus
 
 
 def _prepare_napcat(root: Path, *, host: str = "127.0.0.1", file_log: bool = True) -> None:
@@ -67,6 +68,14 @@ def _healthy_probe(_: str):
     }
 
 
+def _healthy_login(_: Path) -> NapCatLoginStatus:
+    return NapCatLoginStatus(
+        is_login=True,
+        is_offline=False,
+        qrcode_available=False,
+    )
+
+
 def test_doctor_reports_healthy_napcat_without_leaking_tokens(tmp_path: Path):
     state_dir = tmp_path / "state"
     state_dir.mkdir()
@@ -77,6 +86,7 @@ def test_doctor_reports_healthy_napcat_without_leaking_tokens(tmp_path: Path):
         state_dir,
         napcat,
         windows_probe=_healthy_probe,
+        login_probe=_healthy_login,
         system_name="Windows",
     )
 
@@ -87,6 +97,8 @@ def test_doctor_reports_healthy_napcat_without_leaking_tokens(tmp_path: Path):
     assert report.napcat.bridge_established_count == 1
     assert report.napcat.webui_url == "http://127.0.0.1:6099"
     assert report.napcat.webui_token_configured is True
+    assert report.napcat.qq_login_state == "healthy"
+    assert report.napcat.manual_verification_required is False
     assert report.napcat.log_file_count == 1
     assert report.napcat.latest_log_path is not None
     payload = json.dumps(report.as_dict(), ensure_ascii=False)
@@ -109,6 +121,7 @@ def test_doctor_warns_for_wide_webui_and_disabled_file_logging(tmp_path: Path):
         state_dir,
         napcat,
         windows_probe=_healthy_probe,
+        login_probe=_healthy_login,
         system_name="Windows",
     )
 
@@ -128,6 +141,7 @@ def test_doctor_warns_when_file_logging_is_enabled_but_no_file_exists(tmp_path: 
         state_dir,
         napcat,
         windows_probe=_healthy_probe,
+        login_probe=_healthy_login,
         system_name="Windows",
     )
 
@@ -153,6 +167,7 @@ def test_doctor_surfaces_stopped_task_missing_qq_and_disconnected_bridge(tmp_pat
             },
             "qq_pids": [],
         },
+        login_probe=_healthy_login,
         system_name="Windows",
     )
 
@@ -177,6 +192,7 @@ def test_doctor_handles_probe_failure_and_malformed_config(tmp_path: Path):
         state_dir,
         napcat,
         windows_probe=fail,
+        login_probe=_healthy_login,
         system_name="Windows",
     )
 
@@ -218,12 +234,40 @@ def test_console_safe_escapes_characters_missing_from_windows_code_page():
 def test_log_clues_redact_common_secret_shapes():
     rendered = _redact_log_line(
         "WARNING provider failed token=abc123 api_key:xyz789 password=hunter2 "
-        "Authorization: Bearer auth456 standalone Bearer bearer789"
+        "webui_token=query999 Authorization: Bearer auth456 standalone Bearer bearer789"
     )
 
     assert "abc123" not in rendered
     assert "xyz789" not in rendered
     assert "hunter2" not in rendered
+    assert "query999" not in rendered
     assert "auth456" not in rendered
     assert "bearer789" not in rendered
-    assert rendered.count("<redacted>") == 5
+    assert rendered.count("<redacted>") == 6
+
+
+def test_doctor_distinguishes_transport_from_manual_qq_login(tmp_path: Path):
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    napcat = tmp_path / "napcat"
+    _prepare_napcat(napcat)
+
+    report = collect_doctor_report(
+        state_dir,
+        napcat,
+        windows_probe=_healthy_probe,
+        login_probe=lambda _: NapCatLoginStatus(
+            is_login=False,
+            is_offline=False,
+            qrcode_available=True,
+            login_error="需要二维码验证",
+        ),
+        system_name="Windows",
+    )
+
+    assert report.napcat.bridge_established_count == 1
+    assert report.napcat.qq_login_state == "manual_verification_required"
+    assert report.napcat.manual_verification_required is True
+    assert "qq.login_manual" in {finding.code for finding in report.findings}
+    payload = json.dumps(report.as_dict(), ensure_ascii=False)
+    assert "super-secret-token" not in payload
