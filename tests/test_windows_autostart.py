@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -81,10 +82,11 @@ def test_install_registers_current_user_run_value_without_secret(tmp_path: Path)
     assert str(config_path.resolve()) in command
     assert secret not in command
 
-    persisted = config_path.read_text(encoding="utf-8")
-    assert str(repository.resolve()) in persisted
-    assert str(env_file.resolve()) in persisted
-    assert secret not in persisted
+    persisted_text = config_path.read_text(encoding="utf-8")
+    persisted = json.loads(persisted_text)
+    assert persisted["repository"] == str(repository.resolve())
+    assert persisted["env_file"] == str(env_file.resolve())
+    assert secret not in persisted_text
     inspected = autostart.inspect()
     assert inspected.healthy is True
     assert inspected.reason == "ready"

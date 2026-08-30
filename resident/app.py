@@ -19,6 +19,10 @@ from awareness import (
 )
 from brain import ModelReasoner, Reasoner, SimpleReasoner
 from brain.providers import OpenAICompatibleProvider
+from conversation.action_bridge import (
+    ConversationForgeBridge,
+    build_conversation_forge_bridge,
+)
 from conversation.cli import build_chat_provider, default_context_collector
 from conversation.engine import ConversationEngine, INTERACTIVE_SYSTEM_INSTRUCTIONS
 from conversation.receipts import ConversationReceiptStore
@@ -380,10 +384,19 @@ def main(argv: Sequence[str] | None = None) -> None:
             user_fact_extractor=user_fact_extractor,
             system_instructions=INTERACTIVE_SYSTEM_INSTRUCTIONS,
         )
+        forge_bridge: ConversationForgeBridge | None = None
+        if runtime_bool(values, "HIKARI_FORGE_ENABLED", default=False):
+            forge_bridge = build_conversation_forge_bridge(
+                values,
+                provider,
+                repository=repository,
+                state_dir=memory_path.parent,
+            )
         conversation_host = ConversationWebSocketHost(
             ConversationRequestProcessor(
                 engine,
                 ConversationReceiptStore(receipt_path),
+                action_bridge=forge_bridge,
             ),
             shared_secret=shared_secret,
         )
@@ -429,6 +442,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     )
     print(f"Hikari Conversation Host：ws://{bind_host}:{bind_port}", flush=True)
     print(f"Hikari 对话模型：{getattr(provider, 'model', type(provider).__name__)}", flush=True)
+    print(f"Hikari Forge hands：{'启用' if forge_bridge is not None else '关闭'}", flush=True)
     print(f"Hikari QQ Bridge：{'resident 托管' if qq_enabled else '关闭'}", flush=True)
     print(
         "Hikari NapCat Login Guard："
