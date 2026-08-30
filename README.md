@@ -183,3 +183,22 @@ Forge
   ↓
 New Capability
 ```
+
+## Operations doctor
+
+在 Windows Resident / QQ / NapCat 链路异常时，先运行只读诊断：
+
+```powershell
+hikari-doctor
+```
+
+它会集中检查 Resident、durable spool、delivery audit、NapCat 计划任务、QQ
+进程、8081/6099 端口、WebUI 与二维码路径，并显示少量最近错误线索。诊断不会
+输出 WebUI token，也不会自动启动、停止或重发任何东西。
+
+需要结构化输出或打开本机 NapCat WebUI 时：
+
+```powershell
+hikari-doctor --json
+hikari-doctor --open-webui
+```
