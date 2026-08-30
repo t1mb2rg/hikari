@@ -158,17 +158,19 @@ class ConversationEngine:
         messages.extend(self._history_messages(history))
         messages.append(ChatMessage(role="user", content=turn.text))
 
+        # Model failure must not leave a half-committed conversation turn in memory.
+        # The current user text is already included in `messages`, so persistence can
+        # safely wait until cognition succeeds.
+        text = self.provider.complete(messages).strip()
+        if not text:
+            raise RuntimeError("model provider returned empty conversation reply")
+
         self.memory.remember_event(
             USER_EVENT_TYPE,
             turn.text,
             context=self._event_context(turn.channel, turn.conversation_id, "user"),
             importance=1.0,
         )
-
-        text = self.provider.complete(messages).strip()
-        if not text:
-            raise RuntimeError("model provider returned empty conversation reply")
-
         self.memory.remember_event(
             ASSISTANT_EVENT_TYPE,
             text,

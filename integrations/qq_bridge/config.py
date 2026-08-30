@@ -15,6 +15,8 @@ DEFAULT_ADAPTER_ID = "qq.main"
 DEFAULT_LINK_TIMEOUT_SECONDS = 300.0
 DEFAULT_LINK_CHECK_SECONDS = 60.0
 DEFAULT_DELIVERY_POLL_SECONDS = 1.0
+DEFAULT_CONVERSATION_RETRY_INITIAL_SECONDS = 5.0
+DEFAULT_CONVERSATION_RETRY_MAX_SECONDS = 60.0
 
 
 def parse_allowed_user_ids(value: str | None) -> frozenset[str]:
@@ -57,6 +59,10 @@ class QQBridgeConfig:
     proactive_user_id: str | None = None
     delivery_outbox_path: Path | None = None
     delivery_poll_seconds: float = DEFAULT_DELIVERY_POLL_SECONDS
+    conversation_retry_initial_seconds: float = (
+        DEFAULT_CONVERSATION_RETRY_INITIAL_SECONDS
+    )
+    conversation_retry_max_seconds: float = DEFAULT_CONVERSATION_RETRY_MAX_SECONDS
     link_timeout_seconds: float = DEFAULT_LINK_TIMEOUT_SECONDS
     link_check_seconds: float = DEFAULT_LINK_CHECK_SECONDS
 
@@ -87,6 +93,12 @@ class QQBridgeConfig:
             )
         if self.delivery_poll_seconds <= 0:
             raise ValueError("delivery poll interval must be > 0")
+        if self.conversation_retry_initial_seconds <= 0:
+            raise ValueError("conversation retry initial interval must be > 0")
+        if self.conversation_retry_max_seconds < self.conversation_retry_initial_seconds:
+            raise ValueError(
+                "conversation retry max interval must be >= initial interval"
+            )
         if self.link_timeout_seconds <= 0 or self.link_check_seconds <= 0:
             raise ValueError("link monitor intervals must be > 0")
         object.__setattr__(self, "proactive_user_id", proactive_user_id)
@@ -133,6 +145,16 @@ class QQBridgeConfig:
                 values,
                 "HIKARI_QQ_DELIVERY_POLL_SECONDS",
                 DEFAULT_DELIVERY_POLL_SECONDS,
+            ),
+            conversation_retry_initial_seconds=_float_value(
+                values,
+                "HIKARI_QQ_CONVERSATION_RETRY_INITIAL_SECONDS",
+                DEFAULT_CONVERSATION_RETRY_INITIAL_SECONDS,
+            ),
+            conversation_retry_max_seconds=_float_value(
+                values,
+                "HIKARI_QQ_CONVERSATION_RETRY_MAX_SECONDS",
+                DEFAULT_CONVERSATION_RETRY_MAX_SECONDS,
             ),
             link_timeout_seconds=_float_value(
                 values,

@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from attention import AttentionDecision
-from brain import ChatMessage, ModelReasoner
+from brain import ChatMessage, ModelCognitionError, ModelReasoner
 from events import Event
 
 
@@ -15,6 +17,19 @@ class RecordingProvider:
     def complete(self, messages):
         self.messages = list(messages)
         return self.response
+
+
+class FailingProvider:
+    def complete(self, messages):
+        raise OSError("temporary network failure with provider detail")
+
+
+def _decision() -> AttentionDecision:
+    return AttentionDecision(
+        should_intervene=True,
+        importance=0.9,
+        reason="event type policy",
+    )
 
 
 def test_model_reasoner_passes_structured_context_to_provider():
@@ -35,13 +50,8 @@ def test_model_reasoner_passes_structured_context_to_provider():
             ],
         },
     )
-    decision = AttentionDecision(
-        should_intervene=True,
-        importance=0.9,
-        reason="event type policy",
-    )
 
-    feedback = reasoner.reason(event, decision)
+    feedback = reasoner.reason(event, _decision())
 
     assert feedback.text == provider.response
     assert feedback.event_type == "test.important"
@@ -56,20 +66,29 @@ def test_model_reasoner_passes_structured_context_to_provider():
     assert payload["context"]["_hikari_recall"][0]["content"] == "A related memory"
 
 
-def test_model_reasoner_rejects_empty_provider_output():
+def test_model_reasoner_classifies_provider_failure_without_copying_provider_message():
+    reasoner = ModelReasoner(FailingProvider())
+
+    with pytest.raises(ModelCognitionError) as captured:
+        reasoner.reason(
+            Event(event_type="test", source="fake", content="Something"),
+            _decision(),
+        )
+
+    assert captured.value.provider_error_type == "OSError"
+    assert "provider detail" not in str(captured.value)
+    assert isinstance(captured.value.__cause__, OSError)
+
+
+def test_model_reasoner_rejects_empty_provider_output_as_cognition_failure():
     provider = RecordingProvider("   ")
     reasoner = ModelReasoner(provider)
 
-    try:
+    with pytest.raises(ModelCognitionError) as captured:
         reasoner.reason(
             Event(event_type="test", source="fake", content="Something"),
-            AttentionDecision(
-                should_intervene=True,
-                importance=0.8,
-                reason="test",
-            ),
+            _decision(),
         )
-    except RuntimeError as exc:
-        assert "empty feedback" in str(exc)
-    else:
-        raise AssertionError("empty provider output must fail")
+
+    assert "empty feedback" in str(captured.value)
+    assert captured.value.provider_error_type == "EmptyResponse"

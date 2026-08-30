@@ -35,6 +35,11 @@ class QQBridgeRuntime:
         self._bot: Bot | None = None
         self._monitor_task: asyncio.Task[None] | None = None
         self._delivery_task: asyncio.Task[None] | None = None
+        self._conversation_retry_task: asyncio.Task[None] | None = None
+        # Live inbound, reconnect drain, and periodic recovery share one owner.
+        # This prevents overlapping model calls or QQ sends for the same turn
+        # while retaining durable at-least-once recovery after process failure.
+        self._conversation_lock = asyncio.Lock()
 
     def observe_event(self) -> None:
         self.health.mark_event()
@@ -69,21 +74,27 @@ class QQBridgeRuntime:
         await self._deliver_item(bot, item)
 
     async def _deliver_item(self, bot: Bot, item: BridgeSpoolItem) -> None:
-        reply = item.reply
-        if reply is None:
-            reply = await self.core.request(item.request_id, item.turn)
-            item = self.spool.set_reply(item.request_id, reply)
-            reply = item.reply
-        if reply is None:
-            raise RuntimeError("QQ bridge spool lost assistant reply")
-        self._validate_outbound(reply)
-        user_id_text = reply.conversation_id.removeprefix("private:")
-        await bot.send_private_msg(
-            user_id=self._onebot_user_id(user_id_text),
-            message=reply.text,
-            auto_escape=True,
-        )
-        self.spool.mark_sent(item.request_id)
+        async with self._conversation_lock:
+            current = self.spool.get(item.request_id)
+            if current is None:
+                raise RuntimeError("QQ bridge spool item disappeared before delivery")
+            if current.state == "sent":
+                return
+            reply = current.reply
+            if reply is None:
+                reply = await self.core.request(current.request_id, current.turn)
+                current = self.spool.set_reply(current.request_id, reply)
+                reply = current.reply
+            if reply is None:
+                raise RuntimeError("QQ bridge spool lost assistant reply")
+            self._validate_outbound(reply)
+            user_id_text = reply.conversation_id.removeprefix("private:")
+            await bot.send_private_msg(
+                user_id=self._onebot_user_id(user_id_text),
+                message=reply.text,
+                auto_escape=True,
+            )
+            self.spool.mark_sent(current.request_id)
 
     @staticmethod
     def _onebot_user_id(user_id_text: str) -> int | str:
@@ -138,7 +149,7 @@ class QQBridgeRuntime:
             raise
         outbox.mark_sent(request.delivery_id)
 
-    async def drain_unsent(self, bot: Bot) -> None:
+    async def drain_unsent(self, bot: Bot) -> bool:
         for item in self.spool.unsent():
             try:
                 await self._deliver_item(bot, item)
@@ -146,7 +157,9 @@ class QQBridgeRuntime:
                 logger.warning(
                     f"Hikari QQ deferred spool item {item.request_id}: {type(exc).__name__}"
                 )
-                break
+                return False
+            logger.info(f"Hikari QQ recovered spool item {item.request_id}")
+        return True
 
     async def drain_proactive(self, bot: Bot) -> None:
         outbox = self.delivery_outbox
@@ -191,6 +204,26 @@ class QQBridgeRuntime:
         except asyncio.CancelledError:
             raise
 
+    async def conversation_retry_loop(self) -> None:
+        delay = self.config.conversation_retry_initial_seconds
+        try:
+            while True:
+                await asyncio.sleep(delay)
+                bot = self._bot
+                if bot is None:
+                    delay = self.config.conversation_retry_initial_seconds
+                    continue
+                drained = await self.drain_unsent(bot)
+                if drained:
+                    delay = self.config.conversation_retry_initial_seconds
+                else:
+                    delay = min(
+                        delay * 2,
+                        self.config.conversation_retry_max_seconds,
+                    )
+        except asyncio.CancelledError:
+            raise
+
     async def start(self) -> None:
         if self.delivery_outbox is not None:
             uncertain = self.delivery_outbox.recover_inflight()
@@ -203,6 +236,11 @@ class QQBridgeRuntime:
                 self.monitor_loop(),
                 name="hikari-qq-link-monitor",
             )
+        if self._conversation_retry_task is None:
+            self._conversation_retry_task = asyncio.create_task(
+                self.conversation_retry_loop(),
+                name="hikari-qq-conversation-retry",
+            )
         if self.delivery_outbox is not None and self._delivery_task is None:
             self._delivery_task = asyncio.create_task(
                 self.delivery_loop(),
@@ -210,9 +248,14 @@ class QQBridgeRuntime:
             )
 
     async def close(self) -> None:
-        tasks = [self._monitor_task, self._delivery_task]
+        tasks = [
+            self._monitor_task,
+            self._delivery_task,
+            self._conversation_retry_task,
+        ]
         self._monitor_task = None
         self._delivery_task = None
+        self._conversation_retry_task = None
         for task in tasks:
             if task is None:
                 continue
