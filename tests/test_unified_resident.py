@@ -130,7 +130,11 @@ def test_qq_bridge_supervisor_starts_only_hikari_bridge_child(tmp_path: Path):
         "integrations.qq_bridge.app",
     ]
     assert captured[0][1]["cwd"] == repository.resolve()
-    assert captured[0][1]["env"] == {"SAFE": "1"}
+    assert captured[0][1]["env"] == {
+        "SAFE": "1",
+        "PYTHONIOENCODING": "utf-8",
+        "PYTHONUTF8": "1",
+    }
     assert all("napcat" not in part.lower() for part in captured[0][0])
 
 

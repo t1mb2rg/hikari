@@ -81,7 +81,14 @@ class QQBridgeProcessConfig:
         object.__setattr__(self, "restart_initial_seconds", initial)
         object.__setattr__(self, "restart_max_seconds", maximum)
         object.__setattr__(self, "stable_reset_seconds", stable)
-        object.__setattr__(self, "environment", dict(self.environment))
+        child_environment = dict(self.environment)
+        # The bridge writes NoneBot/loguru console output into a binary log file.
+        # Force UTF-8 before Python creates stdout so model replies containing
+        # emoji or uncommon Unicode cannot trigger a Windows code-page logging
+        # failure and hide the diagnostic evidence we need.
+        child_environment["PYTHONIOENCODING"] = "utf-8"
+        child_environment["PYTHONUTF8"] = "1"
+        object.__setattr__(self, "environment", child_environment)
 
     def argv(self) -> list[str]:
         argv = [

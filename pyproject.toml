@@ -24,6 +24,7 @@ hikari-qq = "integrations.qq_bridge.app:main"
 hikari-deliver = "resident.delivery_cli:main"
 hikari-presence = "resident.presence_cli:main"
 hikari-soak = "resident.soak_cli:main"
+hikari-doctor = "resident.doctor_cli:main"
 
 [project.optional-dependencies]
 qq = [
