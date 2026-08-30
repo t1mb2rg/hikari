@@ -140,14 +140,32 @@ def test_restart_retrieves_persistent_active_fact_into_future_prompt(tmp_path: P
     first_provider = QueueProvider(
         [
             "知道了。",
-            '{"facts":[{"category":"preference","key":"perfume_scent_family",'
-            '"value":"木质","statement":"用户长期偏好木质调香水。","confidence":0.98}]}',
+            '{"facts":[{"category":"preference","key":"perfume_style_intensity",'
+            '"value":"低调","statement":"用户偏好不过分张扬的香水。","confidence":0.98}]}',
         ]
     )
-    first_engine, _ = _runtime(tmp_path, first_provider)
+    first_engine, first_service = _runtime(tmp_path, first_provider)
     first_engine.respond(
-        UserTurn("qq", "private:7", "以后推荐香水时，我更喜欢木质。"),
+        UserTurn("qq", "private:7", "以后推荐香水时，别太张扬。"),
         source_ref="qq:bot:4",
+    )
+    first_service.assimilate(
+        [
+            UserFactCandidate(
+                category=UserFactCategory.PREFERENCE,
+                key="perfume_style_intensity",
+                value="张扬",
+                statement="用户目前想尝试更张扬的香水风格。",
+                confidence=0.99,
+                source_ref="qq:bot:revision",
+                evidence_key=make_evidence_key(
+                    "qq:bot:revision",
+                    "preference",
+                    "perfume_style_intensity",
+                ),
+                provenance={"source": "conversation"},
+            )
+        ]
     )
 
     restarted_provider = QueueProvider(["可以。", '{"facts":[]}'])
@@ -164,14 +182,18 @@ def test_restart_retrieves_persistent_active_fact_into_future_prompt(tmp_path: P
     assert grounding["known_user"] == [
         {
             "category": "preference",
-            "confidence": 0.98,
-            "id": 1,
-            "key": "perfume_scent_family",
+            "confidence": 0.99,
+            "id": 2,
+            "key": "perfume_style_intensity",
             "provenance": "persistent_user_model",
-            "revision": 1,
-            "statement": "用户长期偏好木质调香水。",
+            "revision": 2,
+            "statement": "用户目前想尝试更张扬的香水风格。",
         }
     ]
+    assert "latest revised current truth" in restarted_provider.calls[0][0].content
+    assert "not a simultaneous current preference" in grounding[
+        "memory_provenance"
+    ]["known_user"]["conflict_policy"]
 
 
 class BrokenService:
