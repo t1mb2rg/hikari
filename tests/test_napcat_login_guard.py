@@ -5,17 +5,20 @@ import hashlib
 import io
 import json
 from pathlib import Path
+import subprocess
 from urllib.request import Request
 
 import pytest
 
 from resident.napcat_login_guard import (
+    _RESTART_TASK_SCRIPT,
     NapCatGuardStateStore,
     NapCatLoginClient,
     NapCatLoginGuard,
     NapCatLoginKind,
     NapCatLoginStatus,
     NapCatWebUIConfig,
+    WindowsScheduledTaskRestarter,
     build_napcat_login_guard,
 )
 
@@ -315,3 +318,37 @@ def test_guard_state_never_persists_napcat_response_secrets(tmp_path: Path):
     guard.cycle_once()
 
     assert "must-not-leak" not in (tmp_path / "guard.json").read_text("utf-8")
+
+
+def test_task_restarter_targets_only_exact_napcat_launcher_tree(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    calls: list[tuple[list[str], dict[str, object]]] = []
+
+    def run(argv: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        calls.append((list(argv), dict(kwargs)))
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    monkeypatch.setattr("resident.napcat_login_guard.platform.system", lambda: "Windows")
+    monkeypatch.setattr(
+        "resident.napcat_login_guard.shutil.which",
+        lambda _: "powershell.exe",
+    )
+    launcher = tmp_path / "NapCatWinBootMain.exe"
+    restarter = WindowsScheduledTaskRestarter(
+        "Hikari NapCat Shell",
+        launcher,
+        runner=run,
+    )
+
+    restarter()
+
+    assert len(calls) == 1
+    environment = calls[0][1]["env"]
+    assert isinstance(environment, dict)
+    assert environment["HIKARI_NAPCAT_GUARD_TASK_NAME"] == "Hikari NapCat Shell"
+    assert environment["HIKARI_NAPCAT_GUARD_LAUNCHER_PATH"] == str(
+        launcher.resolve()
+    )
+    assert "D:\\QQ.exe" not in _RESTART_TASK_SCRIPT

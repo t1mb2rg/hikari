@@ -318,10 +318,45 @@ class NapCatGuardStateStore:
 _RESTART_TASK_SCRIPT = r"""
 $ErrorActionPreference = 'Stop'
 $taskName = $env:HIKARI_NAPCAT_GUARD_TASK_NAME
-$task = Get-ScheduledTask -TaskName $taskName -ErrorAction Stop
-if ([string]$task.State -eq 'Running') {
-    Stop-ScheduledTask -TaskName $taskName -ErrorAction Stop
-    Start-Sleep -Milliseconds 750
+$launcherPath = [System.IO.Path]::GetFullPath($env:HIKARI_NAPCAT_GUARD_LAUNCHER_PATH)
+$allProcesses = @(Get-CimInstance Win32_Process)
+$launcherIds = @(
+    $allProcesses |
+        Where-Object { $_.ExecutablePath -eq $launcherPath } |
+        ForEach-Object { [int]$_.ProcessId }
+)
+$targetIds = New-Object 'System.Collections.Generic.HashSet[int]'
+$queue = New-Object 'System.Collections.Generic.Queue[int]'
+foreach ($processId in $launcherIds) {
+    [void]$targetIds.Add($processId)
+    $queue.Enqueue($processId)
+}
+while ($queue.Count -gt 0) {
+    $parentId = $queue.Dequeue()
+    foreach ($child in $allProcesses | Where-Object { [int]$_.ParentProcessId -eq $parentId }) {
+        $childId = [int]$child.ProcessId
+        if ($targetIds.Add($childId)) {
+            $queue.Enqueue($childId)
+        }
+    }
+}
+
+Stop-ScheduledTask -TaskName $taskName -ErrorAction Stop
+if ($targetIds.Count -gt 0) {
+    Stop-Process -Id @($targetIds) -Force -ErrorAction SilentlyContinue
+}
+
+$deadline = [DateTime]::UtcNow.AddSeconds(5)
+do {
+    $remaining = @(
+        Get-CimInstance Win32_Process |
+            Where-Object { $_.ExecutablePath -eq $launcherPath }
+    )
+    if ($remaining.Count -eq 0) { break }
+    Start-Sleep -Milliseconds 200
+} while ([DateTime]::UtcNow -lt $deadline)
+if ($remaining.Count -ne 0) {
+    throw 'NapCat process tree did not stop within the bounded window'
 }
 Start-ScheduledTask -TaskName $taskName -ErrorAction Stop
 """
@@ -330,12 +365,24 @@ Start-ScheduledTask -TaskName $taskName -ErrorAction Stop
 class WindowsScheduledTaskRestarter:
     """Restart only the configured NapCat task, never Hikari Resident."""
 
-    def __init__(self, task_name: str, *, timeout_seconds: float = 15.0) -> None:
+    def __init__(
+        self,
+        task_name: str,
+        launcher_path: str | Path,
+        *,
+        timeout_seconds: float = 15.0,
+        runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
+    ) -> None:
         normalized = str(task_name).strip()
         if not normalized:
             raise ValueError("NapCat task name must not be empty")
+        launcher = Path(launcher_path).expanduser().resolve()
+        if launcher.name.casefold() != "napcatwinbootmain.exe":
+            raise ValueError("NapCat launcher must be NapCatWinBootMain.exe")
         self.task_name = normalized
+        self.launcher_path = launcher
         self.timeout_seconds = float(timeout_seconds)
+        self._runner = runner
 
     def __call__(self) -> None:
         if platform.system().casefold() != "windows":
@@ -345,7 +392,10 @@ class WindowsScheduledTaskRestarter:
             raise RuntimeError("PowerShell is unavailable")
         environment = os.environ.copy()
         environment["HIKARI_NAPCAT_GUARD_TASK_NAME"] = self.task_name
-        result = subprocess.run(
+        environment["HIKARI_NAPCAT_GUARD_LAUNCHER_PATH"] = str(
+            self.launcher_path
+        )
+        result = self._runner(
             [
                 powershell,
                 "-NoProfile",
@@ -626,7 +676,10 @@ def build_napcat_login_guard(
     )
     return NapCatLoginGuard(
         NapCatLoginProbe(root),
-        WindowsScheduledTaskRestarter(task_name),
+        WindowsScheduledTaskRestarter(
+            task_name,
+            root / "NapCatWinBootMain.exe",
+        ),
         send_windows_manual_verification_notification,
         store,
         interval_seconds=interval,
