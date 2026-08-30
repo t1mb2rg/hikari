@@ -18,6 +18,8 @@ from conversation.action_bridge import (
 )
 from conversation.engine import ConversationEngine
 from conversation.models import UserTurn
+from conversation.receipts import ConversationReceiptStore
+from conversation.remote import ConversationRequestProcessor
 from memory.store import MemoryStore
 
 
@@ -260,6 +262,30 @@ def test_pending_state_survives_bridge_reconstruction(tmp_path: Path):
     assert restored is not None
     assert restored.created_at == 123.0
     assert restored.proposal.arguments["project_id"] == "hikari"
+
+
+def test_request_receipt_deduplicates_confirmation_execution(tmp_path: Path):
+    engine, _provider = _engine(tmp_path)
+    planner = FakePlanner(_proposal())
+    adapter = RecordingForgeAdapter()
+    bridge = _bridge(tmp_path, planner, adapter)
+    processor = ConversationRequestProcessor(
+        engine,
+        ConversationReceiptStore(tmp_path / "receipts.db"),
+        action_bridge=bridge,
+    )
+
+    request_turn = UserTurn("qq", "private:7", "让 Forge 修改 Hikari 代码")
+    confirm_turn = UserTurn("qq", "private:7", "确认")
+    processor.process("qq:request", request_turn)
+    first, first_duplicate = processor.process("qq:confirm", confirm_turn)
+    second, second_duplicate = processor.process("qq:confirm", confirm_turn)
+
+    assert "Forge 已执行完成" in first.text
+    assert second == first
+    assert first_duplicate is False
+    assert second_duplicate is True
+    assert adapter.calls == 1
 
 
 def test_engineering_intent_filter_is_narrow_but_natural():
