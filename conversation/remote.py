@@ -13,6 +13,7 @@ from resident.paths import default_state_dir
 from user_model import build_user_model_runtime
 from websockets.asyncio.server import ServerConnection, serve
 
+from .action_bridge import ConversationForgeBridge
 from .cli import build_chat_provider, default_context_collector
 from .engine import ConversationEngine, INTERACTIVE_SYSTEM_INSTRUCTIONS
 from .models import AssistantReply, UserTurn
@@ -62,13 +63,18 @@ class ConversationRequestProcessor:
         self,
         engine: ConversationEngine,
         receipts: ConversationReceiptStore,
+        *,
+        action_bridge: ConversationForgeBridge | None = None,
     ) -> None:
         if not isinstance(engine, ConversationEngine):
             raise TypeError("ConversationRequestProcessor requires ConversationEngine")
         if not isinstance(receipts, ConversationReceiptStore):
             raise TypeError("ConversationRequestProcessor requires ConversationReceiptStore")
+        if action_bridge is not None and not isinstance(action_bridge, ConversationForgeBridge):
+            raise TypeError("ConversationRequestProcessor action_bridge must be ConversationForgeBridge or None")
         self.engine = engine
         self.receipts = receipts
+        self.action_bridge = action_bridge
 
     def process(self, request_id: str, turn: UserTurn) -> tuple[AssistantReply, bool]:
         existing = self.receipts.get(request_id)
@@ -77,7 +83,14 @@ class ConversationRequestProcessor:
                 raise ValueError("request_id was reused for a different user turn")
             return existing.reply, True
 
-        reply = self.engine.respond(turn, source_ref=request_id)
+        if self.action_bridge is None:
+            reply = self.engine.respond(turn, source_ref=request_id)
+        else:
+            reply = self.action_bridge.respond(
+                self.engine,
+                turn,
+                source_ref=request_id,
+            )
         self.receipts.save(request_id, turn, reply)
         return reply, False
 
