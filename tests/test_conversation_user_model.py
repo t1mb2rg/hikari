@@ -34,6 +34,20 @@ class QueueProvider:
         return value
 
 
+class JsonModeProvider(QueueProvider):
+    def __init__(self) -> None:
+        super().__init__(["unused fenced fallback"])
+        self.json_calls: list[list[ChatMessage]] = []
+
+    def complete_json(self, messages: list[ChatMessage]) -> str:
+        self.json_calls.append(list(messages))
+        return (
+            '{"facts":[{"category":"preference",'
+            '"key":"perfume_scent_family","value":"木质",'
+            '"statement":"用户偏好木质调香水。","confidence":0.98}]}'
+        )
+
+
 def _runtime(
     tmp_path: Path,
     provider: QueueProvider,
@@ -70,6 +84,27 @@ def test_successful_conversation_assimilates_fact_after_main_reply(tmp_path: Pat
     assert facts[0].source_ref == "qq:bot:1"
     assert facts[0].provenance["channel"] == "qq"
     assert len(provider.calls) == 2
+
+
+def test_extractor_prefers_provider_json_mode_without_loosening_parser(tmp_path: Path):
+    provider = JsonModeProvider()
+    service = UserModelService(UserModelStore(tmp_path / "user_model.db"))
+    extractor = ModelUserFactExtractor(provider)
+
+    service.assimilate(
+        extractor.extract(
+            source_ref="qq:json-mode",
+            current_user_text="我更喜欢木质香水。",
+            recent_history=[],
+            provenance={"source": "test"},
+        )
+    )
+
+    assert [fact.key for fact in service.store.active_facts()] == [
+        "perfume_scent_family"
+    ]
+    assert len(provider.json_calls) == 1
+    assert provider.calls == []
 
 
 def test_failed_main_provider_does_not_extract_or_write_user_model(tmp_path: Path):

@@ -69,7 +69,12 @@ class ModelUserFactExtractor:
                 content=json.dumps(payload, ensure_ascii=False, sort_keys=True),
             ),
         )
-        raw = self.provider.complete(messages)
+        complete_json = getattr(self.provider, "complete_json", None)
+        raw = (
+            complete_json(messages)
+            if callable(complete_json)
+            else self.provider.complete(messages)
+        )
         return parse_candidate_output(
             raw,
             source_ref=source_ref,

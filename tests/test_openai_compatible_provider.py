@@ -71,6 +71,27 @@ def test_openai_compatible_provider_supports_local_endpoint_without_key():
     assert provider.endpoint == "http://localhost:8000/v1/chat/completions"
 
 
+def test_openai_compatible_provider_json_mode_is_narrow_and_deterministic():
+    captured = {}
+
+    def transport(req, timeout):
+        captured["body"] = json.loads(req.data.decode("utf-8"))
+        return b'{"choices":[{"message":{"content":"{\\"facts\\":[]}"}}]}'
+
+    provider = OpenAICompatibleProvider(
+        base_url="http://localhost:8000",
+        model="local-model",
+        temperature=0.65,
+        transport=transport,
+    )
+
+    assert provider.complete_json([ChatMessage(role="user", content="extract")]) == (
+        '{"facts":[]}'
+    )
+    assert captured["body"]["temperature"] == 0.0
+    assert captured["body"]["response_format"] == {"type": "json_object"}
+
+
 def test_openai_compatible_provider_rejects_malformed_response():
     provider = OpenAICompatibleProvider(
         base_url="http://localhost:8000",
