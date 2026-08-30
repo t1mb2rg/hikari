@@ -5,6 +5,8 @@ import json
 import logging
 import os
 from pathlib import Path
+import subprocess
+import sys
 from threading import Lock
 import time
 from typing import Callable, Mapping
@@ -39,7 +41,9 @@ DEFAULT_FORGE_EXECUTABLE = "forge"
 DEFAULT_FORGE_MAX_ATTEMPTS = 3
 DEFAULT_FORGE_CLAUDE_PERMISSION_MODE = "auto"
 DEFAULT_FORGE_CLAUDE_MAX_TURNS = 30
-DEFAULT_FORGE_VERIFICATION = ("python -m pytest -q",)
+DEFAULT_FORGE_VERIFICATION = (
+    subprocess.list2cmdline([sys.executable, "-m", "pytest", "-q"]),
+)
 
 _CONFIRM_WORDS = frozenset({"yes", "y", "确认", "确认执行"})
 _CANCEL_WORDS = frozenset({"no", "n", "取消", "取消执行"})
