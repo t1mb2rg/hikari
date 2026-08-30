@@ -216,18 +216,19 @@ def test_unrelated_turn_while_pending_does_not_execute(tmp_path: Path):
     assert provider.calls == []
 
 
-def test_planner_failure_falls_back_to_normal_conversation(tmp_path: Path):
-    engine, provider = _engine(tmp_path, ["先不动代码。"])
+def test_planner_failure_fails_closed_without_normal_conversation(tmp_path: Path):
+    engine, provider = _engine(tmp_path, ["普通对话不应该接管这个请求。"])
     planner = FakePlanner(error=RuntimeError("planner boom"))
     adapter = RecordingForgeAdapter()
     bridge = _bridge(tmp_path, planner, adapter)
 
     reply = bridge.respond(engine, UserTurn("qq", "private:7", "帮我修改 Hikari 代码"))
 
-    assert reply.text == "先不动代码。"
+    assert "Forge 规划没有完成" in reply.text
+    assert "没有执行任何改动" in reply.text
     assert planner.calls == 1
     assert adapter.calls == 0
-    assert len(provider.calls) == 1
+    assert provider.calls == []
 
 
 def test_executor_failure_consumes_confirmation_and_does_not_retry(tmp_path: Path):
