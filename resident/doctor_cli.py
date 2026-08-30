@@ -16,10 +16,18 @@ from urllib.parse import urlsplit, urlunsplit
 import webbrowser
 
 from .paths import default_state_dir
+from .napcat_login_guard import (
+    NapCatGuardState,
+    NapCatGuardStateStore,
+    NapCatLoginKind,
+    NapCatLoginStatus,
+    check_napcat_login,
+)
 from .soak_cli import SoakCheckpoint, build_checkpoint
 
 
 WindowsProbe = Callable[[str], Mapping[str, object]]
+NapCatLoginProbe = Callable[[Path], NapCatLoginStatus]
 
 
 @dataclass(frozen=True)
@@ -50,6 +58,14 @@ class NapCatSnapshot:
     webui_port: int | None
     webui_token_configured: bool
     webui_url: str | None
+    qq_login_state: str
+    qq_is_login: bool | None
+    qq_is_offline: bool | None
+    qq_login_error: str | None
+    qq_login_probe_error: str | None
+    guard_phase: str
+    guard_restart_attempted: bool
+    manual_verification_required: bool
     file_logging_enabled: bool | None
     log_directory: str
     log_file_count: int
@@ -251,6 +267,9 @@ def _inspect_napcat(
     task_name: str,
     probe: Mapping[str, object],
     probe_error: str | None,
+    login_status: NapCatLoginStatus | None,
+    login_probe_error: str | None,
+    guard_state: NapCatGuardState,
 ) -> NapCatSnapshot:
     config_errors: list[str] = []
     webui, error = _read_json_object(root / "config" / "webui.json")
@@ -271,6 +290,19 @@ def _inspect_napcat(
     webui_port = _safe_int(webui.get("port")) if webui else None
     token_configured = bool(webui.get("token")) if webui else False
     webui_url = f"http://127.0.0.1:{webui_port}" if webui_enabled and webui_port else None
+    login_kind = (
+        login_status.kind
+        if login_status is not None
+        else NapCatLoginKind.UNKNOWN
+    )
+    manual_verification_required = (
+        login_kind is NapCatLoginKind.MANUAL_VERIFICATION_REQUIRED
+        or (
+            login_kind is not NapCatLoginKind.HEALTHY
+            and guard_state.phase
+            == NapCatLoginKind.MANUAL_VERIFICATION_REQUIRED.value
+        )
+    )
 
     file_logging: bool | None = None
     if global_config is not None and "fileLog" in global_config:
@@ -367,6 +399,18 @@ def _inspect_napcat(
         webui_port=webui_port,
         webui_token_configured=token_configured,
         webui_url=webui_url,
+        qq_login_state=login_kind.value,
+        qq_is_login=login_status.is_login if login_status is not None else None,
+        qq_is_offline=login_status.is_offline if login_status is not None else None,
+        qq_login_error=(
+            _redact_log_line(login_status.login_error[:500])
+            if login_status is not None and login_status.login_error
+            else None
+        ),
+        qq_login_probe_error=login_probe_error,
+        guard_phase=guard_state.phase,
+        guard_restart_attempted=guard_state.restart_attempted,
+        manual_verification_required=manual_verification_required,
         file_logging_enabled=file_logging,
         log_directory=str(log_directory),
         log_file_count=len(log_files),
@@ -389,7 +433,10 @@ _LOG_CLUE_PATTERN = re.compile(
 _LOG_SECRET_PATTERNS = (
     re.compile(r"(?i)\bauthorization\s*[:=]\s*(?:bearer\s+)?[^\s,;]+"),
     re.compile(r"(?i)\bbearer\s+[^\s,;]+"),
-    re.compile(r"(?i)\b(api[_-]?key|token|secret|password)\s*[:=]\s*[^\s,;]+"),
+    re.compile(
+        r"(?i)\b(api[_-]?key|[a-z0-9_-]*token|secret|password)"
+        r"\s*[:=]\s*[^\s,;]+"
+    ),
 )
 
 
@@ -522,6 +569,39 @@ def _build_findings(
             add("warning", "napcat.config", "NapCat 配置读取异常", error)
     if not napcat.onebot_websocket_urls:
         add("warning", "napcat.onebot", "未发现启用的 OneBot WebSocket client")
+    if napcat.manual_verification_required:
+        add(
+            "error",
+            "qq.login_manual",
+            "QQ 登录需要人工验证",
+            "打开 http://127.0.0.1:6099/webui/ 完成登录验证",
+        )
+    elif napcat.guard_phase == "recovering":
+        add(
+            "warning",
+            "qq.login_recovering",
+            "NapCat Login Guard 正在等待 quick login 恢复",
+        )
+    elif napcat.qq_login_state == NapCatLoginKind.LOGIN_INVALID.value:
+        add(
+            "error",
+            "qq.login_invalid",
+            "NapCat 进程仍在，但 QQ 登录已失效",
+            "等待 Login Guard 的单次恢复；若失败则打开本机 WebUI",
+        )
+    elif napcat.qq_login_state == NapCatLoginKind.PENDING.value:
+        add(
+            "warning",
+            "qq.login_pending",
+            "NapCat 尚未确认 QQ 登录成功",
+        )
+    elif napcat.qq_login_state == NapCatLoginKind.UNKNOWN.value:
+        add(
+            "warning",
+            "qq.login_unknown",
+            "无法确认 QQ 真实登录状态",
+            napcat.qq_login_probe_error,
+        )
 
     return tuple(findings)
 
@@ -532,6 +612,7 @@ def collect_doctor_report(
     *,
     task_name: str = "Hikari NapCat Shell",
     windows_probe: WindowsProbe | None = None,
+    login_probe: NapCatLoginProbe | None = None,
     system_name: str | None = None,
     recent_error_limit: int = 6,
 ) -> DoctorReport:
@@ -549,11 +630,26 @@ def collect_doctor_report(
     else:
         probe_error = f"Windows-only NapCat probe unavailable on {detected_system}"
 
+    login_status: NapCatLoginStatus | None = None
+    login_probe_error: str | None = None
+    try:
+        login_status = (login_probe or check_napcat_login)(napcat_path)
+    except Exception as exc:
+        # Keep this credential-safe: neither WebUI token nor response payloads
+        # are allowed into doctor JSON or console output.
+        login_probe_error = type(exc).__name__
+    guard_state = NapCatGuardStateStore(
+        state_root / "napcat_login_guard.json"
+    ).load()
+
     napcat = _inspect_napcat(
         napcat_path,
         task_name=task_name,
         probe=probe_payload,
         probe_error=probe_error,
+        login_status=login_status,
+        login_probe_error=login_probe_error,
+        guard_state=guard_state,
     )
     findings = _build_findings(checkpoint, napcat)
     levels = {finding.level for finding in findings}
@@ -585,9 +681,23 @@ def _print_text(report: DoctorReport) -> None:
         + (",".join(str(pid) for pid in napcat.qq_pids) if napcat.qq_pids else "-")
     )
     print(
-        "连接："
-        f"bridge 8081 listen={napcat.bridge_listener_count} established={napcat.bridge_established_count}; "
-        f"webui 6099 listen={napcat.webui_listener_count} established={napcat.webui_established_count}"
+        "OneBot transport："
+        f"8081 listen={napcat.bridge_listener_count} "
+        f"established={napcat.bridge_established_count}; "
+        f"webui 6099 listen={napcat.webui_listener_count} "
+        f"established={napcat.webui_established_count}"
+    )
+    print(
+        "QQ 登录："
+        f"state={napcat.qq_login_state}, "
+        f"is_login={napcat.qq_is_login if napcat.qq_is_login is not None else '-'}, "
+        f"is_offline={napcat.qq_is_offline if napcat.qq_is_offline is not None else '-'}"
+    )
+    print(
+        "人工验证："
+        f"required={'true' if napcat.manual_verification_required else 'false'}, "
+        f"guard={napcat.guard_phase}, "
+        f"restart_attempted={'true' if napcat.guard_restart_attempted else 'false'}"
     )
     print(
         "队列："

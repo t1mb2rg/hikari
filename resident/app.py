@@ -46,6 +46,7 @@ from personality import load_personality
 from user_model import build_user_model_runtime
 
 from .environment import load_runtime_environment
+from .napcat_login_guard import NapCatLoginGuard, build_napcat_login_guard
 from .presence_delivery import RoutedPresenceDelivery, WindowsDeliverySink
 from .unified import (
     QQBridgeProcessConfig,
@@ -388,6 +389,7 @@ def main(argv: Sequence[str] | None = None) -> None:
         )
 
         qq_supervisor: QQBridgeSupervisor | None = None
+        napcat_login_guard: NapCatLoginGuard | None = None
         if qq_enabled:
             state_dir = memory_path.parent
             QQBridgeConfig.from_mapping(values, state_dir=state_dir)
@@ -404,6 +406,16 @@ def main(argv: Sequence[str] | None = None) -> None:
                     python_executable=sys.executable,
                 )
             )
+            guard_enabled = runtime_bool(
+                values,
+                "HIKARI_NAPCAT_LOGIN_GUARD_ENABLED",
+                default=True,
+            )
+            if guard_enabled and os.name == "nt":
+                napcat_login_guard = build_napcat_login_guard(
+                    values,
+                    state_dir=state_dir,
+                )
     except (TypeError, ValueError) as exc:
         raise SystemExit(f"Hikari unified resident 启动失败：{exc}") from exc
 
@@ -413,10 +425,16 @@ def main(argv: Sequence[str] | None = None) -> None:
         bind_host=bind_host,
         bind_port=bind_port,
         qq_supervisor=qq_supervisor,
+        napcat_login_guard=napcat_login_guard,
     )
     print(f"Hikari Conversation Host：ws://{bind_host}:{bind_port}", flush=True)
     print(f"Hikari 对话模型：{getattr(provider, 'model', type(provider).__name__)}", flush=True)
     print(f"Hikari QQ Bridge：{'resident 托管' if qq_enabled else '关闭'}", flush=True)
+    print(
+        "Hikari NapCat Login Guard："
+        f"{'启用' if napcat_login_guard is not None else '关闭'}",
+        flush=True,
+    )
     try:
         asyncio.run(service.run())
     except KeyboardInterrupt:
