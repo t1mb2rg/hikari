@@ -34,6 +34,7 @@ class SoakCheckpoint:
     file_sizes: Mapping[str, int]
     delivery_states: Mapping[str, int]
     qq_spool_states: Mapping[str, int]
+    user_model_states: Mapping[str, int]
     conversation_receipts: int | None
     presence_acceptance_count: int | None
     presence_last_accepted_at: float | None
@@ -96,6 +97,7 @@ def _state_counts(
     *,
     table: str,
     valid_states: Sequence[str],
+    column: str = "state",
 ) -> tuple[dict[str, int], str | None]:
     counts = {state: 0 for state in valid_states}
     if not path.is_file():
@@ -103,7 +105,7 @@ def _state_counts(
     try:
         rows = _query_rows(
             path,
-            f"SELECT state, COUNT(*) FROM {table} GROUP BY state",
+            f"SELECT {column}, COUNT(*) FROM {table} GROUP BY {column}",
         )
     except sqlite3.Error as exc:
         return counts, f"{type(exc).__name__}: {exc}"
@@ -200,6 +202,15 @@ def build_checkpoint(
     if error:
         sqlite_errors["qq_bridge.db"] = error
 
+    user_model_states, error = _state_counts(
+        root / "user_model.db",
+        table="user_facts",
+        column="status",
+        valid_states=("active", "superseded", "disputed"),
+    )
+    if error:
+        sqlite_errors["user_model.db"] = error
+
     conversation_receipts, error = _scalar_count(
         root / "conversation_receipts.db",
         "SELECT COUNT(*) FROM conversation_receipts",
@@ -229,6 +240,7 @@ def build_checkpoint(
         file_sizes=_interesting_file_sizes(root),
         delivery_states=delivery_states,
         qq_spool_states=qq_spool_states,
+        user_model_states=user_model_states,
         conversation_receipts=conversation_receipts,
         presence_acceptance_count=presence_count,
         presence_last_accepted_at=presence_last,
@@ -263,6 +275,11 @@ def _print_text(checkpoint: SoakCheckpoint) -> None:
         f"{state}={count}" for state, count in sorted(checkpoint.qq_spool_states.items())
     )
     print(f"qq_spool_states：{qq_spool}")
+    user_model = ", ".join(
+        f"{state}={count}"
+        for state, count in sorted(checkpoint.user_model_states.items())
+    )
+    print(f"user_model_states：{user_model}")
     print(
         "conversation_receipts："
         f"{checkpoint.conversation_receipts if checkpoint.conversation_receipts is not None else '-'}"

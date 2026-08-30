@@ -43,6 +43,7 @@ from events.sensors import GitSensor
 from integrations.qq_bridge.config import QQBridgeConfig
 from memory.store import MemoryStore
 from personality import load_personality
+from user_model import build_user_model_runtime
 
 from .environment import load_runtime_environment
 from .presence_delivery import RoutedPresenceDelivery, WindowsDeliverySink
@@ -360,6 +361,11 @@ def main(argv: Sequence[str] | None = None) -> None:
         shared_secret = values.get("HIKARI_CONVERSATION_SHARED_SECRET")
         shared_secret = shared_secret.strip() if shared_secret and shared_secret.strip() else None
         receipt_path = (memory_path.parent / "conversation_receipts.db").resolve()
+        user_model_path = (memory_path.parent / "user_model.db").resolve()
+        user_model_service, user_fact_extractor = build_user_model_runtime(
+            provider,
+            user_model_path,
+        )
 
         engine = ConversationEngine(
             provider,
@@ -369,6 +375,8 @@ def main(argv: Sequence[str] | None = None) -> None:
             voice_profile=None,
             relationship_context=PRIMARY_REMOTE_RELATIONSHIP_CONTEXT,
             history_limit=12,
+            user_model_service=user_model_service,
+            user_fact_extractor=user_fact_extractor,
             system_instructions=INTERACTIVE_SYSTEM_INSTRUCTIONS,
         )
         conversation_host = ConversationWebSocketHost(

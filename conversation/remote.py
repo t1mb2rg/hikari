@@ -10,6 +10,7 @@ from pathlib import Path
 from memory.store import MemoryStore
 from resident.environment import load_runtime_environment
 from resident.paths import default_state_dir
+from user_model import build_user_model_runtime
 from websockets.asyncio.server import ServerConnection, serve
 
 from .cli import build_chat_provider, default_context_collector
@@ -76,7 +77,7 @@ class ConversationRequestProcessor:
                 raise ValueError("request_id was reused for a different user turn")
             return existing.reply, True
 
-        reply = self.engine.respond(turn)
+        reply = self.engine.respond(turn, source_ref=request_id)
         self.receipts.save(request_id, turn, reply)
         return reply, False
 
@@ -260,6 +261,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             if args.receipt_db
             else (state_dir / "conversation_receipts.db").resolve()
         )
+        user_model_service, user_fact_extractor = build_user_model_runtime(
+            provider,
+            memory_path.parent / "user_model.db",
+        )
         engine = ConversationEngine(
             provider,
             MemoryStore(memory_path),
@@ -270,6 +275,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             voice_profile=None,
             relationship_context=PRIMARY_REMOTE_RELATIONSHIP_CONTEXT,
             history_limit=args.history_limit,
+            user_model_service=user_model_service,
+            user_fact_extractor=user_fact_extractor,
             system_instructions=INTERACTIVE_SYSTEM_INSTRUCTIONS,
         )
         processor = ConversationRequestProcessor(
