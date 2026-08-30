@@ -13,7 +13,6 @@ from actions import (
     ActionAuthorizationPolicy,
     ActionCatalog,
     ActionExecutor,
-    ActionPlanningError,
     ActionProposal,
     ActionRisk,
     AuthorizationDecision,
@@ -280,6 +279,23 @@ class ConversationForgeBridge:
         self.confirmation_ttl_seconds = ttl
         self.clock = clock
 
+    def _plan_with_timeout_retry(
+        self,
+        event: Event,
+        decision: AttentionDecision,
+    ) -> ActionProposal | None:
+        """Retry one transient planner timeout before failing closed.
+
+        Planning has no side effect, so one bounded retry is safe. Execution is
+        still impossible until a durable proposal exists and the user confirms it.
+        """
+
+        try:
+            return self.planner.plan(event, decision)
+        except TimeoutError:
+            logger.warning("Hikari Conversation Forge planning timed out; retrying once")
+            return self.planner.plan(event, decision)
+
     def respond(
         self,
         engine: ConversationEngine,
@@ -425,25 +441,45 @@ class ConversationForgeBridge:
             reason="explicit direct-conversation engineering intent",
         )
         try:
-            proposal = self.planner.plan(event, decision)
-        except (ActionPlanningError, Exception) as exc:
+            proposal = self._plan_with_timeout_retry(event, decision)
+        except Exception as exc:
             logger.warning(
                 "Hikari Conversation Forge planning degraded: %s",
                 type(exc).__name__,
             )
-            return engine.respond(turn, source_ref=source_ref)
+            reply = _control_reply(
+                turn,
+                "Forge 规划没有完成，所以我没有启动 Forge，也没有执行任何改动。请稍后重新发起。",
+            )
+            _remember_control_exchange(engine, turn, reply)
+            return reply
 
         if proposal is None:
-            return engine.respond(turn, source_ref=source_ref)
+            reply = _control_reply(
+                turn,
+                "这次没有生成可执行的 Forge 提案，所以我没有启动 Forge，也没有执行任何改动。",
+            )
+            _remember_control_exchange(engine, turn, reply)
+            return reply
 
         authorization = self.policy.authorize(proposal)
         if authorization.decision is AuthorizationDecision.DENY:
-            return engine.respond(turn, source_ref=source_ref)
+            reply = _control_reply(
+                turn,
+                f"这项 Forge 请求没有通过授权边界：{authorization.reason}。没有执行任何改动。",
+            )
+            _remember_control_exchange(engine, turn, reply)
+            return reply
         if authorization.decision is AuthorizationDecision.AUTHORIZE:
             # Direct chat must never turn a newly planned Forge task into an
             # implicit side effect, even if a future spec is accidentally loosened.
             logger.error("Hikari Conversation Forge proposal unexpectedly auto-authorized")
-            return engine.respond(turn, source_ref=source_ref)
+            reply = _control_reply(
+                turn,
+                "Forge 提案出现了不符合直接对话确认边界的授权状态，所以我已阻止执行。",
+            )
+            _remember_control_exchange(engine, turn, reply)
+            return reply
 
         pending = PendingForgeAction(
             channel=turn.channel,
@@ -458,7 +494,12 @@ class ConversationForgeBridge:
                 "Hikari Conversation Forge pending-state write failed: %s",
                 type(exc).__name__,
             )
-            return engine.respond(turn, source_ref=source_ref)
+            reply = _control_reply(
+                turn,
+                "我无法安全保存这项 Forge 待确认操作，所以没有启动 Forge，也没有执行任何改动。",
+            )
+            _remember_control_exchange(engine, turn, reply)
+            return reply
 
         arguments = proposal.arguments
         goal = str(arguments.get("goal", "")).strip()
