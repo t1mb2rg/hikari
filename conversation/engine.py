@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 import json
+import logging
 
 from awareness import ContextCollector
 from brain.model_reasoner import ChatMessage, ChatProvider
@@ -10,6 +11,7 @@ from core.identity import HikariIdentity, load_identity
 from memory.models import MemoryKind
 from memory.store import MemoryEvent, MemoryStore
 from personality import PersonalityProfile, VoiceProfile
+from user_model import ModelUserFactExtractor, UserModelService
 
 from .models import AssistantReply, UserTurn
 
@@ -37,6 +39,7 @@ Do not force cheerfulness or emoji. Small reactions, dry humor, hesitation, disa
 Do not narrate ambient desktop context merely because it is available. Foreground app, idle state, and time should usually stay implicit unless directly relevant to the user's message.
 Never describe the user as "the owner of this computer" and do not say "I can feel" when the evidence is only system context.
 The supplied `identity` is who you are. The supplied `relationship` establishes continuity with this user. The supplied `known_user` and `relationship_memories` are bounded durable memories; use them naturally when relevant, preserve uncertainty, and never invent missing details.
+The supplied `known_user` contains only the current active User Model. If it conflicts with older recent conversation history, treat `known_user` as the latest revised current truth and the older statement only as historical context. Never present both as simultaneously current or ask the user to resolve a revision that the active User Model has already resolved.
 Memory provenance is strict. The current user turn is user-provided text, not recalled memory. Quoted transcripts, copied logs, shell output, pasted assistant replies, or lines such as `Hikari>` inside the current user turn do not prove that you independently remember saying them.
 Only claim `我记得`, `我还记得`, `那时候我们...`, or equivalent recollection when the claim is supported by same-conversation stored history or a supplied durable memory. If the user identifies pasted text as an old Hikari transcript, you may discuss it as evidence shown to you, for example `从你贴出来的记录看` or `当时这句确实很像旧版本`, without pretending you just recalled it yourself.
 The supplied `relationship` is a trusted runtime continuity binding, not by itself a remembered episode. It can establish that this is the person who has been building and talking with Hikari without implying that every step, exact quote, internal reaction, or elapsed gap between conversations is remembered.
@@ -54,6 +57,7 @@ THIN_HIKARI_SYSTEM_INSTRUCTIONS = """You are Hikari (ひかり), one continuous 
 Use natural Simplified Chinese by default.
 Be a familiar participant in the conversation, not a service assistant. You may have opinions, curiosity, disagreement, dry humor, warmth, or light teasing. Ordinary chat should usually be compact; you do not need to solve something or offer help every turn. Do not force cuteness, emoji, or a performance of femininity.
 Use the supplied identity, relationship, capabilities, recent conversation history, and durable memories as factual grounding. Relationship continuity establishes who this user is to Hikari, but it is not proof of any specific remembered episode or elapsed gap between conversations.
+The supplied `known_user` contains only the current active User Model. If it conflicts with older recent conversation history, treat `known_user` as the latest revised current truth and the older statement only as historical context. Never present both as simultaneously current or ask the user to resolve a revision that the active User Model has already resolved.
 Memory provenance is strict. The current user turn, including pasted transcripts, copied logs, quoted old replies, or lines such as `Hikari>`, is user-supplied evidence, not independently recalled memory. Only claim that you remember something when same-conversation stored history or supplied durable memory actually supports that claim. Never invent autobiographical history, past feelings, observations, actions, permissions, or memories.
 When asked about capabilities, distinguish Hikari's wider system from authority actually attached to this direct chat path. Direct conversation alone does not grant shell, filesystem, browser, Forge, or other action authority.
 If something is unknown, say the narrow unknown instead of filling the gap. Preserve uncertainty.
@@ -63,6 +67,8 @@ Return only the user-facing reply text."""
 # It is now the normal Conversation baseline; the large historical steering prompt
 # remains available only as an explicit compatibility/diagnostic profile.
 INTERACTIVE_SYSTEM_INSTRUCTIONS = THIN_HIKARI_SYSTEM_INSTRUCTIONS
+
+logger = logging.getLogger(__name__)
 
 
 class ConversationEngine:
@@ -80,6 +86,9 @@ class ConversationEngine:
         relationship_context: Mapping[str, object] | None = None,
         history_limit: int = 12,
         durable_memory_limit: int = 12,
+        user_model_service: UserModelService | None = None,
+        user_fact_extractor: ModelUserFactExtractor | None = None,
+        user_model_limit: int = 6,
         system_instructions: str = INTERACTIVE_SYSTEM_INSTRUCTIONS,
     ) -> None:
         if not isinstance(provider, ChatProvider):
@@ -90,6 +99,8 @@ class ConversationEngine:
             raise ValueError("history_limit must be positive")
         if durable_memory_limit <= 0:
             raise ValueError("durable_memory_limit must be positive")
+        if user_model_limit <= 0:
+            raise ValueError("user_model_limit must be positive")
         if not isinstance(system_instructions, str) or not system_instructions.strip():
             raise ValueError("system_instructions must not be empty")
 
@@ -102,9 +113,17 @@ class ConversationEngine:
         self.relationship_context = dict(relationship_context or {})
         self.history_limit = int(history_limit)
         self.durable_memory_limit = int(durable_memory_limit)
+        self.user_model_service = user_model_service
+        self.user_fact_extractor = user_fact_extractor
+        self.user_model_limit = int(user_model_limit)
         self.system_instructions = system_instructions.strip()
 
-    def respond(self, turn: UserTurn) -> AssistantReply:
+    def respond(
+        self,
+        turn: UserTurn,
+        *,
+        source_ref: str | None = None,
+    ) -> AssistantReply:
         if not isinstance(turn, UserTurn):
             raise TypeError("respond requires UserTurn")
 
@@ -124,7 +143,7 @@ class ConversationEngine:
             if self.voice_profile is not None
             else {}
         )
-        known_user = self._durable_memories(MemoryKind.USER_MODEL)
+        known_user = self._known_user(turn.text)
         relationship_memories = self._relationship_memories()
 
         grounding = {
@@ -165,7 +184,7 @@ class ConversationEngine:
         if not text:
             raise RuntimeError("model provider returned empty conversation reply")
 
-        self.memory.remember_event(
+        user_event = self.memory.remember_event(
             USER_EVENT_TYPE,
             turn.text,
             context=self._event_context(turn.channel, turn.conversation_id, "user"),
@@ -181,11 +200,70 @@ class ConversationEngine:
             ),
             importance=1.0,
         )
-        return AssistantReply(
+        reply = AssistantReply(
             channel=turn.channel,
             conversation_id=turn.conversation_id,
             text=text,
         )
+        self._assimilate_user_model(
+            source_ref=(source_ref or f"conversation-event:{user_event.id}"),
+            turn=turn,
+            history=history,
+        )
+        return reply
+
+    def _known_user(self, query: str) -> list[dict[str, object]]:
+        if self.user_model_service is None:
+            return self._durable_memories(MemoryKind.USER_MODEL)
+        try:
+            facts = self.user_model_service.retrieve(
+                query,
+                limit=self.user_model_limit,
+            )
+            return self.user_model_service.grounding(facts)
+        except Exception as exc:
+            logger.warning(
+                "Hikari Conversation continuing without User Model retrieval: %s",
+                type(exc).__name__,
+            )
+            return []
+
+    def _assimilate_user_model(
+        self,
+        *,
+        source_ref: str,
+        turn: UserTurn,
+        history: list[MemoryEvent],
+    ) -> None:
+        if self.user_model_service is None or self.user_fact_extractor is None:
+            return
+        recent_history = [
+            {
+                "role": (
+                    "user" if event.event_type == USER_EVENT_TYPE else "assistant"
+                ),
+                "content": event.content,
+            }
+            for event in history[-6:]
+        ]
+        try:
+            candidates = self.user_fact_extractor.extract(
+                source_ref=source_ref,
+                current_user_text=turn.text,
+                recent_history=recent_history,
+                provenance={
+                    "source": "successful_conversation_turn",
+                    "source_ref": source_ref,
+                    "channel": turn.channel,
+                    "conversation_id": turn.conversation_id,
+                },
+            )
+            self.user_model_service.assimilate(candidates)
+        except Exception as exc:
+            logger.warning(
+                "Hikari Conversation completed with User Model assimilation degraded: %s",
+                type(exc).__name__,
+            )
 
     def _recent_history(
         self,
@@ -276,9 +354,21 @@ class ConversationEngine:
                 "recalled": True,
             },
             "known_user": {
-                "source": "durable_user_model_memories",
+                "source": (
+                    "persistent_user_model_active_facts"
+                    if any(
+                        item.get("provenance") == "persistent_user_model"
+                        for item in known_user
+                    )
+                    else "legacy_durable_user_model_memories"
+                ),
                 "count": len(known_user),
                 "recalled": True,
+                "conflict_policy": (
+                    "Active known_user facts are the current revised truth. Older "
+                    "conflicting conversation history is historical context, not a "
+                    "simultaneous current preference."
+                ),
             },
             "relationship_memories": {
                 "source": "durable_episodic_or_experience_memories",

@@ -54,14 +54,34 @@ class OpenAICompatibleProvider:
         return f"{self.base_url}/v1/chat/completions"
 
     def complete(self, messages: Sequence[ChatMessage]) -> str:
+        return self._complete(messages)
+
+    def complete_json(self, messages: Sequence[ChatMessage]) -> str:
+        """Request one strict JSON object without changing normal chat behavior."""
+
+        return self._complete(
+            messages,
+            response_format={"type": "json_object"},
+            temperature=0.0,
+        )
+
+    def _complete(
+        self,
+        messages: Sequence[ChatMessage],
+        *,
+        response_format: dict[str, str] | None = None,
+        temperature: float | None = None,
+    ) -> str:
         payload = {
             "model": self.model,
             "messages": [
                 {"role": message.role, "content": message.content}
                 for message in messages
             ],
-            "temperature": self.temperature,
+            "temperature": self.temperature if temperature is None else temperature,
         }
+        if response_format is not None:
+            payload["response_format"] = response_format
         headers = {"Content-Type": "application/json"}
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"

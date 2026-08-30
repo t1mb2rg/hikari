@@ -41,7 +41,7 @@ windows-notify = [
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["core*", "memory*", "events*", "attention*", "brain*", "awareness*", "personality*", "learning*", "actions*", "resident*", "conversation*", "integrations*"]
+include = ["core*", "memory*", "user_model*", "events*", "attention*", "brain*", "awareness*", "personality*", "learning*", "actions*", "resident*", "conversation*", "integrations*"]
 exclude = ["tests*"]
 
 [tool.setuptools.package-data]

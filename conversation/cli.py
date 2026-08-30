@@ -18,6 +18,7 @@ from memory.store import MemoryStore
 from personality import load_personality, load_voice
 from resident.environment import load_runtime_environment
 from resident.paths import default_state_dir
+from user_model import build_user_model_runtime
 
 from .engine import (
     ConversationEngine,
@@ -155,6 +156,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             else (default_state_dir() / "memory.db").resolve()
         )
         legacy_prompt = args.prompt_profile == "legacy"
+        user_model_service, user_fact_extractor = build_user_model_runtime(
+            provider,
+            memory_path.parent / "user_model.db",
+        )
         engine = ConversationEngine(
             provider,
             MemoryStore(memory_path),
@@ -178,6 +183,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 ),
             },
             history_limit=args.history_limit,
+            user_model_service=user_model_service,
+            user_fact_extractor=user_fact_extractor,
             system_instructions=(
                 LEGACY_INTERACTIVE_SYSTEM_INSTRUCTIONS
                 if legacy_prompt

@@ -70,6 +70,15 @@ def _prepare_sqlite_state(root: Path) -> None:
             "INSERT INTO presence_meta (key, value) VALUES ('last_accepted_at', 200.0)"
         )
 
+    with sqlite3.connect(root / "user_model.db") as connection:
+        connection.execute(
+            "CREATE TABLE user_facts (id INTEGER PRIMARY KEY, status TEXT NOT NULL)"
+        )
+        connection.executemany(
+            "INSERT INTO user_facts (id, status) VALUES (?, ?)",
+            [(1, "superseded"), (2, "active"), (3, "disputed")],
+        )
+
 
 def test_checkpoint_reports_process_tree_and_durable_state_without_mutating(tmp_path: Path):
     _write_host_state(tmp_path)
@@ -102,6 +111,11 @@ def test_checkpoint_reports_process_tree_and_durable_state_without_mutating(tmp_
         "pending": 1,
         "replied": 0,
         "sent": 1,
+    }
+    assert checkpoint.user_model_states == {
+        "active": 1,
+        "superseded": 1,
+        "disputed": 1,
     }
     assert checkpoint.conversation_receipts == 3
     assert checkpoint.presence_acceptance_count == 2
@@ -156,4 +170,9 @@ def test_checkpoint_cli_json_works_without_a_running_resident(tmp_path: Path, ca
         "sending": 0,
         "sent": 0,
         "uncertain": 0,
+    }
+    assert payload["user_model_states"] == {
+        "active": 0,
+        "superseded": 0,
+        "disputed": 0,
     }
