@@ -32,6 +32,20 @@ def test_config_builds_reverse_websocket_defaults(tmp_path: Path):
     assert config.core_url == "ws://127.0.0.1:8765"
     assert config.allowed_user_ids == frozenset({"7", "8"})
     assert config.spool_path == (tmp_path / "qq_bridge.db").resolve()
+    assert config.conversation_retry_initial_seconds == 5
+    assert config.conversation_retry_max_seconds == 60
+
+
+def test_config_rejects_conversation_retry_max_below_initial(tmp_path: Path):
+    with pytest.raises(ValueError, match="max interval"):
+        QQBridgeConfig.from_mapping(
+            {
+                "HIKARI_ONEBOT_ALLOWED_USER_IDS": "7",
+                "HIKARI_QQ_CONVERSATION_RETRY_INITIAL_SECONDS": "10",
+                "HIKARI_QQ_CONVERSATION_RETRY_MAX_SECONDS": "5",
+            },
+            state_dir=tmp_path,
+        )
 
 
 def test_non_loopback_onebot_listener_is_rejected_even_with_token(tmp_path: Path):
@@ -130,6 +144,32 @@ class FakeCore:
         self.closed = True
 
 
+class RecoveringCore(FakeCore):
+    def __init__(self, *, failures: int) -> None:
+        super().__init__()
+        self.failures = failures
+
+    async def request(self, request_id: str, turn: UserTurn) -> AssistantReply:
+        self.requests.append((request_id, turn))
+        if self.failures > 0:
+            self.failures -= 1
+            raise ConnectionError("model unavailable")
+        return AssistantReply(turn.channel, turn.conversation_id, "恢复了。")
+
+
+class BlockingCore(FakeCore):
+    def __init__(self, started: asyncio.Event, release: asyncio.Event) -> None:
+        super().__init__()
+        self.started = started
+        self.release = release
+
+    async def request(self, request_id: str, turn: UserTurn) -> AssistantReply:
+        self.requests.append((request_id, turn))
+        self.started.set()
+        await self.release.wait()
+        return AssistantReply(turn.channel, turn.conversation_id, "只回复一次。")
+
+
 class FakeBot:
     self_id = "100"
 
@@ -177,6 +217,86 @@ def test_runtime_delivers_each_onebot_message_once(tmp_path: Path):
     assert bot.sent[0]["user_id"] == 7
     assert bot.sent[0]["message"] == "在呢。"
     assert bot.sent[0]["auto_escape"] is True
+
+
+def test_runtime_automatically_retries_pending_turn_after_model_recovery(
+    tmp_path: Path,
+):
+    config = QQBridgeConfig.from_mapping(
+        {
+            "HIKARI_ONEBOT_ALLOWED_USER_IDS": "7",
+            "HIKARI_QQ_CONVERSATION_RETRY_INITIAL_SECONDS": "0.01",
+            "HIKARI_QQ_CONVERSATION_RETRY_MAX_SECONDS": "0.02",
+        },
+        state_dir=tmp_path,
+    )
+    core = RecoveringCore(failures=1)
+    bot = FakeBot()
+    spool = BridgeSpool(tmp_path / "spool.db")
+    runtime = QQBridgeRuntime(
+        config,
+        core,  # type: ignore[arg-type]
+        spool,
+        OneBotLinkHealth(timeout_seconds=10),
+    )
+    event = FakePrivateEvent(user_id=7, message_id=56, message="回来了吗")
+
+    async def scenario() -> None:
+        await runtime.start()
+        await runtime.on_bot_connect(bot)  # type: ignore[arg-type]
+        with pytest.raises(ConnectionError, match="model unavailable"):
+            await runtime.handle_private_message(bot, event)  # type: ignore[arg-type]
+        assert spool.get("qq:100:56").state == "pending"  # type: ignore[union-attr]
+        for _ in range(100):
+            if spool.get("qq:100:56").state == "sent":  # type: ignore[union-attr]
+                break
+            await asyncio.sleep(0.01)
+        await runtime.close()
+
+    asyncio.run(scenario())
+
+    assert spool.get("qq:100:56").state == "sent"  # type: ignore[union-attr]
+    assert len(core.requests) == 2
+    assert len(bot.sent) == 1
+    assert bot.sent[0]["message"] == "恢复了。"
+
+
+def test_live_and_recovery_paths_serialize_same_turn(tmp_path: Path):
+    config = QQBridgeConfig.from_mapping(
+        {"HIKARI_ONEBOT_ALLOWED_USER_IDS": "7"},
+        state_dir=tmp_path,
+    )
+    bot = FakeBot()
+    spool = BridgeSpool(tmp_path / "spool.db")
+    event = FakePrivateEvent(user_id=7, message_id=57, message="别重复")
+
+    async def scenario() -> tuple[BlockingCore, QQBridgeRuntime]:
+        started = asyncio.Event()
+        release = asyncio.Event()
+        core = BlockingCore(started, release)
+        runtime = QQBridgeRuntime(
+            config,
+            core,  # type: ignore[arg-type]
+            spool,
+            OneBotLinkHealth(timeout_seconds=10),
+        )
+        spool.record_turn("qq:100:57", UserTurn("qq", "private:7", "别重复"))
+        recovery = asyncio.create_task(runtime.drain_unsent(bot))  # type: ignore[arg-type]
+        await started.wait()
+        live = asyncio.create_task(
+            runtime.handle_private_message(bot, event)  # type: ignore[arg-type]
+        )
+        await asyncio.sleep(0)
+        assert len(core.requests) == 1
+        release.set()
+        await asyncio.gather(recovery, live)
+        return core, runtime
+
+    core, _ = asyncio.run(scenario())
+
+    assert len(core.requests) == 1
+    assert len(bot.sent) == 1
+    assert spool.get("qq:100:57").state == "sent"  # type: ignore[union-attr]
 
 
 def test_standalone_cli_check_assembles_nonebot_runtime(tmp_path: Path):
