@@ -25,6 +25,7 @@ from conversation.action_bridge import (
 )
 from conversation.cli import build_chat_provider, default_context_collector
 from conversation.engine import ConversationEngine, INTERACTIVE_SYSTEM_INSTRUCTIONS
+from conversation.engineering_bridge import ConversationEngineeringBridge
 from conversation.receipts import ConversationReceiptStore
 from conversation.remote import (
     DEFAULT_CONVERSATION_HOST,
@@ -43,6 +44,8 @@ from core.presence import (
 )
 from core.presence_policy import PresencePolicy, PresencePolicyConfig, PresencePolicyStore
 from core.runtime import ResidentPresenceRuntime
+from engineering.bindings import EngineeringConversationBindingStore
+from engineering.session import EngineeringSessionStore
 from events.sensors import GitSensor
 from integrations.qq_bridge.config import QQBridgeConfig
 from memory.store import MemoryStore
@@ -392,11 +395,23 @@ def main(argv: Sequence[str] | None = None) -> None:
                 repository=repository,
                 state_dir=memory_path.parent,
             )
+
+        engineering_bridge: ConversationEngineeringBridge | None = None
+        if runtime_bool(values, "HIKARI_ENGINEERING_ENABLED", default=False):
+            engineering_bridge = ConversationEngineeringBridge(
+                EngineeringSessionStore(memory_path.parent / "engineering"),
+                EngineeringConversationBindingStore(
+                    memory_path.parent / "engineering_bindings.json"
+                ),
+                repository=repository,
+                fallback=forge_bridge,
+            )
+        action_bridge = engineering_bridge or forge_bridge
         conversation_host = ConversationWebSocketHost(
             ConversationRequestProcessor(
                 engine,
                 ConversationReceiptStore(receipt_path),
-                action_bridge=forge_bridge,
+                action_bridge=action_bridge,
             ),
             shared_secret=shared_secret,
         )
@@ -442,7 +457,14 @@ def main(argv: Sequence[str] | None = None) -> None:
     )
     print(f"Hikari Conversation Host：ws://{bind_host}:{bind_port}", flush=True)
     print(f"Hikari 对话模型：{getattr(provider, 'model', type(provider).__name__)}", flush=True)
-    print(f"Hikari Forge hands：{'启用' if forge_bridge is not None else '关闭'}", flush=True)
+    print(
+        f"Hikari Engineering Runtime：{'启用' if engineering_bridge is not None else '关闭'}",
+        flush=True,
+    )
+    print(
+        f"Hikari legacy Forge bridge：{'启用' if forge_bridge is not None else '关闭'}",
+        flush=True,
+    )
     print(f"Hikari QQ Bridge：{'resident 托管' if qq_enabled else '关闭'}", flush=True)
     print(
         "Hikari NapCat Login Guard："
