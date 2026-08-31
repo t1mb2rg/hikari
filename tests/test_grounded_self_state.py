@@ -22,6 +22,32 @@ def test_engineering_self_state_denies_direct_filesystem_perception() -> None:
     assert engineering["worker_liveness"] == "not_asserted_by_self_state"
 
 
+def test_self_state_does_not_equate_conversation_model_with_hikari_identity() -> None:
+    state = describe_self_state({"HIKARI_ENGINEERING_ENABLED": "true"})
+
+    assert state["identity_scope"]["system_identity"] == "hikari"
+    assert state["identity_scope"]["model_is_not_identity"] is True
+    assert (
+        state["cognition_topology"]["conversation"]["identity_relation"]
+        == "part_of_hikari_not_hikari_itself"
+    )
+    assert (
+        state["cognition_topology"]["engineering"]["identity_relation"]
+        == "part_of_hikari_not_external_service"
+    )
+
+
+def test_engineering_terminal_delivery_does_not_require_conversation_rewrite() -> None:
+    state = describe_self_state({"HIKARI_ENGINEERING_ENABLED": "true"})
+
+    assert (
+        state["delivery_semantics"]["conversation_model_consumption"]
+        == "not_required_for_terminal_engineering_delivery"
+    )
+    result_model = state["engineering"]["result_model"]
+    assert "conversation" not in result_model.lower()
+
+
 def test_capabilities_replace_external_forge_with_internal_engineering_runtime() -> None:
     capabilities = describe_capabilities({"HIKARI_ENGINEERING_ENABLED": "true"})
 
