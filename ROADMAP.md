@@ -1,12 +1,14 @@
 # Hikari Development Roadmap
 
-> Let Hikari exist, understand, remember, grow, and act.
+> Let Hikari exist, understand, remember, assist, and improve.
 
 ## Overview
 
-Hikari is developed through stages of capability awakening rather than simple feature releases.
+Hikari is developed as a persistent personal AI system rather than a collection of disconnected AI tools.
 
-The goal is not to build a collection of AI tools, but to gradually create a personal intelligent system with continuous existence, memory, understanding, and growth.
+The long-term direction is Jarvis-style assistance: continuous presence, durable user understanding, proactive judgement, bounded execution, and the ability to improve useful capabilities safely.
+
+The roadmap does **not** target simulated human consciousness, invented senses, or autonomous life goals. Personality and natural expression support long-term interaction continuity; system facts remain grounded in actual runtime state.
 
 ---
 
@@ -58,6 +60,8 @@ Capabilities:
 - Device state awareness
 - Context understanding
 
+Awareness means bounded observation through configured sensors, not invented direct perception.
+
 ---
 
 # M2: Memory
@@ -73,7 +77,7 @@ Memory layers:
 - Personal memory
 - Experience memory
 
-The purpose of memory is understanding, not collecting data.
+The purpose of memory is understanding and better future judgement, not collecting data for its own sake.
 
 ---
 
@@ -86,11 +90,11 @@ Goal:
 Capabilities:
 
 - User preference learning
-- Personality traits
-- Emotional state modeling
+- Stable personality traits
 - Communication adaptation
+- Relational continuity
 
-Personality should emerge from experience rather than fixed roleplay.
+Personality should become more situated through experience rather than fixed roleplay. It is an interaction layer, not a claim of human-like consciousness or hidden inner experience.
 
 ---
 
@@ -122,18 +126,18 @@ Capabilities:
 - Tool usage
 - Workflow execution
 - Project assistance
-- Forge integration
+- Bounded engineering execution
 
 Relationship:
 
 ```
 Hikari
   ↓
-Decision
+Decision / authority
   ↓
-Forge
+Internal execution capability
   ↓
-Execution
+Verified result
 ```
 
 ---
@@ -144,7 +148,7 @@ Goal:
 
 > Hikari becomes a personal digital entrance.
 
-Future interfaces:
+Interfaces:
 
 - PC
 - Phone
@@ -152,7 +156,7 @@ Future interfaces:
 - Voice interaction
 - Other devices
 
-Devices are not Hikari. They are how Hikari reaches the world.
+Devices are not Hikari. They are how Hikari reaches the user and digital environment.
 
 ---
 
@@ -160,26 +164,38 @@ Devices are not Hikari. They are how Hikari reaches the world.
 
 Goal:
 
-> Hikari can identify limitations and expand capabilities safely.
+> Hikari can identify useful capability gaps and improve safely.
+
+M7 is operational self-improvement, not autonomous life-goal formation.
 
 Process:
 
 ```
-Find limitation
+Observe limitation
+      ↓
+Understand user impact
       ↓
 Growth proposal
       ↓
-Forge implementation
+Engineering Runtime
       ↓
 Validation
       ↓
-New capability
+New bounded capability
 ```
+
+Required foundations:
+
+- grounded system self-state
+- accurate capability and authority awareness
+- observable runtime/component health
+- durable engineering sessions
+- explicit validation and permission boundaries
 
 ---
 
 # Development Principle
 
-Build the smallest loop that proves existence.
+Build the smallest loop that proves real user value.
 
-Do not chase completeness before continuity.
+Do not chase completeness before continuity, and do not simulate capabilities that do not exist.
