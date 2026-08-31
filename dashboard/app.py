@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import argparse
+from io import BytesIO
 import ipaddress
 from pathlib import Path
 from typing import Sequence
 
+from .napcat_control import NapCatDashboardControl
 from .probes import DashboardProbeConfig, DashboardProbeService
 
 
@@ -14,7 +16,7 @@ DEFAULT_DASHBOARD_PORT = 8787
 def create_app(config: DashboardProbeConfig):
     try:
         from fastapi import FastAPI, HTTPException
-        from fastapi.responses import FileResponse
+        from fastapi.responses import FileResponse, Response
         from fastapi.staticfiles import StaticFiles
     except ImportError as exc:
         raise RuntimeError(
@@ -22,6 +24,7 @@ def create_app(config: DashboardProbeConfig):
         ) from exc
 
     service = DashboardProbeService(config)
+    napcat_control = NapCatDashboardControl(config.napcat_root)
     static_dir = Path(__file__).with_name("static")
     app = FastAPI(
         title="Hikari Dashboard",
@@ -37,6 +40,45 @@ def create_app(config: DashboardProbeConfig):
     @app.get("/api/events")
     def api_events(limit: int = 60):
         return {"events": service.recent_events(limit=limit)}
+
+    @app.get("/api/napcat/qrcode")
+    def api_napcat_qrcode():
+        snapshot = service.probe_napcat()
+        details = snapshot.details or {}
+        if details.get("qq_logged_in") is True:
+            raise HTTPException(status_code=409, detail="QQ 已登录")
+        qrcode_url = details.get("qrcode_url")
+        if not isinstance(qrcode_url, str) or not qrcode_url.strip():
+            raise HTTPException(status_code=404, detail="NapCat 暂未生成登录二维码")
+        try:
+            import qrcode
+        except ImportError as exc:
+            raise RuntimeError(
+                'Dashboard QR dependency is missing; install with `pip install -e ".[dashboard]"`'
+            ) from exc
+
+        image = qrcode.make(qrcode_url)
+        buffer = BytesIO()
+        image.save(buffer, format="PNG")
+        return Response(
+            content=buffer.getvalue(),
+            media_type="image/png",
+            headers={
+                "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+                "Pragma": "no-cache",
+            },
+        )
+
+    @app.post("/api/napcat/qrcode/refresh")
+    def api_refresh_napcat_qrcode():
+        try:
+            napcat_control.refresh_qrcode()
+        except Exception as exc:
+            raise HTTPException(
+                status_code=503,
+                detail=f"二维码刷新失败：{type(exc).__name__}",
+            ) from None
+        return {"ok": True, "message": "已请求 NapCat 刷新二维码"}
 
     @app.post("/api/napcat/restart")
     def api_restart_napcat():
