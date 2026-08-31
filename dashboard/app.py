@@ -8,6 +8,9 @@ from typing import Sequence
 from .probes import DashboardProbeConfig, DashboardProbeService
 
 
+DEFAULT_DASHBOARD_PORT = 8787
+
+
 def create_app(config: DashboardProbeConfig):
     try:
         from fastapi import FastAPI, HTTPException
@@ -59,7 +62,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run the local Hikari dashboard")
     parser.add_argument("repository", nargs="?", default=".")
     parser.add_argument("--host", default="127.0.0.1")
-    parser.add_argument("--port", type=int, default=8765)
+    parser.add_argument("--port", type=int, default=DEFAULT_DASHBOARD_PORT)
     parser.add_argument("--state-dir", default=None)
     parser.add_argument("--napcat-root", default=r"D:\NapCat-Shell-v4.18.19")
     parser.add_argument("--napcat-task-name", default="Hikari NapCat Shell")
