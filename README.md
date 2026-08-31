@@ -2,9 +2,15 @@
 
 > 让光在你不和她说话的时候，也依然存在。
 
-Hikari（光 / ひかり）是一个持续存在的个人智能系统。
+Hikari（光 / ひかり）是一个长期常驻的个人 AI 系统。
 
-她不是简单的聊天机器人，也不是等待用户指令的工具。Hikari 的目标是在用户没有主动发起交互时，仍然能够感知数字环境中的变化，理解变化的意义，并在合适的时候主动介入。
+她不是简单的聊天机器人，也不是只会等待用户指令的工具。Hikari 的目标是在用户没有主动发起交互时，仍然能够理解数字环境中的变化、结合长期上下文判断意义，并在合适的时候主动介入或完成工作。
+
+## Project Direction
+
+Hikari 的工程北极星是 **Jarvis 式个人 AI 管家**：长期在线、了解用户、保留连续上下文、主动提醒、能够调度不同认知与执行能力，并且知道自己当前能做什么、不能做什么。
+
+Hikari **不以模拟人类意识、虚构感官或构造“数字生命”体验为目标**。稳定人格和自然表达用于维持长期交互连续性，但涉及能力、权限、感知、记忆和执行机制时，必须服从真实系统状态。
 
 ## Local Environment
 
@@ -132,13 +138,7 @@ Hikari 希望探索：
 
 Hikari 不属于任何单一模型。
 
-GPT、Claude、Qwen 等模型只是她使用的认知能力。Hikari 的连续性来自：
-
-- Identity
-- Memory
-- Experience
-- Context
-- Personality
+GPT、Claude、Qwen 等模型只是她使用的认知能力。Hikari 的连续性来自持续的系统身份、记忆、上下文、经验和运行状态，而不是某一个模型进程。
 
 ## Core Loop
 
@@ -162,27 +162,29 @@ Experience
 
 ## Current Goal
 
-Hikari v0.1 不追求完整的数字生命，而是验证一个核心命题：
+Hikari v0.1 先验证一个最小但关键的 Jarvis 式命题：
 
-> 当用户没有和 Hikari 对话时，她仍然能够发现一件值得用户知道的事情。
+> 当用户没有和 Hikari 对话时，她仍然能够发现一件值得用户知道的事情，并通过合适的入口主动协助。
 
-## Relationship with Forge
+## Engineering Runtime
 
-Forge 是 Hikari 的工程执行能力。
+Engineering Runtime 是 Hikari 自己的工程执行能力，不再被建模成一个外部 Forge 服务。
 
-Hikari 负责理解、判断和提出改进方向。
+Hikari 负责形成工程意图、维护持久 EngineeringSession、约束权限并接收工程结果；独立 Engineering Worker / backend 负责在隔离故障域中执行具体仓库工作和验证。
 
-Forge 负责实现变化、修改代码和验证结果。
-
-```
+```text
 Hikari
   ↓
-Growth Proposal
+EngineeringSession
   ↓
-Forge
+Engineering Worker / backend
   ↓
-New Capability
+Validation + persisted result
+  ↓
+Hikari delivery / next decision
 ```
+
+当前工程权限仍然按显式 authority boundary 开放。具备 Engineering Runtime 不等于 Conversation 模型拥有直接 shell、文件系统感知或无限制修改权限。
 
 ## Operations doctor
 
