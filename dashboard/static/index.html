@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>光 · 系统状态</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <div class="shell">
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-mark">光</div>
+        <div>
+          <strong>Hikari</strong>
+          <span>系统面板</span>
+        </div>
+      </div>
+      <nav>
+        <button class="nav-item active" data-page="overview">总览</button>
+        <button class="nav-item" data-page="napcat">QQ / NapCat</button>
+        <button class="nav-item" data-page="events">事件</button>
+      </nav>
+      <div class="sidebar-footer">仅本机访问 · v0.1</div>
+    </aside>
+
+    <main class="content">
+      <section class="page active" id="page-overview">
+        <header class="page-header">
+          <div>
+            <p class="eyebrow">HIKARI STATUS</p>
+            <h1>系统总览</h1>
+          </div>
+          <div class="overall-wrap">
+            <span id="overall-dot" class="status-dot"></span>
+            <strong id="overall-label">读取中</strong>
+            <span id="last-refresh" class="muted">--</span>
+          </div>
+        </header>
+
+        <div id="component-cards" class="card-grid"></div>
+
+        <section class="panel">
+          <div class="panel-title-row">
+            <h2>当前链路</h2>
+            <span class="muted">看它现在走到哪里</span>
+          </div>
+          <div id="pipeline" class="pipeline"></div>
+        </section>
+
+        <div class="two-column">
+          <section class="panel">
+            <div class="panel-title-row"><h2>当前阻塞</h2></div>
+            <div id="current-blocker" class="empty-state">暂时没有阻塞信息</div>
+          </section>
+          <section class="panel">
+            <div class="panel-title-row"><h2>最近异常</h2></div>
+            <div id="recent-errors" class="event-list compact"></div>
+          </section>
+        </div>
+      </section>
+
+      <section class="page" id="page-napcat">
+        <header class="page-header">
+          <div>
+            <p class="eyebrow">QQ / NAPCAT</p>
+            <h1>QQ 登录与连接</h1>
+          </div>
+          <button id="restart-napcat" class="danger-soft">重启 NapCat</button>
+        </header>
+
+        <div class="napcat-layout">
+          <section class="panel account-panel">
+            <div class="panel-title-row"><h2>连接状态</h2></div>
+            <dl class="kv-list">
+              <div><dt>NapCat</dt><dd id="napcat-state">读取中</dd></div>
+              <div><dt>QQ 登录</dt><dd id="qq-login-state">读取中</dd></div>
+              <div><dt>OneBot</dt><dd id="onebot-state">读取中</dd></div>
+              <div><dt>当前阶段</dt><dd id="napcat-phase">--</dd></div>
+            </dl>
+          </section>
+
+          <section class="panel qr-panel">
+            <div class="panel-title-row">
+              <h2>扫码登录</h2>
+              <button id="refresh-now" class="ghost-button">刷新</button>
+            </div>
+            <div id="qr-container" class="qr-container">
+              <div class="qr-placeholder">等待 NapCat 提供二维码</div>
+            </div>
+            <p id="qr-message" class="muted centered">QQ 已登录时无需扫码。</p>
+          </section>
+        </div>
+      </section>
+
+      <section class="page" id="page-events">
+        <header class="page-header">
+          <div>
+            <p class="eyebrow">RECENT ACTIVITY</p>
+            <h1>最近事件</h1>
+          </div>
+          <button id="refresh-events" class="ghost-button">刷新</button>
+        </header>
+        <section class="panel">
+          <div id="event-list" class="event-list"></div>
+        </section>
+      </section>
+    </main>
+  </div>
+
+  <div id="toast" class="toast"></div>
+  <script src="/static/app.js"></script>
+</body>
+</html>
