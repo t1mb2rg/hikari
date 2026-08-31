@@ -6,7 +6,11 @@ from pathlib import Path
 import time
 from typing import Callable, Sequence
 
+from core.delivery import DeliveryOutbox
+
 from .backend import ClaudeEngineeringBackend, EngineeringAgentResult
+from .bindings import EngineeringConversationBindingStore
+from .delivery import EngineeringCompletionDelivery
 from .session import (
     EngineeringAuthority,
     EngineeringEvent,
@@ -276,6 +280,14 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _completion_delivery(root: Path, store: EngineeringSessionStore) -> EngineeringCompletionDelivery:
+    return EngineeringCompletionDelivery(
+        store,
+        EngineeringConversationBindingStore(root / "engineering_bindings.json"),
+        DeliveryOutbox(root / "proactive_delivery.db"),
+    )
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     from resident.windows_host import default_state_dir
@@ -283,8 +295,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     root = Path(args.state_dir).expanduser().resolve() if args.state_dir else default_state_dir()
     store = EngineeringSessionStore(root / "engineering")
     worker = EngineeringWorker(store)
+    completion = _completion_delivery(root, store)
+
+    # Recover any terminal result that was persisted before a previous worker
+    # stopped but had not yet reached the M6 delivery outbox.
+    completion.pump()
+
     if args.once:
         outcome = worker.run_once()
+        completion.pump()
         if outcome is None:
             print("[engineering] idle")
             return 0
@@ -295,6 +314,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     print(f"[engineering] worker started state={store.root}")
     while True:
         outcome = worker.run_once()
+        completion.pump()
         if outcome is None:
             time.sleep(poll)
 
