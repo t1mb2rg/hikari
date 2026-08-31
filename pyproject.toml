@@ -26,6 +26,8 @@ hikari-presence = "resident.presence_cli:main"
 hikari-soak = "resident.soak_cli:main"
 hikari-doctor = "resident.doctor_cli:main"
 hikari-dashboard = "dashboard.app:main"
+hikari-engineering = "engineering.cli:main"
+hikari-engineering-worker = "engineering.worker:main"
 
 [project.optional-dependencies]
 qq = [
@@ -51,7 +53,7 @@ windows-notify = [
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["core*", "memory*", "user_model*", "events*", "attention*", "brain*", "awareness*", "personality*", "learning*", "actions*", "resident*", "conversation*", "integrations*", "dashboard*"]
+include = ["core*", "memory*", "user_model*", "events*", "attention*", "brain*", "awareness*", "personality*", "learning*", "actions*", "resident*", "conversation*", "integrations*", "dashboard*", "engineering*"]
 exclude = ["tests*"]
 
 [tool.setuptools.package-data]
