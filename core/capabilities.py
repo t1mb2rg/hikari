@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from copy import deepcopy
+
+from .self_state import describe_self_state
 
 
 _CAPABILITY_MANIFEST = {
@@ -22,34 +25,62 @@ _CAPABILITY_MANIFEST = {
     },
     "notifications": {
         "available": True,
-        "summary": "Presence can proactively reach the user through the authorized Windows notification path when Attention decides an observed event warrants it.",
+        "summary": "Presence can proactively reach the user through authorized delivery paths when policy decides an observed event warrants it.",
     },
     "actions": {
         "available": True,
-        "summary": "The wider Hikari system has typed action proposal, deterministic authorization, and bounded adapters. Direct conversation alone does not automatically grant action authority.",
+        "summary": "The wider Hikari system has typed action proposal, deterministic authorization, and bounded adapters. Direct conversation alone does not automatically grant arbitrary action authority.",
     },
-    "forge": {
+    "engineering_runtime": {
         "available": True,
-        "summary": "The wider Hikari system has a confirmation-gated Forge engineering boundary for verified code changes. This conversation path cannot invoke Forge unless an explicit authorized action path is attached.",
-    },
-    "current_chat_authority": {
-        "shell": False,
-        "filesystem": False,
-        "browser": False,
-        "forge": False,
-        "arbitrary_tools": False,
-        "summary": "This direct chat path currently provides cognition, context, personality, and memory continuity, but no direct execution tools.",
+        "relationship": "internal_hikari_capability",
+        "summary": (
+            "Hikari owns durable EngineeringSession state and a separate Engineering Worker "
+            "fault domain for repository work. This is an internal capability, not an external "
+            "Forge service or callback boundary."
+        ),
     },
 }
 
 
-def describe_capabilities() -> dict[str, object]:
-    """Return Hikari's bounded, user-facing self model.
+def describe_capabilities(
+    environment: Mapping[str, str] | None = None,
+) -> dict[str, object]:
+    """Return Hikari's bounded, user-facing factual self model.
 
-    The manifest describes system-level capabilities separately from the
-    authority available to the current conversation path. Keeping those two
-    concepts distinct prevents a chat model from either inventing powers or
-    incorrectly claiming that Hikari has no memory/presence at all.
+    System-level capability and current direct-chat authority stay separate. The
+    nested self_state carries the canonical development stage and explicit
+    epistemic boundaries so the model does not turn delegated work into invented
+    direct sensing.
     """
 
-    return deepcopy(_CAPABILITY_MANIFEST)
+    capabilities = deepcopy(_CAPABILITY_MANIFEST)
+    self_state = describe_self_state(environment)
+    engineering = self_state["engineering"]
+    engineering_read_enabled = bool(
+        isinstance(engineering, Mapping)
+        and engineering.get("conversation_read_only_enabled") is True
+    )
+
+    capabilities["current_chat_authority"] = {
+        "direct_shell": False,
+        "direct_filesystem": False,
+        "browser": False,
+        "arbitrary_tools": False,
+        "engineering_read_session": engineering_read_enabled,
+        "engineering_write_session": False,
+        "summary": (
+            "This conversation can create a bounded read-only EngineeringSession when the "
+            "Engineering Runtime is enabled. Repository inspection is completed by Hikari's "
+            "separate internal worker; the chat model itself has no direct shell or filesystem "
+            "sense."
+            if engineering_read_enabled
+            else (
+                "This direct chat path currently provides cognition, context, personality, and "
+                "memory continuity, but no direct shell/filesystem access and no attached "
+                "EngineeringSession authority."
+            )
+        ),
+    }
+    capabilities["self_state"] = self_state
+    return capabilities
