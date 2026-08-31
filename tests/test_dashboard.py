@@ -53,7 +53,7 @@ def test_forge_probe_surfaces_current_verification_blocker(tmp_path: Path):
     assert snapshot.details["attempt"] == 1
 
 
-def test_forge_probe_marks_stale_running_state_as_warning(tmp_path: Path):
+def test_forge_probe_treats_stale_running_state_as_historical(tmp_path: Path):
     service = _service(tmp_path, stale_seconds=10)
     _forge_state(
         service,
@@ -66,9 +66,11 @@ def test_forge_probe_marks_stale_running_state_as_warning(tmp_path: Path):
 
     snapshot = service.probe_forge()
 
-    assert snapshot.status is ComponentStatus.WARNING
-    assert snapshot.last_error == "可能停滞"
-    assert snapshot.blocking_on == "项目测试"
+    assert snapshot.status is ComponentStatus.IDLE
+    assert snapshot.phase == "上次任务未收尾"
+    assert snapshot.blocking_on is None
+    assert snapshot.last_error == "历史运行状态未收尾"
+    assert snapshot.details["stale_phase"] == "VERIFYING"
 
 
 def test_resident_probe_is_offline_without_host_state(tmp_path: Path):
