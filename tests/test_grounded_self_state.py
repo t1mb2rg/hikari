@@ -10,6 +10,15 @@ def test_self_state_uses_canonical_m7_05_development_state() -> None:
     assert state["development"]["source"] == "runtime_manifest"
 
 
+def test_self_state_anchors_jarvis_style_north_star() -> None:
+    state = describe_self_state({})
+
+    assert state["north_star"]["archetype"] == "jarvis_style_personal_ai"
+    assert state["north_star"]["role"] == "persistent_personal_ai_assistant"
+    assert "digital_life_claims" in state["north_star"]["not_a_project_target"]
+    assert "simulated_human_consciousness" in state["north_star"]["not_a_project_target"]
+
+
 def test_engineering_self_state_denies_direct_filesystem_perception() -> None:
     state = describe_self_state({"HIKARI_ENGINEERING_ENABLED": "true"})
     engineering = state["engineering"]
@@ -22,11 +31,22 @@ def test_engineering_self_state_denies_direct_filesystem_perception() -> None:
     assert engineering["worker_liveness"] == "not_asserted_by_self_state"
 
 
-def test_self_state_does_not_equate_conversation_model_with_hikari_identity() -> None:
+def test_awareness_is_not_reduced_to_engineering_request_response() -> None:
+    state = describe_self_state({"HIKARI_ENGINEERING_ENABLED": "true"})
+    awareness = state["awareness"]
+
+    assert awareness["all_sensing_requires_explicit_request_response"] is False
+    assert awareness["configured_sensors_may_observe_proactively"] is True
+    assert awareness["engineering_session_is_not_the_only_observation_path"] is True
+    assert awareness["filesystem_observation_via_engineering_is_direct_sensor"] is False
+
+
+def test_self_state_does_not_equate_conversation_model_or_host_with_hikari_identity() -> None:
     state = describe_self_state({"HIKARI_ENGINEERING_ENABLED": "true"})
 
     assert state["identity_scope"]["system_identity"] == "hikari"
     assert state["identity_scope"]["model_is_not_identity"] is True
+    assert state["identity_scope"]["host_is_not_identity"] is True
     assert (
         state["cognition_topology"]["conversation"]["identity_relation"]
         == "part_of_hikari_not_hikari_itself"
@@ -35,6 +55,7 @@ def test_self_state_does_not_equate_conversation_model_with_hikari_identity() ->
         state["cognition_topology"]["engineering"]["identity_relation"]
         == "part_of_hikari_not_external_service"
     )
+    assert state["cognition_topology"]["awareness"]["identity_relation"] == "part_of_hikari"
 
 
 def test_engineering_terminal_delivery_does_not_require_conversation_rewrite() -> None:
