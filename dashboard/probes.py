@@ -133,11 +133,23 @@ class _NapCatDashboardClient:
         return self._authenticate()
 
     def check(self) -> NapCatDashboardStatus:
-        data = self._post(
-            "/api/QQLogin/CheckLoginStatus",
-            {},
-            credential=self._active_credential(),
-        )
+        try:
+            data = self._post(
+                "/api/QQLogin/CheckLoginStatus",
+                {},
+                credential=self._active_credential(),
+            )
+        except NapCatLoginError:
+            # NapCat may invalidate the short-lived WebUI credential after
+            # login-state changes. Status probing is read-only, so one bounded
+            # re-authentication retry is safe.
+            self._credential = None
+            self._credential_expires_at = 0.0
+            data = self._post(
+                "/api/QQLogin/CheckLoginStatus",
+                {},
+                credential=self._active_credential(),
+            )
         if not isinstance(data, Mapping):
             raise NapCatLoginError("NapCat login status payload was missing")
         raw_qr = data.get("qrcodeurl")
