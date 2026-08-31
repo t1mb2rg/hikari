@@ -6,7 +6,7 @@ import time
 
 import pytest
 
-from dashboard.app import _require_loopback
+from dashboard.app import DEFAULT_DASHBOARD_PORT, _require_loopback, build_parser
 from dashboard.models import ComponentStatus
 from dashboard.probes import DashboardProbeConfig, DashboardProbeService
 
@@ -101,3 +101,10 @@ def test_dashboard_v01_rejects_non_loopback_bind():
     _require_loopback("localhost")
     with pytest.raises(ValueError, match="loopback"):
         _require_loopback("0.0.0.0")
+
+
+def test_dashboard_default_port_does_not_overlap_resident_port():
+    args = build_parser().parse_args([])
+
+    assert args.port == DEFAULT_DASHBOARD_PORT == 8787
+    assert args.port != 8765
