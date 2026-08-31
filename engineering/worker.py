@@ -290,7 +290,7 @@ def _completion_delivery(root: Path, store: EngineeringSessionStore) -> Engineer
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    from resident.windows_host import default_state_dir
+    from resident.paths import default_state_dir
 
     root = Path(args.state_dir).expanduser().resolve() if args.state_dir else default_state_dir()
     store = EngineeringSessionStore(root / "engineering")
