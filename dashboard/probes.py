@@ -471,13 +471,16 @@ class DashboardProbeService:
             return ComponentSnapshot(
                 component_id="forge",
                 label="Forge",
-                status=ComponentStatus.WARNING,
-                phase=localized_phase,
-                message="Forge 状态已经较长时间没有更新",
+                status=ComponentStatus.IDLE,
+                phase="上次任务未收尾",
+                message=(
+                    f"最近一次 Forge 记录停在{localized_phase}，但已长时间没有更新；"
+                    "当前不视为活动任务"
+                ),
                 updated_at=updated_at,
-                blocking_on=blocking_on or "状态更新",
-                last_error="可能停滞",
-                details=details,
+                blocking_on=None,
+                last_error="历史运行状态未收尾",
+                details={**details, "stale_phase": phase or None},
             )
 
         return ComponentSnapshot(
