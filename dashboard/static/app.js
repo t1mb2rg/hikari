@@ -109,12 +109,12 @@ function renderNapCat(components) {
 
   const qr = $("#qr-container");
   const message = $("#qr-message");
-  const qrUrl = details.qrcode_url;
+  const qrAvailable = Boolean(details.qrcode_url);
   if (details.qq_logged_in) {
     qr.innerHTML = '<div class="qr-placeholder">QQ 已登录</div>';
     message.textContent = "当前账号已经在线。";
-  } else if (qrUrl) {
-    qr.innerHTML = `<img src="${escapeHtml(qrUrl)}" alt="QQ 登录二维码" />`;
+  } else if (qrAvailable) {
+    qr.innerHTML = `<img src="/api/napcat/qrcode?t=${Date.now()}" alt="QQ 登录二维码" />`;
     message.textContent = "请使用手机 QQ 扫码并在手机上确认登录。";
   } else {
     qr.innerHTML = '<div class="qr-placeholder">暂未拿到登录二维码</div>';
@@ -160,6 +160,22 @@ async function refreshEvents({ silent = true } = {}) {
   }
 }
 
+async function refreshNapCatQr() {
+  const button = $("#refresh-now");
+  button.disabled = true;
+  try {
+    const response = await fetch("/api/napcat/qrcode/refresh", { method: "POST" });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.detail || "二维码刷新失败");
+    showToast(data.message || "已请求刷新二维码");
+    setTimeout(() => refreshStatus({ silent: false }), 900);
+  } catch (error) {
+    showToast(error.message);
+  } finally {
+    button.disabled = false;
+  }
+}
+
 async function restartNapCat() {
   const button = $("#restart-napcat");
   if (!window.confirm("确认重启 Hikari 使用的 NapCat 实例？")) return;
@@ -186,7 +202,7 @@ $$('.nav-item').forEach((button) => {
 });
 
 $("#restart-napcat").addEventListener("click", restartNapCat);
-$("#refresh-now").addEventListener("click", () => refreshStatus({ silent: false }));
+$("#refresh-now").addEventListener("click", refreshNapCatQr);
 $("#refresh-events").addEventListener("click", () => refreshEvents({ silent: false }));
 
 refreshStatus({ silent: false });
