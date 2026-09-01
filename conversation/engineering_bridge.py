@@ -13,8 +13,10 @@ from engineering.bindings import (
     EngineeringConversationBindingStore,
 )
 from engineering.maintainer import project_maintainer_authority
+from engineering.progress import describe_engineering_progress
 from engineering.session import (
     EngineeringAuthority,
+    EngineeringProtocolError,
     EngineeringSessionState,
     EngineeringSessionStore,
     EngineeringTurn,
@@ -73,6 +75,25 @@ _WRITE_VERBS = (
     "implement",
     "refactor",
 )
+_STATUS_SUBJECTS = (
+    "engineering",
+    "工程任务",
+    "工程会话",
+    "工程运行时",
+    "engineering worker",
+    "worker",
+)
+_STATUS_QUESTIONS = (
+    "什么状态",
+    "现在状态",
+    "进度",
+    "怎么样了",
+    "做到哪",
+    "完成了吗",
+    "结束了吗",
+    "还在跑",
+    "还在处理",
+)
 
 
 _READ_REQUIREMENTS = ("engineering.repository.read",)
@@ -85,12 +106,7 @@ _MAINTAIN_REQUIREMENTS = (
 
 
 def engineering_requirements_for_intent(text: str) -> tuple[str, ...] | None:
-    """Narrow task-to-capability mapper for the first delegated maintainer slice.
-
-    Cognition can become richer later, but the capability decision itself remains
-    machine-readable. Unknown everyday conversation is not accidentally routed to
-    Engineering merely because a generic verb appears.
-    """
+    """Narrow task-to-capability mapper for the first delegated maintainer slice."""
 
     normalized = text.casefold()
     project_context = any(noun in normalized for noun in _PROJECT_NOUNS)
@@ -107,18 +123,20 @@ def looks_like_read_only_engineering_intent(text: str) -> bool:
     return engineering_requirements_for_intent(text) == _READ_REQUIREMENTS
 
 
+def looks_like_engineering_status_query(text: str) -> bool:
+    """Recognize explicit status checks that must bypass generative completion."""
+
+    normalized = text.casefold()
+    return any(subject in normalized for subject in _STATUS_SUBJECTS) and any(
+        question in normalized for question in _STATUS_QUESTIONS
+    )
+
+
 def engineering_session_matches_repository_head(
     state: EngineeringSessionState,
     repository_head: str,
 ) -> bool:
-    """Return whether a terminal session still represents the current source revision.
-
-    A session without a workspace baseline has not inspected the repository yet,
-    so it can still be reused and will bind to HEAD when the Worker first opens it.
-    Once a baseline exists it is immutable for that EngineeringSession. If the
-    source repository advances, Conversation must create a new session rather
-    than asking an old worktree to describe the new world.
-    """
+    """Return whether a terminal session still represents the current source revision."""
 
     baseline = (state.baseline_commit or "").strip()
     if not baseline:
@@ -126,13 +144,21 @@ def engineering_session_matches_repository_head(
     return baseline == repository_head.strip()
 
 
+def _task_label(turn: EngineeringTurn | None) -> str:
+    if turn is None:
+        return "当前绑定的工程任务"
+    text = " ".join(turn.intent.split())
+    if len(text) > 120:
+        text = text[:117].rstrip() + "..."
+    return text or "当前绑定的工程任务"
+
+
 class ConversationEngineeringBridge(ConversationForgeBridge):
     """Route delegated project work into Hikari EngineeringSession.
 
-    Conversation identifies the task class. The machine-readable capability model
-    decides whether the task is executable, an implementation gap, or outside the
-    standing mandate. Routine work inside the Hikari maintainer mandate does not ask
-    the user for approval at each file/command/test step.
+    Explicit Engineering status questions are answered directly from durable
+    session/result state. They do not ask the Conversation model to infer whether
+    a task succeeded.
     """
 
     def __init__(
@@ -157,6 +183,72 @@ class ConversationEngineeringBridge(ConversationForgeBridge):
         self.repository = repository_path
         self.fallback = fallback
 
+    def _bound_state(
+        self,
+        channel: str,
+        conversation_id: str,
+    ) -> EngineeringSessionState | None:
+        binding = self.bindings.for_conversation(channel, conversation_id)
+        if binding is None:
+            return None
+        try:
+            return self.store.load(binding.session_id)
+        except EngineeringProtocolError:
+            return None
+
+    def _status_reply(self, turn: UserTurn) -> AssistantReply:
+        state = self._bound_state(turn.channel, turn.conversation_id)
+        if state is None:
+            text = "这个会话当前没有可读取的 Engineering 任务状态。"
+        else:
+            progress = describe_engineering_progress(state)
+            engineering_turn: EngineeringTurn | None = None
+            if state.current_turn_id:
+                try:
+                    engineering_turn = self.store.load_turn(state.session_id, state.current_turn_id)
+                except EngineeringProtocolError:
+                    engineering_turn = None
+            label = _task_label(engineering_turn)
+
+            if state.status in {"pending", "running"}:
+                text = (
+                    f"当前 Engineering 任务是 `{state.status}`，阶段 `{progress.phase}`。\n"
+                    f"任务：{label}\n"
+                    f"最后一次持久进度：{state.latest_summary or '暂无更细的阶段信息'}。"
+                )
+            elif state.status in {"completed", "failed", "blocked"}:
+                if not state.current_turn_id:
+                    text = (
+                        f"EngineeringSession 标记为 `{state.status}`，但缺少 current turn。"
+                        "我不能据此宣称任务实际完成。"
+                    )
+                else:
+                    try:
+                        result = self.store.load_result(state.session_id, state.current_turn_id)
+                    except EngineeringProtocolError:
+                        text = (
+                            f"EngineeringSession 标记为 `{state.status}`，但 terminal result 不可读取。"
+                            "我不能据此宣称任务实际完成。"
+                        )
+                    else:
+                        text = (
+                            f"当前 Engineering 任务状态是 `{result.status}`。\n"
+                            f"任务：{label}\n"
+                            f"实际结果：{result.message}"
+                        )
+            else:
+                text = (
+                    f"当前 EngineeringSession 状态是 `{state.status}`，阶段 `{progress.phase}`。"
+                    "没有 terminal result 时我不会宣称任务已经完成。"
+                )
+
+        reply = AssistantReply(
+            channel=turn.channel,
+            conversation_id=turn.conversation_id,
+            text=text,
+        )
+        return reply
+
     def respond(
         self,
         engine: ConversationEngine,
@@ -164,6 +256,11 @@ class ConversationEngineeringBridge(ConversationForgeBridge):
         *,
         source_ref: str | None = None,
     ) -> AssistantReply:
+        if looks_like_engineering_status_query(turn.text):
+            reply = self._status_reply(turn)
+            _remember_control_exchange(engine, turn, reply)
+            return reply
+
         requirements = engineering_requirements_for_intent(turn.text)
         if requirements is None:
             if self.fallback is not None:
@@ -205,20 +302,15 @@ class ConversationEngineeringBridge(ConversationForgeBridge):
         )
         session_ceiling = project_maintainer_authority()
 
-        binding = self.bindings.for_conversation(turn.channel, turn.conversation_id)
-        state: EngineeringSessionState | None = None
-        if binding is not None:
-            try:
-                state = self.store.load(binding.session_id)
-            except Exception:
-                state = None
-
+        state = self._bound_state(turn.channel, turn.conversation_id)
         if state is not None and state.status in {"pending", "running"}:
+            progress = describe_engineering_progress(state)
             reply = AssistantReply(
                 channel=turn.channel,
                 conversation_id=turn.conversation_id,
                 text=(
-                    "我这边已经有一个工程会话在处理了。它完成后我会把实际结果发回来，"
+                    "我这边已经有一个工程会话在处理了。"
+                    f"当前阶段是 `{progress.phase}`。它完成后我会把实际结果发回来，"
                     "不会假装已经完成。"
                 ),
             )
