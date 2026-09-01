@@ -4,6 +4,7 @@ import argparse
 from dataclasses import dataclass
 import os
 from pathlib import Path
+import subprocess
 import time
 from typing import Callable, Sequence
 
@@ -16,6 +17,12 @@ from .heartbeat import (
     EngineeringWorkerHeartbeatEmitter,
     EngineeringWorkerHeartbeatStore,
     EngineeringWorkerLease,
+)
+from .maintainer import (
+    commit_project_changes,
+    is_maintainer_authority,
+    is_read_only_authority,
+    run_project_tests,
 )
 from .session import (
     EngineeringAuthority,
@@ -41,17 +48,6 @@ BackendFactory = Callable[
     [EngineeringSessionState, EngineeringTurn],
     object,
 ]
-
-
-def _read_only_supported(authority: EngineeringAuthority) -> bool:
-    return (
-        authority.repository_read
-        and not authority.repository_write
-        and not authority.run_tests
-        and not authority.network
-        and not authority.publish
-        and not authority.outside_repo
-    )
 
 
 def _prompt_for_read_only_turn(state: EngineeringSessionState, turn: EngineeringTurn) -> str:
@@ -92,6 +88,55 @@ def _prompt_for_read_only_turn(state: EngineeringSessionState, turn: Engineering
     return "\n".join(lines) + "\n"
 
 
+def _prompt_for_maintainer_turn(state: EngineeringSessionState, turn: EngineeringTurn) -> str:
+    context = turn.context.strip()
+    lines = [
+        "# Hikari Engineering Maintainer Session",
+        "You are the engineering reasoning and editing component inside Hikari.",
+        "The user has delegated ordinary maintenance of this project to Hikari.",
+        "Complete the requested repository change inside this isolated engineering worktree.",
+        "You may inspect and edit/create/delete project files needed for the task.",
+        "Stay inside this repository. Do not use the network or access external secret locations.",
+        "Do not stage, commit, push, merge, publish, deploy, or alter Git history; Hikari's Worker owns those steps.",
+        "Hikari's Worker will run the project test suite after your edit, so focus on making a coherent implementation.",
+        "",
+        "# Intent",
+        turn.intent,
+    ]
+    if context:
+        lines.extend(["", "# Hikari Context", context])
+    if state.backend_session_id:
+        lines.extend(
+            [
+                "",
+                "# Continuity",
+                "This is a follow-up in the same Hikari engineering session. Preserve prior engineering context.",
+            ]
+        )
+    lines.extend(
+        [
+            "",
+            "# Response",
+            "After editing, summarize what you changed and any important design decision. Do not claim tests passed; the Worker validates them separately.",
+        ]
+    )
+    return "\n".join(lines) + "\n"
+
+
+def _prompt_for_test_repair(turn: EngineeringTurn, test_output: str, attempt: int) -> str:
+    detail = test_output[-3500:] if test_output else "pytest returned a non-zero status without output"
+    return (
+        "# Hikari Engineering Validation Repair\n"
+        "The Hikari Worker ran the project test suite after your implementation and it failed.\n"
+        f"Repair attempt: {attempt}.\n"
+        "Inspect the current worktree, fix the implementation, and do not stage/commit/push/publish.\n"
+        "Stay inside the repository and do not use the network.\n\n"
+        f"# Original intent\n{turn.intent}\n\n"
+        f"# Test failure\n{detail}\n\n"
+        "# Response\nApply the necessary repository edits and briefly summarize the repair.\n"
+    )
+
+
 class EngineeringWorker:
     """Separate fault-domain worker that advances Hikari EngineeringSession state."""
 
@@ -100,16 +145,20 @@ class EngineeringWorker:
         store: EngineeringSessionStore,
         *,
         backend_factory: BackendFactory | None = None,
+        max_repair_attempts: int = 2,
     ) -> None:
         if not isinstance(store, EngineeringSessionStore):
             raise TypeError("EngineeringWorker requires EngineeringSessionStore")
+        if max_repair_attempts < 0:
+            raise ValueError("max_repair_attempts must be >= 0")
         self.store = store
         self.backend_factory = backend_factory or self._default_backend
+        self.max_repair_attempts = int(max_repair_attempts)
 
     @staticmethod
     def _default_backend(state: EngineeringSessionState, turn: EngineeringTurn):
         return ClaudeEngineeringBackend(
-            permission_mode="plan",
+            permission_mode="acceptEdits" if turn.authority.repository_write else "plan",
             session_id=state.backend_session_id,
         )
 
@@ -137,12 +186,17 @@ class EngineeringWorker:
                 message=f"工程权限边界拒绝了这个 turn：{exc}",
             )
 
-        if not _read_only_supported(turn.authority):
+        read_only = is_read_only_authority(turn.authority)
+        maintainer = is_maintainer_authority(turn.authority)
+        if not read_only and not maintainer:
             return self._finish(
                 state,
                 turn,
                 status="blocked",
-                message="当前 M7-04 竖切只开放只读工程会话；写入、测试、网络或发布权限尚未启用。",
+                message=(
+                    "这个工程 turn 超出了当前项目 mandate 的已实现执行配置。"
+                    "外部网络、发布、部署或仓库外操作不会被普通 maintainer turn 自动获得。"
+                ),
             )
 
         self._event(state.session_id, turn.turn_id, "started", "Engineering Worker 已开始处理")
@@ -163,11 +217,22 @@ class EngineeringWorker:
             )
 
         state = self.store.load(state.session_id)
-        self._event(state.session_id, turn.turn_id, "progress", "正在只读理解项目")
-        prompt = _prompt_for_read_only_turn(state, turn)
+        if read_only:
+            return self._run_read_only(state, turn, workspace)
+        return self._run_maintainer(state, turn, workspace)
+
+    def _run_backend(
+        self,
+        state: EngineeringSessionState,
+        turn: EngineeringTurn,
+        workspace: EngineeringWorkspace,
+        prompt: str,
+        *,
+        backend: object | None = None,
+    ) -> tuple[object, EngineeringAgentResult] | WorkerOutcome:
         try:
-            backend = self.backend_factory(state, turn)
-            result = backend.run(workspace.path, prompt)
+            active_backend = backend or self.backend_factory(state, turn)
+            result = active_backend.run(workspace.path, prompt)
         except Exception as exc:
             return self._finish(
                 state,
@@ -175,9 +240,26 @@ class EngineeringWorker:
                 status="failed",
                 message=f"Engineering backend 没有完成：{type(exc).__name__}",
             )
-
         if not isinstance(result, EngineeringAgentResult):
             raise TypeError("engineering backend must return EngineeringAgentResult")
+        return active_backend, result
+
+    def _run_read_only(
+        self,
+        state: EngineeringSessionState,
+        turn: EngineeringTurn,
+        workspace: EngineeringWorkspace,
+    ) -> WorkerOutcome:
+        self._event(state.session_id, turn.turn_id, "progress", "正在只读理解项目")
+        backend_result = self._run_backend(
+            state,
+            turn,
+            workspace,
+            _prompt_for_read_only_turn(state, turn),
+        )
+        if isinstance(backend_result, WorkerOutcome):
+            return backend_result
+        _, result = backend_result
 
         changed = workspace.changed_files()
         if changed:
@@ -189,22 +271,8 @@ class EngineeringWorker:
                 backend_session_id=result.session_id or None,
                 changed_files=changed,
             )
-
         if result.returncode != 0:
-            detail = (result.stderr or result.stdout).strip()
-            if len(detail) > 1200:
-                detail = detail[-1200:]
-            message = "Engineering backend 执行失败"
-            if detail:
-                message += f"：{detail}"
-            return self._finish(
-                state,
-                turn,
-                status="failed",
-                message=message,
-                backend_session_id=result.session_id or None,
-            )
-
+            return self._backend_failure(state, turn, result)
         message = result.final_message.strip()
         if not message:
             return self._finish(
@@ -214,13 +282,161 @@ class EngineeringWorker:
                 message="Engineering backend 没有返回可消费的工程结论。",
                 backend_session_id=result.session_id or None,
             )
-
         return self._finish(
             state,
             turn,
             status="completed",
             message=message,
             backend_session_id=result.session_id or None,
+        )
+
+    def _run_maintainer(
+        self,
+        state: EngineeringSessionState,
+        turn: EngineeringTurn,
+        workspace: EngineeringWorkspace,
+    ) -> WorkerOutcome:
+        self._event(state.session_id, turn.turn_id, "progress", "正在维护项目")
+        backend_result = self._run_backend(
+            state,
+            turn,
+            workspace,
+            _prompt_for_maintainer_turn(state, turn),
+        )
+        if isinstance(backend_result, WorkerOutcome):
+            return backend_result
+        backend, result = backend_result
+        if result.returncode != 0:
+            return self._backend_failure(state, turn, result)
+
+        latest_result = result
+        changed = workspace.changed_files()
+        if not changed:
+            message = result.final_message.strip() or "检查完成，当前任务不需要修改仓库。"
+            return self._finish(
+                state,
+                turn,
+                status="completed",
+                message=message,
+                backend_session_id=result.session_id or None,
+            )
+
+        self._event(state.session_id, turn.turn_id, "progress", "正在运行项目测试")
+        try:
+            tests = run_project_tests(workspace.path)
+        except (OSError, subprocess.SubprocessError) as exc:
+            return self._finish(
+                state,
+                turn,
+                status="failed",
+                message=f"项目测试没有完成：{type(exc).__name__}",
+                backend_session_id=result.session_id or None,
+                changed_files=changed,
+            )
+
+        for attempt in range(1, self.max_repair_attempts + 1):
+            if tests.passed:
+                break
+            self._event(
+                state.session_id,
+                turn.turn_id,
+                "progress",
+                f"测试失败，正在进行自动修复 {attempt}/{self.max_repair_attempts}",
+            )
+            repair_result = self._run_backend(
+                state,
+                turn,
+                workspace,
+                _prompt_for_test_repair(turn, tests.output, attempt),
+                backend=backend,
+            )
+            if isinstance(repair_result, WorkerOutcome):
+                return repair_result
+            backend, latest_result = repair_result
+            if latest_result.returncode != 0:
+                return self._backend_failure(
+                    state,
+                    turn,
+                    latest_result,
+                    changed_files=workspace.changed_files(),
+                )
+            try:
+                tests = run_project_tests(workspace.path)
+            except (OSError, subprocess.SubprocessError) as exc:
+                return self._finish(
+                    state,
+                    turn,
+                    status="failed",
+                    message=f"自动修复后的项目测试没有完成：{type(exc).__name__}",
+                    backend_session_id=latest_result.session_id or None,
+                    changed_files=workspace.changed_files(),
+                )
+
+        changed = workspace.changed_files()
+        if not tests.passed:
+            detail = tests.output[-1800:] if tests.output else "pytest failed without output"
+            return self._finish(
+                state,
+                turn,
+                status="failed",
+                message=f"自动修复后测试仍未通过：\n{detail}",
+                backend_session_id=latest_result.session_id or None,
+                changed_files=changed,
+            )
+
+        self._event(state.session_id, turn.turn_id, "progress", "测试通过，正在提交工程分支")
+        try:
+            commit_sha = commit_project_changes(workspace.path, turn.intent)
+        except (OSError, subprocess.SubprocessError, RuntimeError) as exc:
+            return self._finish(
+                state,
+                turn,
+                status="failed",
+                message=f"测试通过，但工程分支提交失败：{type(exc).__name__}",
+                backend_session_id=latest_result.session_id or None,
+                changed_files=changed,
+            )
+
+        summary = latest_result.final_message.strip() or result.final_message.strip()
+        if not summary:
+            summary = "工程修改已完成。"
+        if commit_sha:
+            summary += (
+                f"\n\nHikari Worker 已运行项目测试并通过，修改已提交到隔离工程分支 "
+                f"`{workspace.branch}`，commit `{commit_sha[:12]}`。"
+            )
+        else:
+            summary += "\n\nHikari Worker 已运行项目测试并通过，当前没有需要提交的剩余变更。"
+        return self._finish(
+            state,
+            turn,
+            status="completed",
+            message=summary,
+            backend_session_id=latest_result.session_id or None,
+            changed_files=changed,
+        )
+
+    def _backend_failure(
+        self,
+        state: EngineeringSessionState,
+        turn: EngineeringTurn,
+        result: EngineeringAgentResult,
+        *,
+        changed_files: tuple[str, ...] = (),
+    ) -> WorkerOutcome:
+        detail = (result.stderr or result.stdout).strip()
+        if len(detail) > 1200:
+            detail = detail[-1200:]
+        message = "Engineering backend 执行失败"
+        if detail:
+            message += f"：{detail}"
+        return self._finish(
+            state,
+            turn,
+            status="failed",
+            message=message,
+            backend_session_id=result.session_id or None,
+            changed_files=changed_files,
         )
 
     def _workspace_for(self, state: EngineeringSessionState) -> EngineeringWorkspace:
@@ -324,8 +540,6 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     try:
         with heartbeat:
-            # Recover any terminal result that was persisted before a previous worker
-            # stopped but had not yet reached the M6 delivery outbox.
             completion.pump()
 
             if args.once:
