@@ -70,6 +70,30 @@ def test_protected_merge_is_authority_escalation_not_capability_gap() -> None:
     assert assessment.escalation == ("engineering.git.merge_protected",)
 
 
+def test_all_declared_high_impact_boundaries_are_machine_enforced() -> None:
+    capabilities = hikari_engineering_capabilities(True)
+    boundary_capabilities = (
+        "engineering.git.merge_protected",
+        "engineering.git.force_push",
+        "engineering.secrets.modify",
+        "engineering.production.deploy",
+        "engineering.data.destructive_migration",
+        "engineering.permissions.expand",
+        "engineering.project.change_north_star",
+        "engineering.external_cost.material",
+    )
+
+    for capability_key in boundary_capabilities:
+        capability = capabilities[capability_key]
+        assessment = assess_task_capabilities([capability_key], capabilities)
+
+        assert capability.delegated is False
+        assert capability.escalation_required is True
+        assert assessment.status == ASSESSMENT_ESCALATION_REQUIRED
+        assert assessment.missing == ()
+        assert assessment.escalation == (capability_key,)
+
+
 def test_implemented_delegated_read_is_executable() -> None:
     capabilities = hikari_engineering_capabilities(True)
 
