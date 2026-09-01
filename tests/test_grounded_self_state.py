@@ -2,11 +2,12 @@ from core.capabilities import describe_capabilities
 from core.self_state import describe_self_state
 
 
-def test_self_state_uses_canonical_m7_05_development_state() -> None:
+def test_self_state_uses_canonical_m7_06_development_state() -> None:
     state = describe_self_state({})
 
     assert state["development"]["milestone"] == "M7"
-    assert state["development"]["active_slice"] == "M7-05"
+    assert state["development"]["active_slice"] == "M7-06"
+    assert state["development"]["active_slice_name"] == "Operational Self Awareness"
     assert state["development"]["source"] == "runtime_manifest"
 
 
@@ -88,3 +89,4 @@ def test_chat_does_not_claim_engineering_authority_when_runtime_disabled() -> No
 
     assert capabilities["current_chat_authority"]["engineering_read_session"] is False
     assert capabilities["self_state"]["engineering"]["conversation_read_only_enabled"] is False
+    assert capabilities["operational_state"]["overall"] == "unknown"
