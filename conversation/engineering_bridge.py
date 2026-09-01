@@ -124,48 +124,34 @@ _PROTECTED_MERGE_MARKERS = (
     "合并保护分支",
     "合并到保护分支",
 )
-_SECRET_BOUNDARY_MARKERS = (
-    "修改 secret",
-    "修改secret",
-    "更新 secret",
-    "更新secret",
-    "更换 secret",
-    "更换secret",
-    "暴露 secret",
-    "暴露secret",
-    "显示 secret",
-    "显示secret",
-    "输出 secret",
-    "输出secret",
-    "打印 secret",
-    "打印secret",
-    "发我 secret",
-    "发我secret",
-    "修改密钥",
-    "更新密钥",
-    "更换密钥",
-    "暴露密钥",
-    "显示密钥",
-    "输出密钥",
-    "打印密钥",
-    "发我密钥",
-    "修改 api key",
-    "更新 api key",
-    "更换 api key",
-    "显示 api key",
-    "输出 api key",
-    "打印 api key",
-    "发我 api key",
-    "change secret",
-    "update secret",
-    "rotate secret",
-    "expose secret",
-    "reveal secret",
-    "show secret",
-    "print secret",
-    "update api key",
-    "change api key",
-    "rotate api key",
+_SECRET_NOUN_MARKERS = (
+    "secret",
+    "secrets",
+    "密钥",
+    "api key",
+    "api_key",
+    "token",
+)
+_SECRET_ACTION_MARKERS = (
+    "修改",
+    "更新",
+    "更换",
+    "替换",
+    "轮换",
+    "暴露",
+    "显示",
+    "输出",
+    "打印",
+    "发我",
+    "change",
+    "update",
+    "replace",
+    "rotate",
+    "expose",
+    "reveal",
+    "show",
+    "print",
+    "send me",
 )
 _PRODUCTION_DEPLOY_MARKERS = (
     "生产部署",
@@ -209,7 +195,15 @@ _MATERIAL_COST_MARKERS = (
 _PUSH_MARKERS = (
     "git push",
     "push 分支",
+    "push分支",
+    "分支 push",
+    "分支push",
     "push branch",
+    "branch push",
+    "push 到远端",
+    "push到远端",
+    "push 到 github",
+    "push到 github",
     "推送分支",
     "推到远端",
     "推送到远端",
@@ -263,7 +257,10 @@ def _boundary_requirements_for_intent(text: str) -> tuple[str, ...] | None:
         return ("engineering.git.force_push",)
     if _contains_any(text, _PROTECTED_MERGE_MARKERS):
         return ("engineering.git.merge_protected",)
-    if _contains_any(text, _SECRET_BOUNDARY_MARKERS):
+    if _contains_any(text, _SECRET_NOUN_MARKERS) and _contains_any(
+        text,
+        _SECRET_ACTION_MARKERS,
+    ):
         return ("engineering.secrets.modify",)
     if _contains_any(text, _PRODUCTION_DEPLOY_MARKERS):
         return ("engineering.production.deploy",)
@@ -292,8 +289,8 @@ def engineering_requirements_for_intent(text: str) -> tuple[str, ...] | None:
     """Narrow task-to-capability mapper for the first delegated maintainer slice.
 
     Explicit impact boundaries are classified before ordinary mutation verbs. This keeps
-    wording such as "修改 secret" or "实现生产部署" from being mistaken for a routine
-    repository edit and bypassing exception escalation.
+    wording such as "修改 Hikari 项目的 secret 配置" or "实现生产部署" from being mistaken
+    for a routine repository edit and bypassing exception escalation.
     """
 
     normalized = text.casefold()
