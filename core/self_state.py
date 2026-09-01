@@ -7,8 +7,8 @@ import os
 DEVELOPMENT_STATE = {
     "milestone": "M7",
     "milestone_name": "Evolution",
-    "active_slice": "M7-05",
-    "active_slice_name": "Grounded Self State",
+    "active_slice": "M7-06",
+    "active_slice_name": "Operational Self Awareness",
     "status": "active",
     "source": "runtime_manifest",
     "note": (
@@ -137,6 +137,15 @@ def describe_self_state(
             "instantaneous_filesystem_access_claim": False,
             "worker_liveness": "not_asserted_by_self_state",
         },
+        "operational_awareness": {
+            "point_in_time_runtime_state": True,
+            "status_source": "read_only_operational_probes",
+            "unknown_is_not_healthy": True,
+            "summary": (
+                "M7-06 adds bounded point-in-time observation of current Resident, QQ, and "
+                "Engineering session state. A component with no trustworthy probe remains unknown."
+            ),
+        },
         "delivery_semantics": {
             "engineering_terminal_result": (
                 "A completed EngineeringResult is persisted in Hikari-owned session state and "
@@ -174,6 +183,11 @@ def describe_self_state(
             "model_identity": (
                 "Do not equate the current Conversation model, Engineering backend, or any other "
                 "single model process with Hikari's complete identity."
+            ),
+            "operational_state": (
+                "Current runtime health must come from the point-in-time operational snapshot. "
+                "Static capability, historical conversation, or a past successful task does not "
+                "prove that a component is healthy or alive now. Unknown remains unknown."
             ),
             "evolution": (
                 "M7 Evolution means improving useful system capability under bounded authority; "
