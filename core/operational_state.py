@@ -333,6 +333,8 @@ class OperationalStateService:
             return "degraded"
         if statuses == {"unknown"}:
             return "unknown"
+        if "unknown" in statuses:
+            return "partial"
         return "healthy"
 
 
