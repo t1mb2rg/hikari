@@ -2,10 +2,17 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from core.delegation import (
+    ASSESSMENT_CAPABILITY_GAP,
+    ASSESSMENT_ESCALATION_REQUIRED,
+    assess_task_capabilities,
+    hikari_engineering_capabilities,
+)
 from engineering.bindings import (
     EngineeringConversationBinding,
     EngineeringConversationBindingStore,
 )
+from engineering.maintainer import project_maintainer_authority
 from engineering.session import (
     EngineeringAuthority,
     EngineeringSessionState,
@@ -19,7 +26,7 @@ from .engine import ConversationEngine
 from .models import AssistantReply, UserTurn
 
 
-_INSPECTION_NOUNS = (
+_PROJECT_NOUNS = (
     "readme",
     "仓库",
     "代码",
@@ -28,6 +35,9 @@ _INSPECTION_NOUNS = (
     "架构",
     "文件",
     "实现",
+    "bug",
+    "测试",
+    "test",
     "memory",
     "resident",
     "conversation",
@@ -58,23 +68,44 @@ _WRITE_VERBS = (
     "改一下",
     "改掉",
     "写代码",
+    "处理这个bug",
+    "fix",
+    "implement",
+    "refactor",
 )
 
 
-def looks_like_read_only_engineering_intent(text: str) -> bool:
-    """Narrow v0.1 gate for explicit repository-inspection requests.
+_READ_REQUIREMENTS = ("engineering.repository.read",)
+_MAINTAIN_REQUIREMENTS = (
+    "engineering.repository.read",
+    "engineering.repository.write",
+    "engineering.commands.run",
+    "engineering.tests.run",
+    "engineering.git.commit",
+)
 
-    This is intentionally conservative. It exists only to make the first
-    read-only Hikari-owned EngineeringSession reachable from ordinary chat.
-    Write requests continue to the legacy bridge until M7-04 absorbs that path.
+
+def engineering_requirements_for_intent(text: str) -> tuple[str, ...] | None:
+    """Narrow task-to-capability mapper for the first delegated maintainer slice.
+
+    Cognition can become richer later, but the capability decision itself remains
+    machine-readable. Unknown everyday conversation is not accidentally routed to
+    Engineering merely because a generic verb appears.
     """
 
     normalized = text.casefold()
+    project_context = any(noun in normalized for noun in _PROJECT_NOUNS)
+    if not project_context:
+        return None
     if any(verb in normalized for verb in _WRITE_VERBS):
-        return False
-    return any(noun in normalized for noun in _INSPECTION_NOUNS) and any(
-        verb in normalized for verb in _INSPECTION_VERBS
-    )
+        return _MAINTAIN_REQUIREMENTS
+    if any(verb in normalized for verb in _INSPECTION_VERBS):
+        return _READ_REQUIREMENTS
+    return None
+
+
+def looks_like_read_only_engineering_intent(text: str) -> bool:
+    return engineering_requirements_for_intent(text) == _READ_REQUIREMENTS
 
 
 def engineering_session_matches_repository_head(
@@ -97,11 +128,12 @@ def engineering_session_matches_repository_head(
 
 
 class ConversationEngineeringBridge(ConversationForgeBridge):
-    """Route explicit read-only engineering intent into Hikari EngineeringSession.
+    """Route delegated project work into Hikari EngineeringSession.
 
-    This subclasses the M7-02 bridge only for compatibility with the existing
-    ConversationRequestProcessor type boundary. It does not call Forge and does
-    not use the inherited planner/executor state.
+    Conversation identifies the task class. The machine-readable capability model
+    decides whether the task is executable, an implementation gap, or outside the
+    standing mandate. Routine work inside the Hikari maintainer mandate does not ask
+    the user for approval at each file/command/test step.
     """
 
     def __init__(
@@ -124,7 +156,6 @@ class ConversationEngineeringBridge(ConversationForgeBridge):
         self.store = store
         self.bindings = bindings
         self.repository = repository_path
-        self.fallback = fallback
 
     def respond(
         self,
@@ -133,12 +164,47 @@ class ConversationEngineeringBridge(ConversationForgeBridge):
         *,
         source_ref: str | None = None,
     ) -> AssistantReply:
-        if not looks_like_read_only_engineering_intent(turn.text):
+        requirements = engineering_requirements_for_intent(turn.text)
+        if requirements is None:
             if self.fallback is not None:
                 return self.fallback.respond(engine, turn, source_ref=source_ref)
             return engine.respond(turn, source_ref=source_ref)
 
-        authority = EngineeringAuthority.read_only()
+        capabilities = hikari_engineering_capabilities(True)
+        assessment = assess_task_capabilities(requirements, capabilities)
+        if assessment.status == ASSESSMENT_CAPABILITY_GAP:
+            missing = ", ".join(assessment.missing)
+            reply = AssistantReply(
+                channel=turn.channel,
+                conversation_id=turn.conversation_id,
+                text=(
+                    "这个需求在我当前的项目维护职责里，但 Engineering Runtime 还缺少实际执行能力："
+                    f"{missing}。这是能力缺口，不是需要你逐个动作给我授权。"
+                    "我会保留这个原始需求作为后续能力迭代的目标。"
+                ),
+            )
+            _remember_control_exchange(engine, turn, reply)
+            return reply
+        if assessment.status == ASSESSMENT_ESCALATION_REQUIRED:
+            escalation = ", ".join(assessment.escalation)
+            reply = AssistantReply(
+                channel=turn.channel,
+                conversation_id=turn.conversation_id,
+                text=(
+                    "这个需求触及当前项目 mandate 之外的影响边界，需要你决定是否扩展这次授权："
+                    f"{escalation}。"
+                ),
+            )
+            _remember_control_exchange(engine, turn, reply)
+            return reply
+
+        turn_authority = (
+            EngineeringAuthority.read_only()
+            if requirements == _READ_REQUIREMENTS
+            else project_maintainer_authority()
+        )
+        session_ceiling = project_maintainer_authority()
+
         binding = self.bindings.for_conversation(turn.channel, turn.conversation_id)
         state: EngineeringSessionState | None = None
         if binding is not None:
@@ -152,12 +218,15 @@ class ConversationEngineeringBridge(ConversationForgeBridge):
                 channel=turn.channel,
                 conversation_id=turn.conversation_id,
                 text=(
-                    "我这边已经有一个工程会话在处理了。它完成后我会把实际检查结果发回来，"
-                    "不会假装已经看到了结果。"
+                    "我这边已经有一个工程会话在处理了。它完成后我会把实际结果发回来，"
+                    "不会假装已经完成。"
                 ),
             )
             _remember_control_exchange(engine, turn, reply)
             return reply
+
+        if state is not None and not turn_authority.is_subset_of(state.authority_ceiling):
+            state = None
 
         if state is not None and state.baseline_commit:
             try:
@@ -167,7 +236,7 @@ class ConversationEngineeringBridge(ConversationForgeBridge):
                     channel=turn.channel,
                     conversation_id=turn.conversation_id,
                     text=(
-                        "我现在没法为这个仓库建立可信的只读版本快照。"
+                        "我现在没法为这个仓库建立可信的工程版本快照。"
                         "如果源码仓库存在未提交改动，我不会拿旧 worktree 冒充最新状态。"
                     ),
                 )
@@ -180,7 +249,7 @@ class ConversationEngineeringBridge(ConversationForgeBridge):
             state = EngineeringSessionState.create(
                 project_id="hikari",
                 repository=self.repository,
-                authority_ceiling=authority,
+                authority_ceiling=session_ceiling,
             )
             self.store.create(state)
             self.bindings.bind(
@@ -195,17 +264,24 @@ class ConversationEngineeringBridge(ConversationForgeBridge):
             intent=turn.text,
             context=(
                 "This request came from Hikari's explicit conversation channel. "
-                "Return factual engineering findings for Hikari to continue the same conversation."
+                "The Hikari repository has a standing maintainer mandate. Complete routine project "
+                "work autonomously inside that mandate and return the grounded result."
             ),
-            authority=authority,
+            authority=turn_authority,
         )
         self.store.enqueue_turn(state.session_id, engineering_turn)
+
+        if requirements == _READ_REQUIREMENTS:
+            text = "我去看。已经开始一个只读工程会话，完成后我会把实际检查结果发回来。"
+        else:
+            text = (
+                "我来处理。这个任务在我的项目维护职责内，我已经交给 Engineering Runtime。"
+                "我会在隔离工程分支里完成修改、测试和提交，完成后把实际结果发回来。"
+            )
         reply = AssistantReply(
             channel=turn.channel,
             conversation_id=turn.conversation_id,
-            text=(
-                "我去看。已经开始一个只读工程会话，完成后我会把实际检查到的结果发回来。"
-            ),
+            text=text,
         )
         _remember_control_exchange(engine, turn, reply)
         return reply
