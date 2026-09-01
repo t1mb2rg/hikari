@@ -6,6 +6,7 @@ import subprocess
 import pytest
 
 from engineering.backend import EngineeringAgentResult
+from engineering.maintainer import project_maintainer_authority
 from engineering.session import (
     EngineeringAuthority,
     EngineeringProtocolError,
@@ -41,6 +42,19 @@ def _repo(tmp_path: Path) -> Path:
     return repo
 
 
+def _repo_with_validation(tmp_path: Path) -> Path:
+    repo = _repo(tmp_path)
+    (repo / "test_project.py").write_text(
+        "from pathlib import Path\n\n"
+        "def test_readme_is_maintained():\n"
+        "    assert 'Maintained by Hikari' in Path('README.md').read_text(encoding='utf-8')\n",
+        encoding="utf-8",
+    )
+    _git(repo, "add", "test_project.py")
+    _git(repo, "commit", "-m", "add validation")
+    return repo
+
+
 def _store(tmp_path: Path) -> EngineeringSessionStore:
     return EngineeringSessionStore(tmp_path / "resident" / "engineering")
 
@@ -57,6 +71,25 @@ def _pending_session(tmp_path: Path) -> tuple[EngineeringSessionStore, Engineeri
     turn = EngineeringTurn.create(
         intent="Read README and tell me what this project is.",
         authority=EngineeringAuthority.read_only(),
+    )
+    store.enqueue_turn(state.session_id, turn)
+    return store, state, turn
+
+
+def _pending_maintainer_session(
+    tmp_path: Path,
+) -> tuple[EngineeringSessionStore, EngineeringSessionState, EngineeringTurn]:
+    store = _store(tmp_path)
+    state = EngineeringSessionState.create(
+        project_id="hikari",
+        repository=_repo_with_validation(tmp_path),
+        authority_ceiling=project_maintainer_authority(),
+        session_id="maintainer-session",
+    )
+    store.create(state)
+    turn = EngineeringTurn.create(
+        intent="Update README so the project declares it is Maintained by Hikari.",
+        authority=project_maintainer_authority(),
     )
     store.enqueue_turn(state.session_id, turn)
     return store, state, turn
@@ -155,6 +188,111 @@ def test_follow_up_turn_preserves_backend_session_context(tmp_path: Path):
     worker = EngineeringWorker(store, backend_factory=second_factory)
     assert worker.run_once().status == "completed"
     assert seen_backend_sessions == [None, "claude-session-shared"]
+
+
+def test_maintainer_worker_edits_tests_and_commits_without_human_step(tmp_path: Path):
+    store, state, turn = _pending_maintainer_session(tmp_path)
+
+    class FakeMaintainerBackend:
+        def run(self, worktree: Path, prompt: str) -> EngineeringAgentResult:
+            assert "Maintainer Session" in prompt
+            path = Path(worktree) / "README.md"
+            path.write_text("# Hikari\n\nMaintained by Hikari.\n", encoding="utf-8")
+            return EngineeringAgentResult(
+                0,
+                "{}",
+                "",
+                "Updated the README maintenance statement.",
+                "claude-maintainer-1",
+            )
+
+    worker = EngineeringWorker(
+        store,
+        backend_factory=lambda _state, _turn: FakeMaintainerBackend(),
+    )
+    outcome = worker.run_once()
+
+    assert outcome is not None
+    assert outcome.status == "completed"
+    saved = store.load(state.session_id)
+    workspace = Path(saved.workspace_path or "")
+    assert workspace.is_dir()
+    assert _git(workspace, "status", "--porcelain") == ""
+    assert _git(workspace, "log", "-1", "--pretty=%s").startswith("hikari:")
+    assert "测试并通过" in outcome.message
+    result = store.load_result(state.session_id, turn.turn_id)
+    assert result.changed_files == ("README.md",)
+
+
+def test_maintainer_worker_repairs_failed_tests_before_commit(tmp_path: Path):
+    store, state, _ = _pending_maintainer_session(tmp_path)
+
+    class RepairingBackend:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def run(self, worktree: Path, prompt: str) -> EngineeringAgentResult:
+            self.calls += 1
+            path = Path(worktree) / "README.md"
+            if self.calls == 1:
+                path.write_text("# Hikari\n\nNot fixed yet.\n", encoding="utf-8")
+            else:
+                assert "Test failure" in prompt
+                path.write_text("# Hikari\n\nMaintained by Hikari.\n", encoding="utf-8")
+            return EngineeringAgentResult(
+                0,
+                "{}",
+                "",
+                "Repaired README after validation feedback.",
+                "claude-maintainer-repair",
+            )
+
+    backend = RepairingBackend()
+    worker = EngineeringWorker(
+        store,
+        backend_factory=lambda _state, _turn: backend,
+        max_repair_attempts=2,
+    )
+    outcome = worker.run_once()
+
+    assert outcome is not None
+    assert outcome.status == "completed"
+    assert backend.calls == 2
+    workspace = Path(store.load(state.session_id).workspace_path or "")
+    assert _git(workspace, "status", "--porcelain") == ""
+    assert "Maintained by Hikari" in (workspace / "README.md").read_text(encoding="utf-8")
+
+
+def test_read_only_follow_up_allows_prior_authorized_commit_in_same_session(tmp_path: Path):
+    store, state, _ = _pending_maintainer_session(tmp_path)
+
+    class FirstBackend:
+        def run(self, worktree: Path, prompt: str) -> EngineeringAgentResult:
+            (Path(worktree) / "README.md").write_text(
+                "# Hikari\n\nMaintained by Hikari.\n",
+                encoding="utf-8",
+            )
+            return EngineeringAgentResult(0, "{}", "", "maintained", "shared-session")
+
+    worker = EngineeringWorker(store, backend_factory=lambda _state, _turn: FirstBackend())
+    assert worker.run_once().status == "completed"
+
+    follow = EngineeringTurn.create(
+        intent="Read README again.",
+        authority=EngineeringAuthority.read_only(),
+    )
+    store.enqueue_turn(state.session_id, follow)
+
+    class ReadBackend:
+        def run(self, worktree: Path, prompt: str) -> EngineeringAgentResult:
+            assert "Maintained by Hikari" in (Path(worktree) / "README.md").read_text(encoding="utf-8")
+            return EngineeringAgentResult(0, "{}", "", "still maintained", "shared-session")
+
+    worker = EngineeringWorker(store, backend_factory=lambda _state, _turn: ReadBackend())
+    outcome = worker.run_once()
+
+    assert outcome is not None
+    assert outcome.status == "completed"
 
 
 def test_source_head_requires_clean_committed_repository(tmp_path: Path):
