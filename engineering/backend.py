@@ -3,8 +3,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 import json
+import os
 import shutil
 import subprocess
+
+from .config import EngineeringBackendConfig
 
 
 @dataclass(frozen=True, slots=True)
@@ -25,32 +28,39 @@ class ClaudeEngineeringBackend:
     the isolated worktree, while Hikari's Worker retains ownership of testing,
     Git commit, publication, and external side effects.
 
-    ``model`` is intentionally explicit in production. Engineering must not inherit
-    Hikari's Conversation model name or an unrelated ambient Claude configuration.
+    Model and deadline are owned by Hikari's engineering configuration. When a
+    caller does not provide them explicitly, this backend resolves
+    ``HIKARI_ENGINEERING_*`` instead of inheriting Conversation model names or
+    ambient Claude Code model selection.
     """
 
     def __init__(
         self,
         *,
         executable: str = "claude",
-        max_turns: int = 30,
+        max_turns: int | None = None,
         permission_mode: str = "plan",
         session_id: str | None = None,
         model: str | None = None,
-        timeout_seconds: float = 600.0,
+        timeout_seconds: float | None = None,
     ) -> None:
-        if max_turns < 1:
+        owned = EngineeringBackendConfig.from_mapping(os.environ)
+        resolved_max_turns = owned.max_turns if max_turns is None else int(max_turns)
+        resolved_timeout = owned.timeout_seconds if timeout_seconds is None else float(timeout_seconds)
+        resolved_model = model.strip() if isinstance(model, str) and model.strip() else owned.model
+
+        if resolved_max_turns < 1:
             raise ValueError("engineering max_turns must be >= 1")
         if permission_mode not in {"plan", "auto", "acceptEdits", "manual", "dontAsk"}:
             raise ValueError(f"unsupported engineering permission mode: {permission_mode!r}")
-        if float(timeout_seconds) <= 0:
+        if resolved_timeout <= 0:
             raise ValueError("engineering backend timeout_seconds must be > 0")
         self.executable = executable
-        self.max_turns = int(max_turns)
+        self.max_turns = resolved_max_turns
         self.permission_mode = permission_mode
         self.session_id = session_id.strip() if isinstance(session_id, str) and session_id.strip() else None
-        self.model = model.strip() if isinstance(model, str) and model.strip() else None
-        self.timeout_seconds = float(timeout_seconds)
+        self.model = resolved_model
+        self.timeout_seconds = resolved_timeout
 
     @staticmethod
     def _settings_json() -> str:
@@ -115,9 +125,9 @@ class ClaudeEngineeringBackend:
             str(self.max_turns),
             "--settings",
             self._settings_json(),
+            "--model",
+            self.model,
         ]
-        if self.model:
-            argv.extend(["--model", self.model])
         if self.session_id:
             argv.extend(["--resume", self.session_id])
 
