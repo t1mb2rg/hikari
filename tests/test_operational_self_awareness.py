@@ -30,7 +30,7 @@ def _service(
     wall_time=1000.0,
 ):
     state_dir = tmp_path / "resident"
-    state_dir.mkdir(parents=True, exist_ok=True)
+    state_dir.mkdir(parents=True)
     (state_dir / "host.json").write_text(
         json.dumps({"pid": 4242, "started_at": "2026-09-01T00:00:00+00:00"}),
         encoding="utf-8",
@@ -204,4 +204,4 @@ def test_capability_grounding_accepts_explicit_operational_snapshot_without_host
 
     assert capabilities["operational_state"]["overall"] == "degraded"
     assert capabilities["operational_state"]["components"]["qq"]["status"] == "waiting"
-    assert capabilities["self_state"]["development"]["active_slice"] == "M7-06"
+    assert capabilities["self_state"]["development"]["active_slice"] == "M7-07"
