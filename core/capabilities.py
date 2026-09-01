@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from copy import deepcopy
 
+from .operational_state import capture_operational_state
 from .self_state import describe_self_state
 
 
@@ -45,13 +46,16 @@ _CAPABILITY_MANIFEST = {
 
 def describe_capabilities(
     environment: Mapping[str, str] | None = None,
+    *,
+    operational_state: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
-    """Return Hikari's bounded, user-facing factual self model.
+    """Return Hikari's bounded factual self model plus current runtime state.
 
-    System-level capability and current direct-chat authority stay separate. The
-    nested self_state carries the canonical development stage and explicit
-    epistemic boundaries so the model does not turn delegated work into invented
-    direct sensing.
+    Static capability, current chat authority, and point-in-time operational
+    observation are deliberately separate. Production Conversation calls this
+    without an explicit environment and receives a live cached operational
+    snapshot. Explicit-environment callers (primarily deterministic tests) do
+    not perform host/network probes unless they provide a snapshot themselves.
     """
 
     capabilities = deepcopy(_CAPABILITY_MANIFEST)
@@ -83,4 +87,19 @@ def describe_capabilities(
         ),
     }
     capabilities["self_state"] = self_state
+
+    if operational_state is not None:
+        capabilities["operational_state"] = dict(operational_state)
+    elif environment is None:
+        capabilities["operational_state"] = capture_operational_state()
+    else:
+        capabilities["operational_state"] = {
+            "version": 1,
+            "overall": "unknown",
+            "components": {},
+            "epistemic_rule": (
+                "No point-in-time operational probe was requested for this explicit environment. "
+                "Do not infer runtime health from static capability configuration."
+            ),
+        }
     return capabilities
