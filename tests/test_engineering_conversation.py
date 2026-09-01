@@ -157,11 +157,7 @@ def test_conversation_rotates_terminal_session_when_repository_head_advanced(
     engine = ConversationEngine(_Provider(), MemoryStore(tmp_path / "memory.db"))
     reply = bridge.respond(
         engine,
-        UserTurn(
-            channel="qq",
-            conversation_id="private:42",
-            text="去看看 README 最近更新了什么",
-        ),
+        UserTurn("qq", "private:42", "去看看 README 最近更新了什么"),
     )
 
     assert "只读工程会话" in reply.text
