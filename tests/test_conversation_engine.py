@@ -142,7 +142,7 @@ def test_prompt_attaches_identity_relationship_capabilities_personality_voice_an
     assert metadata["relationship"]["kind"] == "primary_local_user"
     assert metadata["relationship"]["basis"] == "trusted_runtime_binding"
     assert metadata["capabilities"]["memory"]["available"] is True
-    assert metadata["capabilities"]["current_chat_authority"]["filesystem"] is False
+    assert metadata["capabilities"]["current_chat_authority"]["direct_filesystem"] is False
     assert metadata["ambient_context"]["providers"]["test_context"] == {
         "foreground": "editor",
         "idle": False,

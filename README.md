@@ -14,7 +14,7 @@ Hikari **不以模拟人类意识、虚构感官或构造“数字生命”体�
 
 ## Local Environment
 
-Windows 本地开发只认一个 Python 环境：仓库根目录下的 `.venv`。不要再给 Hikari 复用 Forge 或 sibling venv。
+Windows 本地开发的稳定启动环境是仓库根目录下的 `.venv`。不要再给 Hikari 复用 Forge 或 sibling venv。依赖由仓库中的 `uv.lock` 唯一确定，升级时先构建独立候选环境，不直接改写正在运行的 `.venv`。
 
 从仓库根目录执行：
 
@@ -27,9 +27,11 @@ hikari-resident doctor --env-file .\.env
 
 `bootstrap.ps1` 会：
 
-- 创建 `<repo>\.venv`
-- 安装 `.[dev,windows-notify]`
+- 使用 `uv sync --locked` 创建或同步 `<repo>\.venv`
+- 严格安装锁文件中的 `dev` 与 `windows-notify` 依赖
 - 在缺少 `.env` 时从 `.env.example` 复制一份
+
+依赖升级走候选环境闭环：`hikari-environment build` 创建按 lock hash 隔离的环境，`hikari-environment validate <id>` 先验证嵌套子进程能力、再运行完整 pytest。只有 `verified` 候选才能 `promote`；提升只更新持久指针，Resident 在下一次受控启动时采用新环境。`hikari-environment rollback` 可以把指针切回上一份已验证环境。
 
 真实 `.env` 不进入 Git。模型配置使用：
 
@@ -240,6 +242,8 @@ Engineering 任务状态查询是 deterministic control path。用户询问当�
 当前项目 mandate 还委托了后续可增长的结果，例如 non-protected engineering branch push 与 Draft PR 维护，但这些能力尚未实现时会被明确表示为 capability gap，而不是假装可用或要求用户逐动作授权。
 
 以下影响边界仍然默认升级给用户：protected branch merge、force push shared history、secret 修改或暴露、生产/外部部署、破坏性数据迁移、权限边界扩张、项目北极星改变以及显著外部成本。护栏放在影响边界上，而不是铺满普通维护流程。
+
+Engineering 的任务状态以持久化运行结果为准，不由对话模型推测。
 
 ## Operations doctor
 

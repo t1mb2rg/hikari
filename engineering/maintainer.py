@@ -13,10 +13,66 @@ from .session import EngineeringAuthority
 class ProjectTestResult:
     returncode: int
     output: str
+    failure_kind: str = "test"
 
     @property
     def passed(self) -> bool:
         return self.returncode == 0
+
+
+class ValidationEnvironmentError(RuntimeError):
+    """Raised when the Worker cannot provide a trustworthy test environment."""
+
+
+_NESTED_PROCESS_PROBE = (
+    "import subprocess,sys; "
+    "result=subprocess.run([sys.executable,'-c','raise SystemExit(0)'],"
+    "stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=subprocess.PIPE); "
+    "raise SystemExit(result.returncode)"
+)
+
+
+_DEPENDENCY_FAILURE_PATTERNS = (
+    re.compile(r"ModuleNotFoundError:\s+No module named", re.IGNORECASE),
+    re.compile(r"ImportError:.*requires the .+ package", re.IGNORECASE),
+    re.compile(r"requires .+ to be installed", re.IGNORECASE),
+)
+
+
+def _failure_kind(output: str) -> str:
+    if any(pattern.search(output) for pattern in _DEPENDENCY_FAILURE_PATTERNS):
+        return "dependency_environment"
+    return "test"
+
+
+def assert_nested_process_capability(
+    worktree: str | Path,
+    *,
+    timeout_seconds: float = 30.0,
+) -> None:
+    """Prove that pytest descendants can create another Python process."""
+
+    root = Path(worktree).expanduser().resolve()
+    proc = subprocess.run(
+        [sys.executable, "-c", _NESTED_PROCESS_PROBE],
+        cwd=root,
+        stdin=subprocess.DEVNULL,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        capture_output=True,
+        timeout=max(1.0, float(timeout_seconds)),
+    )
+    if proc.returncode != 0:
+        detail = "\n".join(
+            part.strip() for part in (proc.stdout, proc.stderr) if part.strip()
+        )
+        if len(detail) > 1800:
+            detail = detail[-1800:]
+        raise ValidationEnvironmentError(
+            "nested subprocess probe failed"
+            + (f":\n{detail}" if detail else f" (exit {proc.returncode})")
+        )
 
 
 def project_maintainer_authority() -> EngineeringAuthority:
@@ -69,9 +125,11 @@ def run_project_tests(
     """Run the repository test suite with Hikari's own Python environment."""
 
     root = Path(worktree).expanduser().resolve()
+    assert_nested_process_capability(root)
     proc = subprocess.run(
-        [sys.executable, "-m", "pytest", "-q"],
+        [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider"],
         cwd=root,
+        stdin=subprocess.DEVNULL,
         text=True,
         encoding="utf-8",
         errors="replace",
@@ -81,7 +139,7 @@ def run_project_tests(
     combined = "\n".join(part.strip() for part in (proc.stdout, proc.stderr) if part.strip())
     if len(combined) > 5000:
         combined = combined[-5000:]
-    return ProjectTestResult(proc.returncode, combined)
+    return ProjectTestResult(proc.returncode, combined, _failure_kind(combined))
 
 
 def _commit_subject(intent: str) -> str:

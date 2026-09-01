@@ -13,5 +13,7 @@ def test_windows_bootstrap_targets_repo_local_venv_and_env_file():
 
     assert 'Join-Path $RepoRoot ".venv"' in text
     assert 'Join-Path $RepoRoot ".env"' in text
-    assert 'pip install -e ".[dev,windows-notify]"' in text
+    assert "UV_PROJECT_ENVIRONMENT" in text
+    assert "sync --locked --extra dev --extra windows-notify" in text
+    assert "pip install" not in text
     assert 'hikari-resident doctor --env-file' in text

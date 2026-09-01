@@ -6,7 +6,7 @@ import subprocess
 import pytest
 
 from engineering.backend import EngineeringAgentResult
-from engineering.maintainer import project_maintainer_authority
+from engineering.maintainer import ProjectTestResult, project_maintainer_authority
 from engineering.session import (
     EngineeringAuthority,
     EngineeringProtocolError,
@@ -219,7 +219,7 @@ def test_maintainer_worker_edits_tests_and_commits_without_human_step(tmp_path: 
     assert workspace.is_dir()
     assert _git(workspace, "status", "--porcelain") == ""
     assert _git(workspace, "log", "-1", "--pretty=%s").startswith("hikari:")
-    assert "测试并通过" in outcome.message
+    assert "验证：项目测试通过" in outcome.message
     result = store.load_result(state.session_id, turn.turn_id)
     assert result.changed_files == ("README.md",)
 
@@ -261,6 +261,79 @@ def test_maintainer_worker_repairs_failed_tests_before_commit(tmp_path: Path):
     workspace = Path(store.load(state.session_id).workspace_path or "")
     assert _git(workspace, "status", "--porcelain") == ""
     assert "Maintained by Hikari" in (workspace / "README.md").read_text(encoding="utf-8")
+
+
+def test_maintainer_worker_does_not_repair_missing_validation_dependency(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    store, state, turn = _pending_maintainer_session(tmp_path)
+
+    class Backend:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def run(self, worktree: Path, prompt: str) -> EngineeringAgentResult:
+            self.calls += 1
+            (Path(worktree) / "README.md").write_text(
+                "# Hikari\n\nMaintained by Hikari.\n", encoding="utf-8"
+            )
+            return EngineeringAgentResult(0, "{}", "", "done", "backend-session")
+
+    backend = Backend()
+    monkeypatch.setattr(
+        "engineering.worker.run_project_tests",
+        lambda _path: ProjectTestResult(
+            1,
+            "ModuleNotFoundError: No module named 'httpx2'",
+            "dependency_environment",
+        ),
+    )
+    outcome = EngineeringWorker(
+        store,
+        backend_factory=lambda _state, _turn: backend,
+    ).run_once()
+
+    assert outcome is not None
+    assert outcome.status == "blocked"
+    assert "验证环境不可用" in outcome.message
+    assert backend.calls == 1
+    result = store.load_result(state.session_id, turn.turn_id)
+    assert result.changed_files == ("README.md",)
+
+
+def test_readme_only_task_blocks_scope_drift_before_tests(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    store, _state, _turn = _pending_maintainer_session(tmp_path)
+    tests_called = False
+
+    class Backend:
+        def run(self, worktree: Path, prompt: str) -> EngineeringAgentResult:
+            (Path(worktree) / "README.md").write_text(
+                "# Hikari\n\nMaintained by Hikari.\n", encoding="utf-8"
+            )
+            (Path(worktree) / "test_project.py").write_text(
+                "def test_nothing():\n    assert True\n", encoding="utf-8"
+            )
+            return EngineeringAgentResult(0, "{}", "", "done", "backend-session")
+
+    def fake_tests(_path):
+        nonlocal tests_called
+        tests_called = True
+        return ProjectTestResult(0, "passed")
+
+    monkeypatch.setattr("engineering.worker.run_project_tests", fake_tests)
+    outcome = EngineeringWorker(
+        store,
+        backend_factory=lambda _state, _turn: Backend(),
+    ).run_once()
+
+    assert outcome is not None
+    assert outcome.status == "blocked"
+    assert "README-only" in outcome.message
+    assert tests_called is False
 
 
 def test_read_only_follow_up_allows_prior_authorized_commit_in_same_session(tmp_path: Path):

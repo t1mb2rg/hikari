@@ -19,11 +19,13 @@ from .heartbeat import (
     EngineeringWorkerLease,
 )
 from .maintainer import (
+    ValidationEnvironmentError,
     commit_project_changes,
     is_maintainer_authority,
     is_read_only_authority,
     run_project_tests,
 )
+from .validation_policy import change_policy_violations
 from .session import (
     EngineeringAuthority,
     EngineeringEvent,
@@ -130,6 +132,8 @@ def _prompt_for_test_repair(turn: EngineeringTurn, test_output: str, attempt: in
         "The Hikari Worker ran the project test suite after your implementation and it failed.\n"
         f"Repair attempt: {attempt}.\n"
         "Inspect the current worktree, fix the implementation, and do not stage/commit/push/publish.\n"
+        "Keep every repair causally within the original intent. Do not weaken validation by adding "
+        "skip/xfail markers, changing test selection, or relaxing CI/test configuration.\n"
         "Stay inside the repository and do not use the network.\n\n"
         f"# Original intent\n{turn.intent}\n\n"
         f"# Test failure\n{detail}\n\n"
@@ -321,9 +325,24 @@ class EngineeringWorker:
                 backend_session_id=result.session_id or None,
             )
 
+        violation = self._change_policy_violation(turn, workspace, changed)
+        if violation:
+            return self._finish(
+                state,
+                turn,
+                status="blocked",
+                message=f"工程修改超出任务范围或改变了验证标准：{violation}",
+                backend_session_id=result.session_id or None,
+                changed_files=changed,
+            )
+
         self._event(state.session_id, turn.turn_id, "progress", "正在运行项目测试")
         try:
             tests = run_project_tests(workspace.path)
+        except ValidationEnvironmentError as exc:
+            return self._validation_environment_failure(
+                state, turn, result.session_id, changed, str(exc)
+            )
         except (OSError, subprocess.SubprocessError) as exc:
             return self._finish(
                 state,
@@ -332,6 +351,15 @@ class EngineeringWorker:
                 message=f"项目测试没有完成：{type(exc).__name__}",
                 backend_session_id=result.session_id or None,
                 changed_files=changed,
+            )
+
+        if tests.failure_kind != "test":
+            return self._validation_environment_failure(
+                state,
+                turn,
+                result.session_id,
+                changed,
+                tests.output,
             )
 
         for attempt in range(1, self.max_repair_attempts + 1):
@@ -360,8 +388,29 @@ class EngineeringWorker:
                     latest_result,
                     changed_files=workspace.changed_files(),
                 )
+            changed_after_repair = workspace.changed_files()
+            violation = self._change_policy_violation(
+                turn, workspace, changed_after_repair
+            )
+            if violation:
+                return self._finish(
+                    state,
+                    turn,
+                    status="blocked",
+                    message=f"自动修复超出任务范围或改变了验证标准：{violation}",
+                    backend_session_id=latest_result.session_id or None,
+                    changed_files=changed_after_repair,
+                )
             try:
                 tests = run_project_tests(workspace.path)
+            except ValidationEnvironmentError as exc:
+                return self._validation_environment_failure(
+                    state,
+                    turn,
+                    latest_result.session_id,
+                    changed_after_repair,
+                    str(exc),
+                )
             except (OSError, subprocess.SubprocessError) as exc:
                 return self._finish(
                     state,
@@ -370,6 +419,14 @@ class EngineeringWorker:
                     message=f"自动修复后的项目测试没有完成：{type(exc).__name__}",
                     backend_session_id=latest_result.session_id or None,
                     changed_files=workspace.changed_files(),
+                )
+            if tests.failure_kind != "test":
+                return self._validation_environment_failure(
+                    state,
+                    turn,
+                    latest_result.session_id,
+                    workspace.changed_files(),
+                    tests.output,
                 )
 
         changed = workspace.changed_files()
@@ -397,16 +454,12 @@ class EngineeringWorker:
                 changed_files=changed,
             )
 
-        summary = latest_result.final_message.strip() or result.final_message.strip()
-        if not summary:
-            summary = "工程修改已完成。"
+        file_summary = "、".join(changed) if changed else "无"
+        summary = f"任务已完成。\n修改：{file_summary}\n验证：项目测试通过。"
         if commit_sha:
-            summary += (
-                f"\n\nHikari Worker 已运行项目测试并通过，修改已提交到隔离工程分支 "
-                f"`{workspace.branch}`，commit `{commit_sha[:12]}`。"
-            )
+            summary += f"\n提交：`{workspace.branch}` / `{commit_sha[:12]}`。"
         else:
-            summary += "\n\nHikari Worker 已运行项目测试并通过，当前没有需要提交的剩余变更。"
+            summary += "\n提交：当前没有需要提交的剩余变更。"
         return self._finish(
             state,
             turn,
@@ -414,6 +467,42 @@ class EngineeringWorker:
             message=summary,
             backend_session_id=latest_result.session_id or None,
             changed_files=changed,
+        )
+
+    @staticmethod
+    def _change_policy_violation(
+        turn: EngineeringTurn,
+        workspace: EngineeringWorkspace,
+        changed_files: tuple[str, ...],
+    ) -> str:
+        violations = change_policy_violations(
+            turn.intent,
+            changed_files,
+            workspace.diff_text(),
+        )
+        return "; ".join(violations)
+
+    def _validation_environment_failure(
+        self,
+        state: EngineeringSessionState,
+        turn: EngineeringTurn,
+        backend_session_id: str | None,
+        changed_files: tuple[str, ...],
+        detail: str,
+    ) -> WorkerOutcome:
+        concise = detail.strip()
+        if len(concise) > 1800:
+            concise = concise[-1800:]
+        return self._finish(
+            state,
+            turn,
+            status="blocked",
+            message=(
+                "验证环境不可用，Worker 已停止自动修复；仓库测试和验收标准均未被改写。"
+                + (f"\n{concise}" if concise else "")
+            ),
+            backend_session_id=backend_session_id or None,
+            changed_files=changed_files,
         )
 
     def _backend_failure(

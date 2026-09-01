@@ -229,7 +229,9 @@ def test_stop_ignores_descendant_that_exits_after_tree_snapshot(tmp_path: Path):
 
 
 def test_model_mode_validates_runtime_environment_before_launch(tmp_path: Path):
-    config = _config(tmp_path, reasoner="model")
+    empty_env = tmp_path / "empty.env"
+    empty_env.write_text("", encoding="utf-8")
+    config = _config(tmp_path, reasoner="model", env_file=empty_env)
     launches: list[list[str]] = []
     host = WindowsResidentHost(
         config,

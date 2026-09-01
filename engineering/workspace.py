@@ -176,3 +176,37 @@ class EngineeringWorkspace:
             check=False,
         ).stdout.split("\0")
         return _clean_file_list([*tracked, *staged, *untracked])
+
+    def diff_text(self) -> str:
+        """Return the session diff, including readable untracked text files."""
+
+        tracked = _git(
+            self.path,
+            "diff",
+            "--no-ext-diff",
+            "--unified=0",
+            self.baseline_commit,
+            check=False,
+        ).stdout
+        chunks = [tracked]
+        for relative in _git(
+            self.path,
+            "ls-files",
+            "--others",
+            "--exclude-standard",
+            "-z",
+            check=False,
+        ).stdout.split("\0"):
+            if not relative:
+                continue
+            path = self.path / relative
+            try:
+                content = path.read_text(encoding="utf-8")
+            except (OSError, UnicodeError):
+                continue
+            chunks.append(
+                f"diff --git a/{relative} b/{relative}\n"
+                f"--- /dev/null\n+++ b/{relative}\n"
+                + "".join(f"+{line}\n" for line in content.splitlines())
+            )
+        return "\n".join(chunks)
