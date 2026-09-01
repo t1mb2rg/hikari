@@ -12,6 +12,7 @@ from engineering.session import (
     EngineeringSessionStore,
     EngineeringTurn,
 )
+from engineering.workspace import EngineeringWorkspace, EngineeringWorkspaceError
 
 from .action_bridge import ConversationForgeBridge, _remember_control_exchange
 from .engine import ConversationEngine
@@ -76,6 +77,25 @@ def looks_like_read_only_engineering_intent(text: str) -> bool:
     )
 
 
+def engineering_session_matches_repository_head(
+    state: EngineeringSessionState,
+    repository_head: str,
+) -> bool:
+    """Return whether a terminal session still represents the current source revision.
+
+    A session without a workspace baseline has not inspected the repository yet,
+    so it can still be reused and will bind to HEAD when the Worker first opens it.
+    Once a baseline exists it is immutable for that EngineeringSession. If the
+    source repository advances, Conversation must create a new session rather
+    than asking an old worktree to describe the new world.
+    """
+
+    baseline = (state.baseline_commit or "").strip()
+    if not baseline:
+        return True
+    return baseline == repository_head.strip()
+
+
 class ConversationEngineeringBridge(ConversationForgeBridge):
     """Route explicit read-only engineering intent into Hikari EngineeringSession.
 
@@ -138,6 +158,23 @@ class ConversationEngineeringBridge(ConversationForgeBridge):
             )
             _remember_control_exchange(engine, turn, reply)
             return reply
+
+        if state is not None and state.baseline_commit:
+            try:
+                repository_head = EngineeringWorkspace.source_head(self.repository)
+            except EngineeringWorkspaceError:
+                reply = AssistantReply(
+                    channel=turn.channel,
+                    conversation_id=turn.conversation_id,
+                    text=(
+                        "我现在没法为这个仓库建立可信的只读版本快照。"
+                        "如果源码仓库存在未提交改动，我不会拿旧 worktree 冒充最新状态。"
+                    ),
+                )
+                _remember_control_exchange(engine, turn, reply)
+                return reply
+            if not engineering_session_matches_repository_head(state, repository_head):
+                state = None
 
         if state is None:
             state = EngineeringSessionState.create(

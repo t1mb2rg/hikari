@@ -39,6 +39,15 @@ def runtime_bool(
     raise ValueError(f"{name} must be one of: 1/0, true/false, yes/no, on/off")
 
 
+def _creationflags() -> int:
+    if os.name != "nt":
+        return 0
+    flags = 0
+    flags |= int(getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0))
+    flags |= int(getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    return flags
+
+
 @dataclass(frozen=True)
 class QQBridgeProcessConfig:
     """Process-only settings for Hikari's own QQ transport child."""
@@ -84,10 +93,6 @@ class QQBridgeProcessConfig:
         object.__setattr__(self, "restart_max_seconds", maximum)
         object.__setattr__(self, "stable_reset_seconds", stable)
         child_environment = dict(self.environment)
-        # The bridge writes NoneBot/loguru console output into a binary log file.
-        # Force UTF-8 before Python creates stdout so model replies containing
-        # emoji or uncommon Unicode cannot trigger a Windows code-page logging
-        # failure and hide the diagnostic evidence we need.
         child_environment["PYTHONIOENCODING"] = "utf-8"
         child_environment["PYTHONUTF8"] = "1"
         object.__setattr__(self, "environment", child_environment)
@@ -128,14 +133,6 @@ class QQBridgeSupervisor:
             return None
         return int(process.pid)
 
-    def _creationflags(self) -> int:
-        if os.name != "nt":
-            return 0
-        flags = 0
-        flags |= int(getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0))
-        flags |= int(getattr(subprocess, "CREATE_NO_WINDOW", 0))
-        return flags
-
     def start_once(self) -> subprocess.Popen[bytes]:
         self.config.log_path.parent.mkdir(parents=True, exist_ok=True)
         with self.config.log_path.open("ab") as log_handle:
@@ -148,7 +145,7 @@ class QQBridgeSupervisor:
                 stderr=subprocess.STDOUT,
                 shell=False,
                 close_fds=True,
-                creationflags=self._creationflags(),
+                creationflags=_creationflags(),
             )
         self.process = process
         return process
@@ -193,13 +190,144 @@ class QQBridgeSupervisor:
             await asyncio.to_thread(process.wait)
 
 
-class UnifiedResidentService:
-    """Own Presence and Conversation in one Hikari process.
+@dataclass(frozen=True)
+class EngineeringWorkerProcessConfig:
+    """Resident-owned process settings for Hikari's Engineering Worker."""
 
-    The optional QQ bridge remains a child integration process so NoneBot and
-    OneBot stay outside Hikari cognition. The supervisor owns only that child;
-    NapCat remains an external, human-managed endpoint.
-    """
+    repository: Path
+    state_dir: Path
+    log_path: Path
+    environment: Mapping[str, str]
+    python_executable: str = sys.executable
+    restart_initial_seconds: float = 1.0
+    restart_max_seconds: float = 30.0
+    stable_reset_seconds: float = 30.0
+
+    def __post_init__(self) -> None:
+        repository = Path(self.repository).expanduser().resolve()
+        state_dir = Path(self.state_dir).expanduser().resolve()
+        log_path = Path(self.log_path).expanduser().resolve()
+        python_executable = str(self.python_executable).strip()
+        initial = float(self.restart_initial_seconds)
+        maximum = float(self.restart_max_seconds)
+        stable = float(self.stable_reset_seconds)
+        if not repository.is_dir():
+            raise ValueError(f"Engineering Worker repository must exist: {repository}")
+        if not python_executable:
+            raise ValueError("Engineering Worker python_executable must not be empty")
+        if initial <= 0 or maximum <= 0 or stable <= 0:
+            raise ValueError("Engineering Worker restart timing values must be > 0")
+        if maximum < initial:
+            raise ValueError(
+                "Engineering Worker restart_max_seconds must be >= restart_initial_seconds"
+            )
+        object.__setattr__(self, "repository", repository)
+        object.__setattr__(self, "state_dir", state_dir)
+        object.__setattr__(self, "log_path", log_path)
+        object.__setattr__(self, "python_executable", python_executable)
+        object.__setattr__(self, "restart_initial_seconds", initial)
+        object.__setattr__(self, "restart_max_seconds", maximum)
+        object.__setattr__(self, "stable_reset_seconds", stable)
+        child_environment = dict(self.environment)
+        child_environment["PYTHONIOENCODING"] = "utf-8"
+        child_environment["PYTHONUTF8"] = "1"
+        object.__setattr__(self, "environment", child_environment)
+
+    def argv(self) -> list[str]:
+        return [
+            self.python_executable,
+            "-m",
+            "engineering.worker",
+            "--state-dir",
+            str(self.state_dir),
+            "--owner",
+            "resident",
+        ]
+
+
+class EngineeringWorkerSupervisor:
+    """Keep Hikari's isolated Engineering Worker alive while Resident is alive."""
+
+    def __init__(
+        self,
+        config: EngineeringWorkerProcessConfig,
+        *,
+        process_factory: ProcessFactory = subprocess.Popen,
+        clock: Clock = time.monotonic,
+    ) -> None:
+        if not isinstance(config, EngineeringWorkerProcessConfig):
+            raise TypeError(
+                "EngineeringWorkerSupervisor requires EngineeringWorkerProcessConfig"
+            )
+        self.config = config
+        self._process_factory = process_factory
+        self._clock = clock
+        self.process: subprocess.Popen[bytes] | None = None
+        self.restart_count = 0
+
+    @property
+    def pid(self) -> int | None:
+        process = self.process
+        if process is None or process.poll() is not None:
+            return None
+        return int(process.pid)
+
+    def start_once(self) -> subprocess.Popen[bytes]:
+        self.config.log_path.parent.mkdir(parents=True, exist_ok=True)
+        self.config.state_dir.mkdir(parents=True, exist_ok=True)
+        with self.config.log_path.open("ab") as log_handle:
+            process = self._process_factory(
+                self.config.argv(),
+                cwd=self.config.repository,
+                env=dict(self.config.environment),
+                stdin=subprocess.DEVNULL,
+                stdout=log_handle,
+                stderr=subprocess.STDOUT,
+                shell=False,
+                close_fds=True,
+                creationflags=_creationflags(),
+            )
+        self.process = process
+        return process
+
+    async def run(self, stop_event: asyncio.Event) -> None:
+        delay = self.config.restart_initial_seconds
+        while not stop_event.is_set():
+            process = self.start_once()
+            started_at = self._clock()
+            while process.poll() is None and not stop_event.is_set():
+                try:
+                    await asyncio.wait_for(stop_event.wait(), timeout=0.5)
+                except TimeoutError:
+                    pass
+            if stop_event.is_set():
+                await self._stop_process(process)
+                return
+            uptime = max(0.0, self._clock() - started_at)
+            self.restart_count += 1
+            if uptime >= self.config.stable_reset_seconds:
+                delay = self.config.restart_initial_seconds
+            try:
+                await asyncio.wait_for(stop_event.wait(), timeout=delay)
+            except TimeoutError:
+                pass
+            if stop_event.is_set():
+                return
+            delay = min(delay * 2.0, self.config.restart_max_seconds)
+
+    async def _stop_process(self, process: subprocess.Popen[bytes]) -> None:
+        if process.poll() is not None:
+            return
+        process.terminate()
+        try:
+            await asyncio.wait_for(asyncio.to_thread(process.wait), timeout=5.0)
+        except TimeoutError:
+            process.kill()
+            await asyncio.to_thread(process.wait)
+
+
+class UnifiedResidentService:
+    """Own Presence, Conversation, and Hikari-owned child capabilities."""
 
     def __init__(
         self,
@@ -209,6 +337,7 @@ class UnifiedResidentService:
         bind_host: str,
         bind_port: int,
         qq_supervisor: QQBridgeSupervisor | None = None,
+        engineering_supervisor: EngineeringWorkerSupervisor | None = None,
         napcat_login_guard: NapCatLoginGuard | None = None,
     ) -> None:
         if not isinstance(presence, ResidentPresenceRuntime):
@@ -225,6 +354,7 @@ class UnifiedResidentService:
         self.bind_host = bind_host.strip()
         self.bind_port = int(bind_port)
         self.qq_supervisor = qq_supervisor
+        self.engineering_supervisor = engineering_supervisor
         self.napcat_login_guard = napcat_login_guard
         self.stop_event = asyncio.Event()
         self.started_event = asyncio.Event()
@@ -268,6 +398,12 @@ class UnifiedResidentService:
                 if self.qq_supervisor is not None:
                     tasks.append(
                         asyncio.create_task(self.qq_supervisor.run(self.stop_event))
+                    )
+                if self.engineering_supervisor is not None:
+                    tasks.append(
+                        asyncio.create_task(
+                            self.engineering_supervisor.run(self.stop_event)
+                        )
                     )
                 if self.napcat_login_guard is not None:
                     tasks.append(

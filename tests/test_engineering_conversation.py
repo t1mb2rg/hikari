@@ -1,6 +1,13 @@
+from dataclasses import replace
 from pathlib import Path
 
-from conversation.engineering_bridge import looks_like_read_only_engineering_intent
+from conversation.engine import ConversationEngine
+from conversation.engineering_bridge import (
+    ConversationEngineeringBridge,
+    engineering_session_matches_repository_head,
+    looks_like_read_only_engineering_intent,
+)
+from conversation.models import UserTurn
 from core.delivery import DeliveryOutbox
 from engineering.bindings import (
     EngineeringConversationBinding,
@@ -14,6 +21,12 @@ from engineering.session import (
     EngineeringSessionStore,
     EngineeringTurn,
 )
+from memory.store import MemoryStore
+
+
+class _Provider:
+    def complete(self, messages):
+        return "unused"
 
 
 def test_read_only_engineering_intent_gate_is_narrow():
@@ -84,3 +97,74 @@ def test_terminal_engineering_result_reuses_hikari_delivery_outbox(tmp_path: Pat
     assert "我看完了" in record.request.text
     assert "README 表明项目正在 M7" in record.request.text
     assert record.request.source == "engineering"
+
+
+def test_engineering_session_baseline_match_is_explicit(tmp_path: Path):
+    state = EngineeringSessionState.create(
+        project_id="hikari",
+        repository=tmp_path,
+        authority_ceiling=EngineeringAuthority.read_only(),
+    )
+    assert engineering_session_matches_repository_head(state, "new-head") is True
+
+    state = replace(state, baseline_commit="old-head")
+    assert engineering_session_matches_repository_head(state, "old-head") is True
+    assert engineering_session_matches_repository_head(state, "new-head") is False
+
+
+def test_conversation_rotates_terminal_session_when_repository_head_advanced(
+    tmp_path: Path,
+    monkeypatch,
+):
+    repository = tmp_path / "repo"
+    repository.mkdir()
+    sessions = EngineeringSessionStore(tmp_path / "engineering")
+    bindings = EngineeringConversationBindingStore(tmp_path / "engineering_bindings.json")
+    authority = EngineeringAuthority.read_only()
+
+    old = EngineeringSessionState.create(
+        project_id="hikari",
+        repository=repository,
+        authority_ceiling=authority,
+        session_id="old-session",
+    )
+    old = replace(
+        old,
+        status="completed",
+        baseline_commit="old-head",
+        workspace_path=str(tmp_path / "old-worktree"),
+        workspace_branch="hikari/engineering/old-session",
+    )
+    sessions.create(old)
+    bindings.bind(
+        EngineeringConversationBinding(
+            session_id=old.session_id,
+            channel="qq",
+            conversation_id="private:42",
+        )
+    )
+
+    monkeypatch.setattr(
+        "conversation.engineering_bridge.EngineeringWorkspace.source_head",
+        lambda repository: "new-head",
+    )
+
+    bridge = ConversationEngineeringBridge(
+        sessions,
+        bindings,
+        repository=repository,
+    )
+    engine = ConversationEngine(_Provider(), MemoryStore(tmp_path / "memory.db"))
+    reply = bridge.respond(
+        engine,
+        UserTurn("qq", "private:42", "去看看 README 最近更新了什么"),
+    )
+
+    assert "只读工程会话" in reply.text
+    rebound = bindings.for_conversation("qq", "private:42")
+    assert rebound is not None
+    assert rebound.session_id != "old-session"
+    new_state = sessions.load(rebound.session_id)
+    assert new_state.status == "pending"
+    assert new_state.baseline_commit is None
+    assert sessions.load("old-session").baseline_commit == "old-head"

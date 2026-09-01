@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import dataclass
+import os
 from pathlib import Path
 import time
 from typing import Callable, Sequence
@@ -11,6 +12,11 @@ from core.delivery import DeliveryOutbox
 from .backend import ClaudeEngineeringBackend, EngineeringAgentResult
 from .bindings import EngineeringConversationBindingStore
 from .delivery import EngineeringCompletionDelivery
+from .heartbeat import (
+    EngineeringWorkerHeartbeatEmitter,
+    EngineeringWorkerHeartbeatStore,
+    EngineeringWorkerLease,
+)
 from .session import (
     EngineeringAuthority,
     EngineeringEvent,
@@ -277,6 +283,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--state-dir", default=None)
     parser.add_argument("--once", action="store_true")
     parser.add_argument("--poll-seconds", type=float, default=1.0)
+    parser.add_argument("--heartbeat-seconds", type=float, default=1.0)
+    parser.add_argument("--owner", default="manual")
     return parser
 
 
@@ -296,27 +304,50 @@ def main(argv: Sequence[str] | None = None) -> int:
     store = EngineeringSessionStore(root / "engineering")
     worker = EngineeringWorker(store)
     completion = _completion_delivery(root, store)
+    heartbeat_store = EngineeringWorkerHeartbeatStore(root / "engineering_worker.json")
+    lease = EngineeringWorkerLease(root / "engineering_worker.lock", heartbeat_store)
+    pid = os.getpid()
+    started_at = time.time()
 
-    # Recover any terminal result that was persisted before a previous worker
-    # stopped but had not yet reached the M6 delivery outbox.
-    completion.pump()
+    try:
+        lease.acquire(pid=pid, owner=args.owner, started_at=started_at)
+    except RuntimeError as exc:
+        print(f"[engineering] {exc}")
+        return 2
 
-    if args.once:
-        outcome = worker.run_once()
-        completion.pump()
-        if outcome is None:
-            print("[engineering] idle")
-            return 0
-        print(f"[engineering] {outcome.status} session={outcome.session_id} turn={outcome.turn_id}")
-        return 0 if outcome.status == "completed" else 1
+    heartbeat = EngineeringWorkerHeartbeatEmitter(
+        heartbeat_store,
+        owner=args.owner,
+        interval_seconds=max(0.2, float(args.heartbeat_seconds)),
+        pid=pid,
+    )
 
-    poll = max(0.2, float(args.poll_seconds))
-    print(f"[engineering] worker started state={store.root}")
-    while True:
-        outcome = worker.run_once()
-        completion.pump()
-        if outcome is None:
-            time.sleep(poll)
+    try:
+        with heartbeat:
+            # Recover any terminal result that was persisted before a previous worker
+            # stopped but had not yet reached the M6 delivery outbox.
+            completion.pump()
+
+            if args.once:
+                outcome = worker.run_once()
+                completion.pump()
+                if outcome is None:
+                    print("[engineering] idle")
+                    return 0
+                print(
+                    f"[engineering] {outcome.status} session={outcome.session_id} turn={outcome.turn_id}"
+                )
+                return 0 if outcome.status == "completed" else 1
+
+            poll = max(0.2, float(args.poll_seconds))
+            print(f"[engineering] worker started state={store.root} owner={args.owner}")
+            while True:
+                outcome = worker.run_once()
+                completion.pump()
+                if outcome is None:
+                    time.sleep(poll)
+    finally:
+        lease.release()
 
 
 if __name__ == "__main__":

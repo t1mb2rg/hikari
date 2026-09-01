@@ -56,6 +56,8 @@ from .environment import load_runtime_environment
 from .napcat_login_guard import NapCatLoginGuard, build_napcat_login_guard
 from .presence_delivery import RoutedPresenceDelivery, WindowsDeliverySink
 from .unified import (
+    EngineeringWorkerProcessConfig,
+    EngineeringWorkerSupervisor,
     QQBridgeProcessConfig,
     QQBridgeSupervisor,
     UnifiedResidentService,
@@ -368,8 +370,9 @@ def main(argv: Sequence[str] | None = None) -> None:
         bind_port = _conversation_port(values)
         shared_secret = values.get("HIKARI_CONVERSATION_SHARED_SECRET")
         shared_secret = shared_secret.strip() if shared_secret and shared_secret.strip() else None
-        receipt_path = (memory_path.parent / "conversation_receipts.db").resolve()
-        user_model_path = (memory_path.parent / "user_model.db").resolve()
+        state_dir = memory_path.parent
+        receipt_path = (state_dir / "conversation_receipts.db").resolve()
+        user_model_path = (state_dir / "user_model.db").resolve()
         user_model_service, user_fact_extractor = build_user_model_runtime(
             provider,
             user_model_path,
@@ -393,18 +396,28 @@ def main(argv: Sequence[str] | None = None) -> None:
                 values,
                 provider,
                 repository=repository,
-                state_dir=memory_path.parent,
+                state_dir=state_dir,
             )
 
         engineering_bridge: ConversationEngineeringBridge | None = None
+        engineering_supervisor: EngineeringWorkerSupervisor | None = None
         if runtime_bool(values, "HIKARI_ENGINEERING_ENABLED", default=False):
             engineering_bridge = ConversationEngineeringBridge(
-                EngineeringSessionStore(memory_path.parent / "engineering"),
+                EngineeringSessionStore(state_dir / "engineering"),
                 EngineeringConversationBindingStore(
-                    memory_path.parent / "engineering_bindings.json"
+                    state_dir / "engineering_bindings.json"
                 ),
                 repository=repository,
                 fallback=forge_bridge,
+            )
+            engineering_supervisor = EngineeringWorkerSupervisor(
+                EngineeringWorkerProcessConfig(
+                    repository=repository,
+                    state_dir=state_dir,
+                    log_path=state_dir / "engineering_worker.log",
+                    environment=dict(values),
+                    python_executable=sys.executable,
+                )
             )
         action_bridge = engineering_bridge or forge_bridge
         conversation_host = ConversationWebSocketHost(
@@ -419,7 +432,6 @@ def main(argv: Sequence[str] | None = None) -> None:
         qq_supervisor: QQBridgeSupervisor | None = None
         napcat_login_guard: NapCatLoginGuard | None = None
         if qq_enabled:
-            state_dir = memory_path.parent
             QQBridgeConfig.from_mapping(values, state_dir=state_dir)
             child_environment = dict(values)
             child_environment["HIKARI_CONVERSATION_URL"] = (
@@ -453,12 +465,18 @@ def main(argv: Sequence[str] | None = None) -> None:
         bind_host=bind_host,
         bind_port=bind_port,
         qq_supervisor=qq_supervisor,
+        engineering_supervisor=engineering_supervisor,
         napcat_login_guard=napcat_login_guard,
     )
     print(f"Hikari Conversation Host：ws://{bind_host}:{bind_port}", flush=True)
     print(f"Hikari 对话模型：{getattr(provider, 'model', type(provider).__name__)}", flush=True)
     print(
         f"Hikari Engineering Runtime：{'启用' if engineering_bridge is not None else '关闭'}",
+        flush=True,
+    )
+    print(
+        "Hikari Engineering Worker："
+        f"{'resident 托管' if engineering_supervisor is not None else '关闭'}",
         flush=True,
     )
     print(
