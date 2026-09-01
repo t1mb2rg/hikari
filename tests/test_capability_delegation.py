@@ -21,20 +21,40 @@ def test_hikari_project_mandate_delegates_routine_maintainer_outcomes() -> None:
     assert "permission_boundary_expansion" in mandate.escalation_outcomes
 
 
-def test_delegated_but_unimplemented_write_is_capability_gap_not_permission_request() -> None:
+def test_implemented_maintainer_edit_test_commit_is_executable() -> None:
     capabilities = hikari_engineering_capabilities(True)
 
     assessment = assess_task_capabilities(
-        ["engineering.repository.read", "engineering.repository.write"],
+        [
+            "engineering.repository.read",
+            "engineering.repository.write",
+            "engineering.tests.run",
+            "engineering.git.commit",
+        ],
+        capabilities,
+    )
+
+    assert assessment.status == ASSESSMENT_EXECUTABLE
+    assert assessment.missing == ()
+    assert assessment.escalation == ()
+    assert capabilities["engineering.repository.write"].delegated is True
+    assert capabilities["engineering.repository.write"].available is True
+
+
+def test_delegated_but_unimplemented_push_is_capability_gap_not_permission_request() -> None:
+    capabilities = hikari_engineering_capabilities(True)
+
+    assessment = assess_task_capabilities(
+        ["engineering.git.push_non_protected"],
         capabilities,
     )
 
     assert assessment.status == ASSESSMENT_CAPABILITY_GAP
-    assert assessment.available == ("engineering.repository.read",)
-    assert assessment.missing == ("engineering.repository.write",)
+    assert assessment.available == ()
+    assert assessment.missing == ("engineering.git.push_non_protected",)
     assert assessment.escalation == ()
-    assert capabilities["engineering.repository.write"].delegated is True
-    assert capabilities["engineering.repository.write"].available is False
+    assert capabilities["engineering.git.push_non_protected"].delegated is True
+    assert capabilities["engineering.git.push_non_protected"].available is False
 
 
 def test_protected_merge_is_authority_escalation_not_capability_gap() -> None:
