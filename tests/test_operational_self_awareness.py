@@ -3,6 +3,10 @@ import json
 
 from core.capabilities import describe_capabilities
 from core.operational_state import OperationalStateConfig, OperationalStateService
+from engineering.heartbeat import (
+    EngineeringWorkerHeartbeat,
+    EngineeringWorkerHeartbeatStore,
+)
 from engineering.session import EngineeringAuthority, EngineeringSessionState
 from resident.napcat_login_guard import NapCatLoginError, NapCatLoginStatus
 
@@ -15,35 +19,53 @@ class _EngineeringStore:
         return list(self.states)
 
 
-def _service(tmp_path, *, napcat_probe, states=(), process_alive=True, onebot_open=True):
+def _service(
+    tmp_path,
+    *,
+    napcat_probe,
+    states=(),
+    process_probe=None,
+    onebot_open=True,
+    worker_heartbeat=None,
+    wall_time=1000.0,
+):
     state_dir = tmp_path / "resident"
-    state_dir.mkdir(parents=True)
+    state_dir.mkdir(parents=True, exist_ok=True)
     (state_dir / "host.json").write_text(
         json.dumps({"pid": 4242, "started_at": "2026-09-01T00:00:00+00:00"}),
         encoding="utf-8",
     )
+    heartbeat_store = EngineeringWorkerHeartbeatStore(
+        state_dir / "engineering_worker.json"
+    )
+    if worker_heartbeat is not None:
+        heartbeat_store.write(worker_heartbeat)
     return OperationalStateService(
         OperationalStateConfig(
             state_dir=state_dir,
             napcat_root=tmp_path / "napcat",
             cache_seconds=0,
+            engineering_worker_stale_seconds=5.0,
         ),
-        process_probe=lambda pid: process_alive,
+        process_probe=process_probe or (lambda pid: True),
         tcp_probe=lambda host, port, timeout: onebot_open,
         napcat_probe=napcat_probe,
         engineering_store=_EngineeringStore(states),
+        heartbeat_store=heartbeat_store,
+        wall_clock=lambda: wall_time,
+    )
+
+
+def _healthy_napcat():
+    return NapCatLoginStatus(
+        is_login=True,
+        is_offline=False,
+        qrcode_available=False,
     )
 
 
 def test_operational_snapshot_reports_observed_resident_qq_and_idle_engineering(tmp_path) -> None:
-    service = _service(
-        tmp_path,
-        napcat_probe=lambda: NapCatLoginStatus(
-            is_login=True,
-            is_offline=False,
-            qrcode_available=False,
-        ),
-    )
+    service = _service(tmp_path, napcat_probe=_healthy_napcat)
 
     snapshot = service.capture(force=True)
 
@@ -55,7 +77,73 @@ def test_operational_snapshot_reports_observed_resident_qq_and_idle_engineering(
     engineering = snapshot["components"]["engineering"]
     assert engineering["status"] == "idle"
     assert engineering["details"]["worker_liveness"] == "unknown"
-    assert engineering["details"]["worker_liveness_reason"] == "no_worker_heartbeat_probe_yet"
+    assert engineering["details"]["worker"]["reason"] == "no_worker_heartbeat"
+
+
+def test_operational_snapshot_observes_fresh_resident_owned_worker(tmp_path) -> None:
+    service = _service(
+        tmp_path,
+        napcat_probe=_healthy_napcat,
+        worker_heartbeat=EngineeringWorkerHeartbeat(
+            pid=5151,
+            owner="resident",
+            started_at=900.0,
+            updated_at=999.0,
+        ),
+    )
+
+    snapshot = service.capture(force=True)
+    engineering = snapshot["components"]["engineering"]
+    worker = engineering["details"]["worker"]
+
+    assert engineering["status"] == "idle"
+    assert engineering["details"]["worker_liveness"] == "healthy"
+    assert worker["observed"] is True
+    assert worker["owner"] == "resident"
+    assert worker["reason"] == "fresh_heartbeat_and_live_pid"
+
+
+def test_operational_snapshot_degrades_when_live_worker_heartbeat_is_stale(tmp_path) -> None:
+    service = _service(
+        tmp_path,
+        napcat_probe=_healthy_napcat,
+        worker_heartbeat=EngineeringWorkerHeartbeat(
+            pid=5151,
+            owner="resident",
+            started_at=900.0,
+            updated_at=990.0,
+        ),
+    )
+
+    snapshot = service.capture(force=True)
+    engineering = snapshot["components"]["engineering"]
+
+    assert snapshot["overall"] == "degraded"
+    assert engineering["status"] == "warning"
+    assert engineering["details"]["worker_liveness"] == "warning"
+    assert engineering["details"]["worker"]["reason"] == "heartbeat_stale"
+
+
+def test_operational_snapshot_reports_dead_worker_pid_offline(tmp_path) -> None:
+    service = _service(
+        tmp_path,
+        napcat_probe=_healthy_napcat,
+        process_probe=lambda pid: pid == 4242,
+        worker_heartbeat=EngineeringWorkerHeartbeat(
+            pid=5151,
+            owner="resident",
+            started_at=900.0,
+            updated_at=999.0,
+        ),
+    )
+
+    snapshot = service.capture(force=True)
+    engineering = snapshot["components"]["engineering"]
+
+    assert snapshot["overall"] == "degraded"
+    assert engineering["status"] == "warning"
+    assert engineering["details"]["worker_liveness"] == "offline"
+    assert engineering["details"]["worker"]["reason"] == "heartbeat_pid_not_running"
 
 
 def test_operational_snapshot_keeps_failed_qq_probe_unknown(tmp_path) -> None:
@@ -80,11 +168,7 @@ def test_operational_snapshot_reports_active_engineering_session_without_inventi
     state = replace(state, status="running", current_turn_id="turn-1")
     service = _service(
         tmp_path,
-        napcat_probe=lambda: NapCatLoginStatus(
-            is_login=True,
-            is_offline=False,
-            qrcode_available=False,
-        ),
+        napcat_probe=_healthy_napcat,
         states=[state],
     )
 
