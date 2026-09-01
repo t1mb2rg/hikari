@@ -261,13 +261,13 @@ class EngineeringWorker:
             return backend_result
         _, result = backend_result
 
-        changed = workspace.changed_files()
+        changed = workspace.uncommitted_files()
         if changed:
             return self._finish(
                 state,
                 turn,
                 status="blocked",
-                message="只读工程会话检测到仓库发生变化，结果已拒绝。",
+                message="只读工程会话检测到当前 turn 产生未提交仓库变化，结果已拒绝。",
                 backend_session_id=result.session_id or None,
                 changed_files=changed,
             )
