@@ -34,7 +34,7 @@ _PROJECT_NOUNS = (
     "项目",
     "架构",
     "文件",
-    "实现",
+    "功能",
     "bug",
     "测试",
     "test",
@@ -79,7 +79,6 @@ _READ_REQUIREMENTS = ("engineering.repository.read",)
 _MAINTAIN_REQUIREMENTS = (
     "engineering.repository.read",
     "engineering.repository.write",
-    "engineering.commands.run",
     "engineering.tests.run",
     "engineering.git.commit",
 )
@@ -156,6 +155,7 @@ class ConversationEngineeringBridge(ConversationForgeBridge):
         self.store = store
         self.bindings = bindings
         self.repository = repository_path
+        self.fallback = fallback
 
     def respond(
         self,
