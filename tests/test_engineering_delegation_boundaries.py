@@ -57,6 +57,14 @@ def test_intent_mapper_surfaces_delegated_but_unimplemented_outcomes() -> None:
         assert engineering_requirements_for_intent(text) == (expected,)
 
 
+def test_ordinary_token_parser_edit_is_not_mistaken_for_secret_modification() -> None:
+    requirements = engineering_requirements_for_intent("帮我修改 token parser 模块")
+
+    assert requirements is not None
+    assert "engineering.repository.write" in requirements
+    assert "engineering.secrets.modify" not in requirements
+
+
 def test_push_capability_gap_is_deterministic_and_does_not_enqueue_work(tmp_path: Path) -> None:
     bridge, engine, bindings = _bridge(tmp_path)
 
