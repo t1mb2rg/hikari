@@ -186,6 +186,23 @@ Hikari delivery / next decision
 
 当前工程权限仍然按显式 authority boundary 开放。具备 Engineering Runtime 不等于 Conversation 模型拥有直接 shell、文件系统感知或无限制修改权限。
 
+## M7-06 Operational Self Awareness
+
+M7-06 让 Hikari 不只知道“系统设计上有哪些能力”，还能够基于当前观测回答“这些能力现在是否真的在工作”。这是 Jarvis 式运行状态自知，用于诊断和调度，不是意识模拟。
+
+当前只读 Operational State 会区分静态能力与实时事实，并观测：
+
+- Resident：通过持久 host state 和 live PID 判断当前进程状态。
+- QQ / NapCat：复用安全的 NapCat Login Guard 探针，并结合 OneBot endpoint 可达性。
+- EngineeringSession：直接读取 Hikari 自己的 durable engineering state，区分 idle / pending / running。
+- Engineering Worker：通过独立 heartbeat + live PID 判断实际存活状态，而不是根据“最近成功执行过任务”猜测。
+
+`unknown` 会保持为 unknown，不会自动包装成 healthy。探针结果不会把 WebUI token、临时 credential、二维码 URL、API key、环境变量转储或任意日志内容暴露给 Conversation grounding。
+
+当 Engineering Runtime 启用时，Engineering Worker 由 Resident 负责启动、异常重启和停止。Worker 仍然运行在独立 OS 进程 / fault domain 中，并通过 single-worker lease 防止两个 Worker 同时消费同一个 EngineeringSession store。因此 Hikari 的工程能力会跟随 Resident 一起启动和停止，而不再依赖用户额外保持一个手动 PowerShell Worker。
+
+EngineeringSession 的 repository baseline 是固定快照。同一个会话可以继续复用尚未过期的工程上下文，但当 source repository 的已提交 HEAD 前进时，Conversation 会创建新的 EngineeringSession，而不是让旧 worktree 冒充“最新代码”。
+
 ## Operations doctor
 
 在 Windows Resident / QQ / NapCat 链路异常时，先运行只读诊断：
