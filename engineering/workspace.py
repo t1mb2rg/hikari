@@ -36,7 +36,14 @@ class EngineeringWorkspace:
     baseline_commit: str
 
     @classmethod
-    def create(cls, repository: str | Path, session_id: str) -> "EngineeringWorkspace":
+    def source_head(cls, repository: str | Path) -> str:
+        """Resolve one trustworthy committed source snapshot.
+
+        Read-only EngineeringSession worktrees intentionally ignore uncommitted
+        source changes. Refuse a dirty source instead of silently answering from
+        either the old committed tree or a partial working-copy view.
+        """
+
         source = Path(repository).expanduser().resolve()
         if _git(source, "rev-parse", "--is-inside-work-tree", check=False).stdout.strip() != "true":
             raise EngineeringWorkspaceError(f"not a git repository: {source}")
@@ -47,6 +54,12 @@ class EngineeringWorkspace:
         baseline = _git(source, "rev-parse", "HEAD").stdout.strip()
         if not baseline:
             raise EngineeringWorkspaceError("could not resolve engineering repository HEAD")
+        return baseline
+
+    @classmethod
+    def create(cls, repository: str | Path, session_id: str) -> "EngineeringWorkspace":
+        source = Path(repository).expanduser().resolve()
+        baseline = cls.source_head(source)
 
         token = _safe_slug(session_id)
         root = source.parent / ".hikari-engineering-worktrees"
