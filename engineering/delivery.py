@@ -17,9 +17,10 @@ class EngineeringCompletionDelivery:
     """Project terminal EngineeringSession results into Hikari's durable delivery outbox.
 
     Historical terminal results remain recoverable after crashes or binding rotation,
-    but every user-visible delivery identifies the original task and whether it is a
-    delayed historical result. This prevents an old failure from masquerading as the
-    outcome of the user's current Engineering task.
+    but every newly enqueued user-visible delivery identifies the original task and
+    whether it is a delayed historical result. Existing durable DeliveryOutbox rows
+    are immutable historical facts and are never rewritten merely because the message
+    format evolved.
     """
 
     def __init__(
@@ -65,6 +66,21 @@ class EngineeringCompletionDelivery:
             if not recipient:
                 continue
 
+            delivery_id = f"engineering:{state.session_id}:{turn_id}"
+
+            # Delivery ids are durable idempotency keys. A record created by an
+            # older Hikari version must retain its original text; resubmitting the
+            # same id with a newer presentation format would correctly violate the
+            # DeliveryOutbox immutability check and could crash-loop the Worker.
+            try:
+                existing = self.router.outbox.get(delivery_id)
+            except Exception:
+                existing = None
+            if existing is not None:
+                if existing.state in {"pending", "sending", "sent", "uncertain"}:
+                    submitted += 1
+                continue
+
             current = self.bindings.for_conversation(binding.channel, binding.conversation_id)
             historical = current is not None and current.session_id != state.session_id
             task = _task_label(turn.intent)
@@ -80,7 +96,6 @@ class EngineeringCompletionDelivery:
             else:
                 text = f"{context}：没有完成。\n任务：{task}\n\n{result.message}"
 
-            delivery_id = f"engineering:{state.session_id}:{turn_id}"
             record = self.router.submit(
                 DeliveryRequest(
                     delivery_id=delivery_id,
