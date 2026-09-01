@@ -95,6 +95,153 @@ _STATUS_QUESTIONS = (
     "还在处理",
 )
 
+_FORCE_PUSH_MARKERS = (
+    "force push",
+    "force-push",
+    "强制 push",
+    "强制push",
+    "强推",
+    "强制推送",
+)
+_PROTECTED_MERGE_MARKERS = (
+    "merge main",
+    "merge master",
+    "merge protected branch",
+    "merge into main",
+    "merge into master",
+    "合并 main",
+    "合并main",
+    "合并 master",
+    "合并master",
+    "合并到 main",
+    "合并到main",
+    "合并到 master",
+    "合并到master",
+    "合并进 main",
+    "合并进main",
+    "合并进 master",
+    "合并进master",
+    "合并保护分支",
+    "合并到保护分支",
+)
+_SECRET_BOUNDARY_MARKERS = (
+    "修改 secret",
+    "修改secret",
+    "更新 secret",
+    "更新secret",
+    "更换 secret",
+    "更换secret",
+    "暴露 secret",
+    "暴露secret",
+    "显示 secret",
+    "显示secret",
+    "输出 secret",
+    "输出secret",
+    "打印 secret",
+    "打印secret",
+    "发我 secret",
+    "发我secret",
+    "修改密钥",
+    "更新密钥",
+    "更换密钥",
+    "暴露密钥",
+    "显示密钥",
+    "输出密钥",
+    "打印密钥",
+    "发我密钥",
+    "修改 api key",
+    "更新 api key",
+    "更换 api key",
+    "显示 api key",
+    "输出 api key",
+    "打印 api key",
+    "发我 api key",
+    "change secret",
+    "update secret",
+    "rotate secret",
+    "expose secret",
+    "reveal secret",
+    "show secret",
+    "print secret",
+    "update api key",
+    "change api key",
+    "rotate api key",
+)
+_PRODUCTION_DEPLOY_MARKERS = (
+    "生产部署",
+    "部署到生产",
+    "部署进生产",
+    "部署上线",
+    "上线生产",
+    "production deploy",
+    "deploy production",
+    "deploy to production",
+)
+_DESTRUCTIVE_MIGRATION_MARKERS = (
+    "破坏性数据迁移",
+    "破坏性迁移",
+    "destructive data migration",
+    "destructive migration",
+)
+_PERMISSION_EXPANSION_MARKERS = (
+    "扩展权限边界",
+    "扩大权限边界",
+    "扩大权限",
+    "提升权限边界",
+    "permission boundary expansion",
+    "expand permission boundary",
+    "expand permissions",
+)
+_NORTH_STAR_CHANGE_MARKERS = (
+    "改变项目北极星",
+    "修改项目北极星",
+    "调整项目北极星",
+    "project north star change",
+    "change project north star",
+    "change the project north star",
+)
+_MATERIAL_COST_MARKERS = (
+    "显著外部成本",
+    "重大外部成本",
+    "material external cost",
+    "material paid resource cost",
+)
+_PUSH_MARKERS = (
+    "git push",
+    "push 分支",
+    "push branch",
+    "推送分支",
+    "推到远端",
+    "推送到远端",
+    "推到 github",
+    "推送到 github",
+)
+_DRAFT_PR_MARKERS = (
+    "draft pr",
+    "draft pull request",
+    "草稿 pr",
+    "草稿 pull request",
+    "开 pr",
+    "创建 pr",
+    "新建 pr",
+    "提交 pr",
+    "更新 pr",
+    "open pr",
+    "create pr",
+    "update pr",
+    "open pull request",
+    "create pull request",
+    "update pull request",
+)
+_COMMAND_RUN_MARKERS = (
+    "运行命令",
+    "执行命令",
+    "跑命令",
+    "run command",
+    "run the command",
+    "execute command",
+)
+
 
 _READ_REQUIREMENTS = ("engineering.repository.read",)
 _MAINTAIN_REQUIREMENTS = (
@@ -105,13 +252,65 @@ _MAINTAIN_REQUIREMENTS = (
 )
 
 
+def _contains_any(text: str, markers: tuple[str, ...]) -> bool:
+    return any(marker in text for marker in markers)
+
+
+def _boundary_requirements_for_intent(text: str) -> tuple[str, ...] | None:
+    """Recognize explicit high-impact engineering effects before routine write intent."""
+
+    if _contains_any(text, _FORCE_PUSH_MARKERS):
+        return ("engineering.git.force_push",)
+    if _contains_any(text, _PROTECTED_MERGE_MARKERS):
+        return ("engineering.git.merge_protected",)
+    if _contains_any(text, _SECRET_BOUNDARY_MARKERS):
+        return ("engineering.secrets.modify",)
+    if _contains_any(text, _PRODUCTION_DEPLOY_MARKERS):
+        return ("engineering.production.deploy",)
+    if _contains_any(text, _DESTRUCTIVE_MIGRATION_MARKERS):
+        return ("engineering.data.destructive_migration",)
+    if _contains_any(text, _PERMISSION_EXPANSION_MARKERS):
+        return ("engineering.permissions.expand",)
+    if _contains_any(text, _NORTH_STAR_CHANGE_MARKERS):
+        return ("engineering.project.change_north_star",)
+    if _contains_any(text, _MATERIAL_COST_MARKERS):
+        return ("engineering.external_cost.material",)
+    return None
+
+
+def _delegated_gap_requirements_for_intent(text: str) -> tuple[str, ...] | None:
+    """Recognize delegated outcomes whose execution path is not implemented yet."""
+
+    if _contains_any(text, _DRAFT_PR_MARKERS):
+        return ("engineering.git.open_or_update_draft_pr",)
+    if _contains_any(text, _PUSH_MARKERS):
+        return ("engineering.git.push_non_protected",)
+    return None
+
+
 def engineering_requirements_for_intent(text: str) -> tuple[str, ...] | None:
-    """Narrow task-to-capability mapper for the first delegated maintainer slice."""
+    """Narrow task-to-capability mapper for the first delegated maintainer slice.
+
+    Explicit impact boundaries are classified before ordinary mutation verbs. This keeps
+    wording such as "修改 secret" or "实现生产部署" from being mistaken for a routine
+    repository edit and bypassing exception escalation.
+    """
 
     normalized = text.casefold()
+
+    boundary_requirements = _boundary_requirements_for_intent(normalized)
+    if boundary_requirements is not None:
+        return boundary_requirements
+
+    delegated_gap_requirements = _delegated_gap_requirements_for_intent(normalized)
+    if delegated_gap_requirements is not None:
+        return delegated_gap_requirements
+
     project_context = any(noun in normalized for noun in _PROJECT_NOUNS)
     if not project_context:
         return None
+    if _contains_any(normalized, _COMMAND_RUN_MARKERS):
+        return ("engineering.commands.run",)
     if any(verb in normalized for verb in _WRITE_VERBS):
         return _MAINTAIN_REQUIREMENTS
     if any(verb in normalized for verb in _INSPECTION_VERBS):
