@@ -24,6 +24,9 @@ class ClaudeEngineeringBackend:
     Claude Code's plan mode. Maintainer turns may use ``acceptEdits`` to modify
     the isolated worktree, while Hikari's Worker retains ownership of testing,
     Git commit, publication, and external side effects.
+
+    ``model`` is intentionally explicit in production. Engineering must not inherit
+    Hikari's Conversation model name or an unrelated ambient Claude configuration.
     """
 
     def __init__(
@@ -34,16 +37,20 @@ class ClaudeEngineeringBackend:
         permission_mode: str = "plan",
         session_id: str | None = None,
         model: str | None = None,
+        timeout_seconds: float = 600.0,
     ) -> None:
         if max_turns < 1:
             raise ValueError("engineering max_turns must be >= 1")
         if permission_mode not in {"plan", "auto", "acceptEdits", "manual", "dontAsk"}:
             raise ValueError(f"unsupported engineering permission mode: {permission_mode!r}")
+        if float(timeout_seconds) <= 0:
+            raise ValueError("engineering backend timeout_seconds must be > 0")
         self.executable = executable
         self.max_turns = int(max_turns)
         self.permission_mode = permission_mode
         self.session_id = session_id.strip() if isinstance(session_id, str) and session_id.strip() else None
         self.model = model.strip() if isinstance(model, str) and model.strip() else None
+        self.timeout_seconds = float(timeout_seconds)
 
     @staticmethod
     def _settings_json() -> str:
@@ -114,15 +121,22 @@ class ClaudeEngineeringBackend:
         if self.session_id:
             argv.extend(["--resume", self.session_id])
 
-        proc = subprocess.run(
-            argv,
-            cwd=root,
-            input=prompt,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            capture_output=True,
-        )
+        try:
+            proc = subprocess.run(
+                argv,
+                cwd=root,
+                input=prompt,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                capture_output=True,
+                timeout=self.timeout_seconds,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise RuntimeError(
+                f"Claude Code backend exceeded {self.timeout_seconds:g}s deadline"
+            ) from exc
+
         stdout = proc.stdout or ""
         stderr = proc.stderr or ""
         payload: dict[str, object] = {}
