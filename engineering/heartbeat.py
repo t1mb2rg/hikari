@@ -113,6 +113,31 @@ class EngineeringWorkerLease:
         self._process_probe = process_probe
         self._pid: int | None = None
 
+    def _live_existing_owner(self) -> tuple[int, str] | None:
+        # The lease itself is authoritative during the tiny startup window before
+        # the heartbeat thread has written its first sample.
+        try:
+            payload = json.loads(self.path.read_text(encoding="utf-8"))
+        except (FileNotFoundError, OSError, UnicodeDecodeError, json.JSONDecodeError):
+            payload = None
+        if isinstance(payload, dict):
+            pid = payload.get("pid")
+            owner = payload.get("owner")
+            if (
+                isinstance(pid, int)
+                and not isinstance(pid, bool)
+                and pid > 0
+                and self._process_probe(pid)
+            ):
+                return pid, str(owner or "unknown")
+
+        # A valid heartbeat is a second line of defence if the lease file was
+        # malformed or left by an older implementation.
+        heartbeat = self.heartbeat_store.load()
+        if heartbeat is not None and self._process_probe(heartbeat.pid):
+            return heartbeat.pid, heartbeat.owner
+        return None
+
     def acquire(self, *, pid: int, owner: str, started_at: float) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         payload = json.dumps(
@@ -130,10 +155,11 @@ class EngineeringWorkerLease:
             try:
                 fd = os.open(self.path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
             except FileExistsError:
-                heartbeat = self.heartbeat_store.load()
-                if heartbeat is not None and self._process_probe(heartbeat.pid):
+                existing = self._live_existing_owner()
+                if existing is not None:
+                    existing_pid, existing_owner = existing
                     raise RuntimeError(
-                        f"engineering worker already active pid={heartbeat.pid} owner={heartbeat.owner}"
+                        f"engineering worker already active pid={existing_pid} owner={existing_owner}"
                     ) from None
                 if attempt == 0:
                     try:
