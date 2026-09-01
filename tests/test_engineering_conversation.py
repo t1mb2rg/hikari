@@ -4,6 +4,7 @@ from pathlib import Path
 from conversation.engine import ConversationEngine
 from conversation.engineering_bridge import (
     ConversationEngineeringBridge,
+    engineering_requirements_for_intent,
     engineering_session_matches_repository_head,
     looks_like_read_only_engineering_intent,
 )
@@ -29,11 +30,16 @@ class _Provider:
         return "unused"
 
 
-def test_read_only_engineering_intent_gate_is_narrow():
+def test_engineering_intent_gate_distinguishes_read_and_maintain_tasks():
     assert looks_like_read_only_engineering_intent("先去看看 README，告诉我项目现在是什么状态")
     assert looks_like_read_only_engineering_intent("再分析一下 memory 模块")
     assert not looks_like_read_only_engineering_intent("帮我修改 memory 模块")
-    assert not looks_like_read_only_engineering_intent("今天晚上吃什么")
+    maintain = engineering_requirements_for_intent("帮我修改 memory 模块并修好测试")
+    assert maintain is not None
+    assert "engineering.repository.write" in maintain
+    assert "engineering.tests.run" in maintain
+    assert "engineering.git.commit" in maintain
+    assert engineering_requirements_for_intent("今天晚上吃什么") is None
 
 
 def test_conversation_binding_round_trips(tmp_path: Path):
@@ -167,4 +173,38 @@ def test_conversation_rotates_terminal_session_when_repository_head_advanced(
     new_state = sessions.load(rebound.session_id)
     assert new_state.status == "pending"
     assert new_state.baseline_commit is None
+    assert new_state.authority_ceiling.repository_write is True
     assert sessions.load("old-session").baseline_commit == "old-head"
+
+
+def test_conversation_routes_project_write_without_per_action_approval(tmp_path: Path):
+    repository = tmp_path / "repo"
+    repository.mkdir()
+    sessions = EngineeringSessionStore(tmp_path / "engineering")
+    bindings = EngineeringConversationBindingStore(tmp_path / "engineering_bindings.json")
+    bridge = ConversationEngineeringBridge(
+        sessions,
+        bindings,
+        repository=repository,
+    )
+    engine = ConversationEngine(_Provider(), MemoryStore(tmp_path / "memory.db"))
+
+    reply = bridge.respond(
+        engine,
+        UserTurn("qq", "private:42", "帮我修改 memory 模块，把这个 bug 修掉"),
+    )
+
+    assert "项目维护职责" in reply.text
+    assert "修改、测试和提交" in reply.text
+    binding = bindings.for_conversation("qq", "private:42")
+    assert binding is not None
+    state = sessions.load(binding.session_id)
+    assert state.status == "pending"
+    assert state.authority_ceiling.repository_write is True
+    assert state.authority_ceiling.run_tests is True
+    assert state.current_turn_id is not None
+    turn = sessions.load_turn(state.session_id, state.current_turn_id)
+    assert turn.authority.repository_write is True
+    assert turn.authority.run_tests is True
+    assert turn.authority.network is False
+    assert turn.authority.publish is False
