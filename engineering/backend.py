@@ -21,8 +21,9 @@ class ClaudeEngineeringBackend:
 
     The backend session id is preserved by Hikari EngineeringSession state so a
     later turn can resume the same coding-agent context. Read-only turns run in
-    Claude Code's plan mode and are additionally checked by the worker for any
-    repository mutation before a result is accepted.
+    Claude Code's plan mode. Maintainer turns may use ``acceptEdits`` to modify
+    the isolated worktree, while Hikari's Worker retains ownership of testing,
+    Git commit, publication, and external side effects.
     """
 
     def __init__(
@@ -46,10 +47,16 @@ class ClaudeEngineeringBackend:
 
     @staticmethod
     def _settings_json() -> str:
-        # This is the same outer safety philosophy Forge already used: routine
-        # local reasoning is left to Claude Code while obvious publication,
-        # deployment, nested-agent and secret-location actions stay denied.
+        # Claude may inspect and, in maintainer mode, edit the isolated worktree.
+        # Hikari's Worker owns Git history/publication and obvious external-impact
+        # operations so those actions remain system-governed rather than backend-governed.
         deny = [
+            "Bash(git add:*)",
+            "Bash(git commit:*)",
+            "Bash(git reset:*)",
+            "Bash(git clean:*)",
+            "Bash(git checkout:*)",
+            "Bash(git switch:*)",
             "Bash(git push:*)",
             "Bash(git pull:*)",
             "Bash(git fetch:*)",
