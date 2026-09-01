@@ -130,7 +130,11 @@ _SECRET_NOUN_MARKERS = (
     "密钥",
     "api key",
     "api_key",
-    "token",
+    "access token",
+    "auth token",
+    "api token",
+    "访问令牌",
+    "认证令牌",
 )
 _SECRET_ACTION_MARKERS = (
     "修改",
@@ -169,14 +173,21 @@ _DESTRUCTIVE_MIGRATION_MARKERS = (
     "destructive data migration",
     "destructive migration",
 )
-_PERMISSION_EXPANSION_MARKERS = (
-    "扩展权限边界",
-    "扩大权限边界",
-    "扩大权限",
-    "提升权限边界",
-    "permission boundary expansion",
-    "expand permission boundary",
-    "expand permissions",
+_PERMISSION_NOUN_MARKERS = (
+    "权限边界",
+    "权限",
+    "permission boundary",
+    "permissions",
+)
+_PERMISSION_EXPANSION_ACTION_MARKERS = (
+    "扩展",
+    "扩大",
+    "提升",
+    "增加",
+    "expand",
+    "widen",
+    "elevate",
+    "increase",
 )
 _NORTH_STAR_CHANGE_MARKERS = (
     "改变项目北极星",
@@ -266,7 +277,10 @@ def _boundary_requirements_for_intent(text: str) -> tuple[str, ...] | None:
         return ("engineering.production.deploy",)
     if _contains_any(text, _DESTRUCTIVE_MIGRATION_MARKERS):
         return ("engineering.data.destructive_migration",)
-    if _contains_any(text, _PERMISSION_EXPANSION_MARKERS):
+    if _contains_any(text, _PERMISSION_NOUN_MARKERS) and _contains_any(
+        text,
+        _PERMISSION_EXPANSION_ACTION_MARKERS,
+    ):
         return ("engineering.permissions.expand",)
     if _contains_any(text, _NORTH_STAR_CHANGE_MARKERS):
         return ("engineering.project.change_north_star",)
