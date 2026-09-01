@@ -124,9 +124,16 @@ def looks_like_read_only_engineering_intent(text: str) -> bool:
 
 
 def looks_like_engineering_status_query(text: str) -> bool:
-    """Recognize explicit status checks that must bypass generative completion."""
+    """Recognize explicit status checks that must bypass generative completion.
+
+    Mutation wording takes precedence because maintenance requests can quote a
+    sentence containing phrases such as ``Engineering 现在状态``. Quoted content
+    must never hijack a real write task into the status-query path.
+    """
 
     normalized = text.casefold()
+    if any(verb in normalized for verb in _WRITE_VERBS):
+        return False
     return any(subject in normalized for subject in _STATUS_SUBJECTS) and any(
         question in normalized for question in _STATUS_QUESTIONS
     )
@@ -242,12 +249,11 @@ class ConversationEngineeringBridge(ConversationForgeBridge):
                     "没有 terminal result 时我不会宣称任务已经完成。"
                 )
 
-        reply = AssistantReply(
+        return AssistantReply(
             channel=turn.channel,
             conversation_id=turn.conversation_id,
             text=text,
         )
-        return reply
 
     def respond(
         self,
