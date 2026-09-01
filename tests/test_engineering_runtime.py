@@ -14,6 +14,7 @@ from engineering.session import (
     EngineeringTurn,
 )
 from engineering.worker import EngineeringWorker
+from engineering.workspace import EngineeringWorkspace, EngineeringWorkspaceError
 
 
 def _git(repo: Path, *args: str) -> str:
@@ -154,3 +155,14 @@ def test_follow_up_turn_preserves_backend_session_context(tmp_path: Path):
     worker = EngineeringWorker(store, backend_factory=second_factory)
     assert worker.run_once().status == "completed"
     assert seen_backend_sessions == [None, "claude-session-shared"]
+
+
+def test_source_head_requires_clean_committed_repository(tmp_path: Path):
+    repo = _repo(tmp_path)
+    expected = _git(repo, "rev-parse", "HEAD")
+
+    assert EngineeringWorkspace.source_head(repo) == expected
+
+    (repo / "README.md").write_text("dirty\n", encoding="utf-8")
+    with pytest.raises(EngineeringWorkspaceError, match="uncommitted changes"):
+        EngineeringWorkspace.source_head(repo)
