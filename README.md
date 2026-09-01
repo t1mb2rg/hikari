@@ -203,6 +203,38 @@ M7-06 让 Hikari 不只知道“系统设计上有哪些能力”，还能够基
 
 EngineeringSession 的 repository baseline 是固定快照。同一个会话可以继续复用尚未过期的工程上下文，但当 source repository 的已提交 HEAD 前进时，Conversation 会创建新的 EngineeringSession，而不是让旧 worktree 冒充“最新代码”。
 
+## M7-07 Capability-Aware Delegation
+
+M7-07 把权限模型从“每个动作都找用户确认”升级为 **standing project mandate + exception escalation**。核心原则是：**Human 定义 mandate，Hikari 在 mandate 内执行，Human 只处理越界和高影响例外。**
+
+Hikari 会把三种事实分开：任务需要什么能力、该能力实际上有没有实现、当前项目 mandate 是否已经长期委托这个结果。一个能力可以已经被委托但尚未实现，这时属于 capability gap；反过来，一个技术上可能实现的高影响动作也可以明确留在 mandate 之外，需要升级给用户决定。
+
+Hikari 自己的仓库是第一个 `maintainer` 级项目。当前已实现的 maintainer 闭环包括：
+
+```text
+Conversation task
+  ↓
+Task capability assessment
+  ↓
+EngineeringSession / isolated worktree
+  ↓
+Claude backend edits project files
+  ↓
+Hikari Worker runs pytest
+  ↓ test failed
+same backend session repairs and retries
+  ↓ tests passed
+Hikari Worker commits engineering branch
+  ↓
+terminal result → DeliveryOutbox → user
+```
+
+因此，普通仓库读取、项目文件修改、项目测试以及隔离 engineering branch commit 已经属于 Hikari 可直接完成的维护工作，不需要用户为每个文件、命令或测试逐步审批。Conversation 模型本身仍然没有直接 shell 或文件系统感知，实际执行由 Engineering Runtime 完成。
+
+当前项目 mandate 还委托了后续可增长的结果，例如 non-protected engineering branch push 与 Draft PR 维护，但这些能力尚未实现时会被明确表示为 capability gap，而不是假装可用或要求用户逐动作授权。
+
+以下影响边界仍然默认升级给用户：protected branch merge、force push shared history、secret 修改或暴露、生产/外部部署、破坏性数据迁移、权限边界扩张、项目北极星改变以及显著外部成本。护栏放在影响边界上，而不是铺满普通维护流程。
+
 ## Operations doctor
 
 在 Windows Resident / QQ / NapCat 链路异常时，先运行只读诊断：
