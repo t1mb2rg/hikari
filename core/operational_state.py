@@ -9,6 +9,7 @@ import socket
 import time
 from typing import Any, Callable
 
+from engineering.heartbeat import EngineeringWorkerHeartbeatStore
 from engineering.session import EngineeringSessionState, EngineeringSessionStore
 from resident.napcat_login_guard import (
     DEFAULT_NAPCAT_ROOT,
@@ -25,6 +26,7 @@ class OperationalStateConfig:
     onebot_host: str = "127.0.0.1"
     onebot_port: int = 8081
     cache_seconds: float = 5.0
+    engineering_worker_stale_seconds: float = 5.0
 
     def __post_init__(self) -> None:
         state_dir = Path(self.state_dir).expanduser().resolve()
@@ -33,10 +35,17 @@ class OperationalStateConfig:
             raise ValueError("onebot_port must be between 1 and 65535")
         if float(self.cache_seconds) < 0:
             raise ValueError("cache_seconds must be non-negative")
+        if float(self.engineering_worker_stale_seconds) <= 0:
+            raise ValueError("engineering_worker_stale_seconds must be > 0")
         object.__setattr__(self, "state_dir", state_dir)
         object.__setattr__(self, "napcat_root", napcat_root)
         object.__setattr__(self, "onebot_port", int(self.onebot_port))
         object.__setattr__(self, "cache_seconds", float(self.cache_seconds))
+        object.__setattr__(
+            self,
+            "engineering_worker_stale_seconds",
+            float(self.engineering_worker_stale_seconds),
+        )
 
     @classmethod
     def local_default(cls) -> "OperationalStateConfig":
@@ -132,7 +141,9 @@ class OperationalStateService:
         tcp_probe: Callable[[str, int, float], bool] = _tcp_open,
         napcat_probe: Callable[[], object] | None = None,
         engineering_store: EngineeringSessionStore | None = None,
+        heartbeat_store: EngineeringWorkerHeartbeatStore | None = None,
         clock: Callable[[], float] = time.monotonic,
+        wall_clock: Callable[[], float] = time.time,
     ) -> None:
         self.config = config
         self._process_probe = process_probe
@@ -141,7 +152,11 @@ class OperationalStateService:
         self._engineering_store = engineering_store or EngineeringSessionStore(
             config.state_dir / "engineering"
         )
+        self._heartbeat_store = heartbeat_store or EngineeringWorkerHeartbeatStore(
+            config.state_dir / "engineering_worker.json"
+        )
         self._clock = clock
+        self._wall_clock = wall_clock
         self._cached_at = float("-inf")
         self._cached_snapshot: dict[str, object] | None = None
 
@@ -269,7 +284,47 @@ class OperationalStateService:
             },
         )
 
+    def _probe_engineering_worker(self) -> dict[str, object]:
+        heartbeat = self._heartbeat_store.load()
+        if heartbeat is None:
+            return {
+                "status": "unknown",
+                "observed": False,
+                "reason": "no_worker_heartbeat",
+            }
+
+        alive = self._process_probe(heartbeat.pid)
+        age = max(0.0, float(self._wall_clock()) - heartbeat.updated_at)
+        details: dict[str, object] = {
+            "pid": heartbeat.pid,
+            "owner": heartbeat.owner,
+            "started_at": _iso_from_epoch(heartbeat.started_at),
+            "updated_at": _iso_from_epoch(heartbeat.updated_at),
+            "heartbeat_age_seconds": round(age, 3),
+        }
+        if not alive:
+            return {
+                "status": "offline",
+                "observed": True,
+                "reason": "heartbeat_pid_not_running",
+                **details,
+            }
+        if age > self.config.engineering_worker_stale_seconds:
+            return {
+                "status": "warning",
+                "observed": True,
+                "reason": "heartbeat_stale",
+                **details,
+            }
+        return {
+            "status": "healthy",
+            "observed": True,
+            "reason": "fresh_heartbeat_and_live_pid",
+            **details,
+        }
+
     def _probe_engineering(self) -> dict[str, object]:
+        worker = self._probe_engineering_worker()
         try:
             states = self._engineering_store.list_states()
         except Exception:
@@ -278,7 +333,7 @@ class OperationalStateService:
                 observed=False,
                 phase="session_store_unreadable",
                 message="EngineeringSession state could not be read safely.",
-                details={"worker_liveness": "unknown"},
+                details={"worker": worker},
             )
 
         latest: EngineeringSessionState | None = (
@@ -303,11 +358,17 @@ class OperationalStateService:
             phase = "idle"
             message = "Engineering has no active session work."
 
+        worker_status = str(worker.get("status", "unknown"))
+        if worker_status in {"offline", "warning"}:
+            status = "warning"
+            phase = "worker_unhealthy"
+            message = "Engineering session state is readable, but the Engineering Worker is not healthy."
+
         details: dict[str, object] = {
             "active_session_count": len(active),
             "session_count": len(states),
-            "worker_liveness": "unknown",
-            "worker_liveness_reason": "no_worker_heartbeat_probe_yet",
+            "worker": worker,
+            "worker_liveness": worker_status,
         }
         if latest is not None:
             details.update(
