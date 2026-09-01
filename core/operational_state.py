@@ -10,6 +10,7 @@ import time
 from typing import Any, Callable
 
 from engineering.heartbeat import EngineeringWorkerHeartbeatStore
+from engineering.progress import describe_engineering_progress
 from engineering.session import EngineeringSessionState, EngineeringSessionStore
 from resident.napcat_login_guard import (
     DEFAULT_NAPCAT_ROOT,
@@ -17,6 +18,8 @@ from resident.napcat_login_guard import (
     NapCatLoginProbe,
 )
 from resident.paths import default_state_dir
+
+from .delivery import DeliveryOutbox
 
 
 @dataclass(frozen=True)
@@ -142,6 +145,7 @@ class OperationalStateService:
         napcat_probe: Callable[[], object] | None = None,
         engineering_store: EngineeringSessionStore | None = None,
         heartbeat_store: EngineeringWorkerHeartbeatStore | None = None,
+        delivery_outbox: DeliveryOutbox | None = None,
         clock: Callable[[], float] = time.monotonic,
         wall_clock: Callable[[], float] = time.time,
     ) -> None:
@@ -154,6 +158,9 @@ class OperationalStateService:
         )
         self._heartbeat_store = heartbeat_store or EngineeringWorkerHeartbeatStore(
             config.state_dir / "engineering_worker.json"
+        )
+        self._delivery_outbox = delivery_outbox or DeliveryOutbox(
+            config.state_dir / "proactive_delivery.db"
         )
         self._clock = clock
         self._wall_clock = wall_clock
@@ -323,6 +330,16 @@ class OperationalStateService:
             **details,
         }
 
+    def _delivery_state_for(self, state: EngineeringSessionState) -> str | None:
+        if state.status not in {"completed", "failed", "blocked"} or not state.current_turn_id:
+            return None
+        delivery_id = f"engineering:{state.session_id}:{state.current_turn_id}"
+        try:
+            record = self._delivery_outbox.get(delivery_id)
+        except Exception:
+            return "unknown"
+        return "not_enqueued" if record is None else record.state
+
     def _probe_engineering(self) -> dict[str, object]:
         worker = self._probe_engineering_worker()
         try:
@@ -342,10 +359,11 @@ class OperationalStateService:
         active = [state for state in states if state.status in {"pending", "running"}]
         if active:
             current = max(active, key=lambda state: state.updated_at)
+            progress = describe_engineering_progress(current)
             status = "running" if current.status == "running" else "waiting"
-            phase = current.status
+            phase = progress.phase
             message = (
-                "An EngineeringSession is currently running."
+                f"An EngineeringSession is currently running in phase {progress.phase}."
                 if current.status == "running"
                 else "An EngineeringSession is pending worker execution."
             )
@@ -371,12 +389,18 @@ class OperationalStateService:
             "worker_liveness": worker_status,
         }
         if latest is not None:
+            latest_progress = describe_engineering_progress(latest)
             details.update(
                 {
                     "latest_session_status": latest.status,
+                    "latest_session_phase": latest_progress.phase,
                     "latest_session_updated_at": _iso_from_epoch(latest.updated_at),
+                    "latest_progress_at": _iso_from_epoch(latest_progress.updated_at),
                 }
             )
+            delivery_state = self._delivery_state_for(latest)
+            if delivery_state is not None:
+                details["latest_delivery_state"] = delivery_state
         return _component(
             status,
             observed=True,
