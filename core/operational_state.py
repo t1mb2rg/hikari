@@ -6,8 +6,9 @@ import json
 import os
 from pathlib import Path
 import socket
+import sqlite3
 import time
-from typing import Any, Callable
+from typing import Any, Callable, TYPE_CHECKING
 
 from engineering.heartbeat import EngineeringWorkerHeartbeatStore
 from engineering.progress import describe_engineering_progress
@@ -19,7 +20,8 @@ from resident.napcat_login_guard import (
 )
 from resident.paths import default_state_dir
 
-from .delivery import DeliveryOutbox
+if TYPE_CHECKING:
+    from .delivery import DeliveryOutbox
 
 
 @dataclass(frozen=True)
@@ -159,9 +161,8 @@ class OperationalStateService:
         self._heartbeat_store = heartbeat_store or EngineeringWorkerHeartbeatStore(
             config.state_dir / "engineering_worker.json"
         )
-        self._delivery_outbox = delivery_outbox or DeliveryOutbox(
-            config.state_dir / "proactive_delivery.db"
-        )
+        self._delivery_outbox = delivery_outbox
+        self._delivery_outbox_path = config.state_dir / "proactive_delivery.db"
         self._clock = clock
         self._wall_clock = wall_clock
         self._cached_at = float("-inf")
@@ -330,15 +331,36 @@ class OperationalStateService:
             **details,
         }
 
+    def _read_delivery_state(self, delivery_id: str) -> str:
+        if self._delivery_outbox is not None:
+            try:
+                record = self._delivery_outbox.get(delivery_id)
+            except Exception:
+                return "unknown"
+            return "not_enqueued" if record is None else record.state
+
+        path = self._delivery_outbox_path
+        if not path.is_file():
+            return "not_enqueued"
+        try:
+            uri = f"{path.resolve().as_uri()}?mode=ro"
+            with sqlite3.connect(uri, uri=True, timeout=1.0) as connection:
+                row = connection.execute(
+                    "SELECT state FROM proactive_delivery_outbox WHERE delivery_id = ?",
+                    (delivery_id,),
+                ).fetchone()
+        except sqlite3.Error:
+            return "unknown"
+        if row is None:
+            return "not_enqueued"
+        state = str(row[0])
+        return state if state in {"pending", "sending", "sent", "uncertain"} else "unknown"
+
     def _delivery_state_for(self, state: EngineeringSessionState) -> str | None:
         if state.status not in {"completed", "failed", "blocked"} or not state.current_turn_id:
             return None
         delivery_id = f"engineering:{state.session_id}:{state.current_turn_id}"
-        try:
-            record = self._delivery_outbox.get(delivery_id)
-        except Exception:
-            return "unknown"
-        return "not_enqueued" if record is None else record.state
+        return self._read_delivery_state(delivery_id)
 
     def _probe_engineering(self) -> dict[str, object]:
         worker = self._probe_engineering_worker()
@@ -388,6 +410,16 @@ class OperationalStateService:
             "worker": worker,
             "worker_liveness": worker_status,
         }
+        if active:
+            current = max(active, key=lambda state: state.updated_at)
+            current_progress = describe_engineering_progress(current)
+            details.update(
+                {
+                    "current_session_id": current.session_id,
+                    "current_session_phase": current_progress.phase,
+                    "current_progress_at": _iso_from_epoch(current_progress.updated_at),
+                }
+            )
         if latest is not None:
             latest_progress = describe_engineering_progress(latest)
             details.update(
