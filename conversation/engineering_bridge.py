@@ -493,7 +493,7 @@ class ConversationEngineeringBridge(ConversationForgeBridge):
                 text=(
                     "这个需求在我当前的项目维护职责里，但 Engineering Runtime 还缺少实际执行能力："
                     f"{missing}。这是能力缺口，不是需要你逐个动作给我授权。"
-                    "我会保留这个原始需求作为后续能力迭代的目标。"
+                    "当前我不会假装已经具备这项能力，也不会自行越过项目 mandate。"
                 ),
             )
             _remember_control_exchange(engine, turn, reply)
