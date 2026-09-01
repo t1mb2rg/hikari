@@ -66,6 +66,10 @@ def describe_capabilities(
         isinstance(engineering, Mapping)
         and engineering.get("conversation_read_only_enabled") is True
     )
+    engineering_maintainer_enabled = bool(
+        isinstance(engineering, Mapping)
+        and engineering.get("conversation_maintainer_session_enabled") is True
+    )
 
     capability_model = hikari_engineering_capabilities(engineering_read_enabled)
     capabilities["capability_model"] = {
@@ -80,12 +84,12 @@ def describe_capabilities(
         "browser": False,
         "arbitrary_tools": False,
         "engineering_read_session": engineering_read_enabled,
-        "engineering_write_session": False,
+        "engineering_write_session": engineering_maintainer_enabled,
         "summary": (
             "The Conversation model itself has no direct shell or filesystem sense. It can route "
-            "work into Hikari's Engineering Runtime. Standing project delegation and actual worker "
-            "capabilities are separate facts: a delegated outcome may still be unavailable until "
-            "the Engineering Runtime implements it."
+            "work into Hikari's Engineering Runtime. Inside the standing Hikari-project maintainer "
+            "mandate, routine read/edit/test/engineering-branch commit work can run without per-action "
+            "approval. Standing delegation and actual implementation remain separate facts."
             if engineering_read_enabled
             else (
                 "This direct chat path currently provides cognition, context, personality, and "
