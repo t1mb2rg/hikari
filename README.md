@@ -245,6 +245,8 @@ Engineering 任务状态查询是 deterministic control path。用户询问当�
 
 Engineering 的任务状态以持久化运行结果为准，不由对话模型推测。
 
+依赖升级必须先在锁定的候选环境中完成验证，不能直接修改正在运行的环境。
+
 ## Operations doctor
 
 在 Windows Resident / QQ / NapCat 链路异常时，先运行只读诊断：
