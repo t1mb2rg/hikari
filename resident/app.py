@@ -290,6 +290,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     try:
         runtime_environment = load_runtime_environment(env_file=args.env_file)
         values = runtime_environment.values
+        child_python = values.get("HIKARI_RUNTIME_PYTHON", "").strip() or sys.executable
         reasoner = build_reasoner(
             args.reasoner,
             environment=values,
@@ -416,7 +417,7 @@ def main(argv: Sequence[str] | None = None) -> None:
                     state_dir=state_dir,
                     log_path=state_dir / "engineering_worker.log",
                     environment=dict(values),
-                    python_executable=sys.executable,
+                    python_executable=child_python,
                 )
             )
         action_bridge = engineering_bridge or forge_bridge
@@ -443,7 +444,7 @@ def main(argv: Sequence[str] | None = None) -> None:
                     log_path=state_dir / "qq_bridge.log",
                     environment=child_environment,
                     env_file=runtime_environment.env_file,
-                    python_executable=sys.executable,
+                    python_executable=child_python,
                 )
             )
             guard_enabled = runtime_bool(

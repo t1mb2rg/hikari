@@ -9,6 +9,7 @@ from resident.windows_host import (
     ResidentHostConfig,
     WindowsResidentHost,
     _select_background_python,
+    _select_runtime_child_python,
 )
 from resident.windows_process_tree import ordered_process_tree
 
@@ -48,6 +49,17 @@ def test_windows_background_python_falls_back_when_pythonw_is_missing(tmp_path: 
     selected = _select_background_python(str(python), platform_name="nt")
 
     assert selected == str(python)
+
+
+def test_runtime_children_use_console_python_from_selected_venv(tmp_path: Path):
+    scripts = tmp_path / "Scripts"
+    scripts.mkdir()
+    python = scripts / "python.exe"
+    pythonw = scripts / "pythonw.exe"
+    python.write_text("", encoding="utf-8")
+    pythonw.write_text("", encoding="utf-8")
+
+    assert _select_runtime_child_python(str(pythonw)) == str(python)
 
 
 def test_ordered_process_tree_is_parent_first_for_supervisor_shutdown():
@@ -101,6 +113,7 @@ def test_start_detaches_one_trusted_child_and_persists_minimal_state(tmp_path: P
     assert cwd == config.repository
     assert log_path == config.log_file
     assert environment["HIKARI_MODEL_API_KEY"] == "never-persist-this"
+    assert environment["HIKARI_RUNTIME_PYTHON"] == "python-test"
     assert "never-persist-this" not in " ".join(argv)
 
     persisted_text = config.state_file.read_text(encoding="utf-8")
