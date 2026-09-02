@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from collections.abc import Mapping
+import os
 from pathlib import Path
 import re
 import subprocess
@@ -49,6 +51,7 @@ def assert_nested_process_capability(
     worktree: str | Path,
     *,
     timeout_seconds: float = 30.0,
+    environment: Mapping[str, str] | None = None,
 ) -> None:
     """Prove that pytest descendants can create another Python process."""
 
@@ -56,6 +59,7 @@ def assert_nested_process_capability(
     proc = subprocess.run(
         [sys.executable, "-c", _NESTED_PROCESS_PROBE],
         cwd=root,
+        env=dict(environment) if environment is not None else None,
         stdin=subprocess.DEVNULL,
         text=True,
         encoding="utf-8",
@@ -73,6 +77,19 @@ def assert_nested_process_capability(
             "nested subprocess probe failed"
             + (f":\n{detail}" if detail else f" (exit {proc.returncode})")
         )
+
+
+def project_test_environment(
+    environment: Mapping[str, str] | None = None,
+) -> dict[str, str]:
+    """Remove live Hikari configuration and secrets from project tests."""
+
+    source = os.environ if environment is None else environment
+    return {
+        str(key): str(value)
+        for key, value in source.items()
+        if not str(key).upper().startswith("HIKARI_")
+    }
 
 
 def project_maintainer_authority() -> EngineeringAuthority:
@@ -125,10 +142,12 @@ def run_project_tests(
     """Run the repository test suite with Hikari's own Python environment."""
 
     root = Path(worktree).expanduser().resolve()
-    assert_nested_process_capability(root)
+    test_environment = project_test_environment()
+    assert_nested_process_capability(root, environment=test_environment)
     proc = subprocess.run(
         [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider"],
         cwd=root,
+        env=test_environment,
         stdin=subprocess.DEVNULL,
         text=True,
         encoding="utf-8",

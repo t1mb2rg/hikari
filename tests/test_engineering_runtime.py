@@ -9,6 +9,7 @@ from engineering.backend import EngineeringAgentResult
 from engineering.maintainer import (
     ProjectTestResult,
     project_maintainer_authority,
+    project_test_environment,
     run_project_tests,
 )
 from engineering.session import (
@@ -312,7 +313,7 @@ def test_project_test_failure_classification_uses_output_before_truncation(
 ):
     monkeypatch.setattr(
         "engineering.maintainer.assert_nested_process_capability",
-        lambda _path: None,
+        lambda _path, **_kwargs: None,
     )
     full_output = (
         "ModuleNotFoundError: No module named 'httpx2'\n" + "x" * 7000
@@ -328,6 +329,18 @@ def test_project_test_failure_classification_uses_output_before_truncation(
 
     assert result.failure_kind == "dependency_environment"
     assert len(result.output) == 5000
+
+
+def test_project_test_environment_removes_live_hikari_configuration() -> None:
+    cleaned = project_test_environment(
+        {
+            "PATH": "test-path",
+            "HIKARI_MODEL_API_KEY": "secret",
+            "hikari_qq_proactive_user_id": "real-user",
+        }
+    )
+
+    assert cleaned == {"PATH": "test-path"}
 
 
 def test_readme_only_task_blocks_scope_drift_before_tests(

@@ -249,6 +249,11 @@ class EnvironmentManager:
         tests = self._runner(
             [str(python), "-m", "pytest", "-q", "-p", "no:cacheprovider"],
             cwd=self.repository,
+            env={
+                key: value
+                for key, value in os.environ.items()
+                if not key.upper().startswith("HIKARI_")
+            },
             stdin=subprocess.DEVNULL,
             text=True,
             encoding="utf-8",
