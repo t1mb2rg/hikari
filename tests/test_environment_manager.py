@@ -4,10 +4,18 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 
 import pytest
 
-from resident.environment_manager import EnvironmentManager, EnvironmentManagerError
+from resident.environment_manager import (
+    EnvironmentManager,
+    EnvironmentManagerError,
+    _PYTHON_VERSION_PROBE,
+)
+
+
+_RUNTIME_VERSION = f"{sys.version_info.major}.{sys.version_info.minor}"
 
 
 def _repository(tmp_path: Path) -> Path:
@@ -46,10 +54,13 @@ def test_build_targets_candidate_path_and_never_live_venv(tmp_path: Path) -> Non
 
     def runner(argv, **kwargs):
         calls.append((list(argv), dict(kwargs)))
-        candidate = Path(kwargs["env"]["UV_PROJECT_ENVIRONMENT"])
-        python = EnvironmentManager.python_path(candidate)
-        python.parent.mkdir(parents=True, exist_ok=True)
-        python.write_text("fake", encoding="utf-8")
+        if "sync" in argv:
+            candidate = Path(kwargs["env"]["UV_PROJECT_ENVIRONMENT"])
+            python = EnvironmentManager.python_path(candidate)
+            python.parent.mkdir(parents=True, exist_ok=True)
+            python.write_text("fake", encoding="utf-8")
+        if len(argv) > 2 and argv[2] == _PYTHON_VERSION_PROBE:
+            return subprocess.CompletedProcess(argv, 0, f"{_RUNTIME_VERSION}\n", "")
         return subprocess.CompletedProcess(argv, 0, "synced", "")
 
     manager = EnvironmentManager(
@@ -62,6 +73,7 @@ def test_build_targets_candidate_path_and_never_live_venv(tmp_path: Path) -> Non
 
     assert candidate.status == "built"
     assert calls[0][0][1:3] == ["sync", "--locked"]
+    assert calls[0][0][3:5] == ["--python", _RUNTIME_VERSION]
     assert calls[0][1]["stdin"] is subprocess.DEVNULL
     target = Path(calls[0][1]["env"]["UV_PROJECT_ENVIRONMENT"])
     assert target == Path(candidate.path)
@@ -79,6 +91,8 @@ def test_validate_requires_nested_process_probe_before_pytest(tmp_path: Path) ->
             python = EnvironmentManager.python_path(candidate)
             python.parent.mkdir(parents=True, exist_ok=True)
             python.write_text("fake", encoding="utf-8")
+        if len(argv) > 2 and argv[2] == _PYTHON_VERSION_PROBE:
+            return subprocess.CompletedProcess(argv, 0, f"{_RUNTIME_VERSION}\n", "")
         return subprocess.CompletedProcess(argv, 0, "ok", "")
 
     manager = EnvironmentManager(
@@ -92,8 +106,8 @@ def test_validate_requires_nested_process_probe_before_pytest(tmp_path: Path) ->
 
     assert verified.status == "verified"
     assert verified.test_returncode == 0
-    assert calls[1][1] == "-c"
-    assert calls[2][1:4] == ["-m", "pytest", "-q"]
+    assert calls[2][1] == "-c"
+    assert calls[3][1:4] == ["-m", "pytest", "-q"]
     pointer = manager.promote(verified.environment_id)
     assert pointer["environment_id"] == verified.environment_id
     assert manager.current() == pointer
@@ -109,6 +123,8 @@ def test_failed_nested_probe_blocks_validation_and_promotion(tmp_path: Path) -> 
             python.parent.mkdir(parents=True, exist_ok=True)
             python.write_text("fake", encoding="utf-8")
             return subprocess.CompletedProcess(argv, 0, "ok", "")
+        if len(argv) > 2 and argv[2] == _PYTHON_VERSION_PROBE:
+            return subprocess.CompletedProcess(argv, 0, f"{_RUNTIME_VERSION}\n", "")
         return subprocess.CompletedProcess(argv, 6, "", "invalid handle")
 
     manager = EnvironmentManager(

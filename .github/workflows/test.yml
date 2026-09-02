@@ -28,7 +28,7 @@ jobs:
         run: python -m pip install uv==0.11.7
 
       - name: Sync locked dependencies
-        run: uv sync --locked --extra dev
+        run: uv sync --locked --python ${{ matrix.python-version }} --extra dev
 
       - name: Run tests
         run: uv run --locked --extra dev pytest -q

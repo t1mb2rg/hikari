@@ -14,6 +14,7 @@ import time
 
 
 ENVIRONMENT_RECORD_VERSION = 1
+ENVIRONMENT_ID_VERSION = 2
 CURRENT_POINTER_VERSION = 1
 DEFAULT_EXTRAS = ("dev", "windows-notify")
 
@@ -120,7 +121,9 @@ class EnvironmentManager:
         normalized_extras = tuple(sorted({str(item).strip() for item in extras if str(item).strip()}))
         version = python_version or f"{sys.version_info.major}.{sys.version_info.minor}"
         lock_hash = self.lock_hash()
-        identity = "\n".join((lock_hash, version, *normalized_extras))
+        identity = "\n".join(
+            (f"identity-version={ENVIRONMENT_ID_VERSION}", lock_hash, version, *normalized_extras)
+        )
         environment_id = sha256(identity.encode("utf-8")).hexdigest()[:20]
         path = self.root / environment_id
         return CandidateEnvironment(
@@ -147,7 +150,13 @@ class EnvironmentManager:
         building = self._replace(candidate, status="building")
         self._save(building)
 
-        argv = [executable, "sync", "--locked"]
+        argv = [
+            executable,
+            "sync",
+            "--locked",
+            "--python",
+            candidate.python_version,
+        ]
         for extra in candidate.extras:
             argv.extend(("--extra", extra))
         environment = os.environ.copy()
@@ -174,6 +183,29 @@ class EnvironmentManager:
             failed = self._replace(building, status="build_failed")
             self._save(failed)
             raise EnvironmentManagerError("candidate environment has no Python executable")
+        version_probe = self._runner(
+            [str(python), "-c", _PYTHON_VERSION_PROBE],
+            cwd=self.repository,
+            stdin=subprocess.DEVNULL,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            capture_output=True,
+            timeout=30,
+            check=False,
+        )
+        self._write_log(
+            self.log_dir(candidate.environment_id) / "python-version.log",
+            version_probe,
+        )
+        actual_version = (version_probe.stdout or "").strip()
+        if version_probe.returncode != 0 or actual_version != candidate.python_version:
+            failed = self._replace(building, status="build_failed")
+            self._save(failed)
+            raise EnvironmentManagerError(
+                "candidate Python version mismatch: "
+                f"expected {candidate.python_version}, got {actual_version or 'unknown'}"
+            )
         built = self._replace(building, status="built")
         self._save(built)
         return built
@@ -370,6 +402,10 @@ _NESTED_PROCESS_PROBE = (
     "result=subprocess.run([sys.executable,'-c','raise SystemExit(0)'],"
     "stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=subprocess.PIPE); "
     "raise SystemExit(result.returncode)"
+)
+
+_PYTHON_VERSION_PROBE = (
+    "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"
 )
 
 
