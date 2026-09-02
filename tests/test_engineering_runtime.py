@@ -6,7 +6,11 @@ import subprocess
 import pytest
 
 from engineering.backend import EngineeringAgentResult
-from engineering.maintainer import ProjectTestResult, project_maintainer_authority
+from engineering.maintainer import (
+    ProjectTestResult,
+    project_maintainer_authority,
+    run_project_tests,
+)
 from engineering.session import (
     EngineeringAuthority,
     EngineeringProtocolError,
@@ -300,6 +304,30 @@ def test_maintainer_worker_does_not_repair_missing_validation_dependency(
     assert backend.calls == 1
     result = store.load_result(state.session_id, turn.turn_id)
     assert result.changed_files == ("README.md",)
+
+
+def test_project_test_failure_classification_uses_output_before_truncation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr(
+        "engineering.maintainer.assert_nested_process_capability",
+        lambda _path: None,
+    )
+    full_output = (
+        "ModuleNotFoundError: No module named 'httpx2'\n" + "x" * 7000
+    )
+    monkeypatch.setattr(
+        "engineering.maintainer.subprocess.run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(
+            args[0], 1, full_output, ""
+        ),
+    )
+
+    result = run_project_tests(tmp_path)
+
+    assert result.failure_kind == "dependency_environment"
+    assert len(result.output) == 5000
 
 
 def test_readme_only_task_blocks_scope_drift_before_tests(

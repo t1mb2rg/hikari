@@ -136,10 +136,12 @@ def run_project_tests(
         capture_output=True,
         timeout=max(1.0, float(timeout_seconds)),
     )
-    combined = "\n".join(part.strip() for part in (proc.stdout, proc.stderr) if part.strip())
-    if len(combined) > 5000:
-        combined = combined[-5000:]
-    return ProjectTestResult(proc.returncode, combined, _failure_kind(combined))
+    full_output = "\n".join(
+        part.strip() for part in (proc.stdout, proc.stderr) if part.strip()
+    )
+    failure_kind = _failure_kind(full_output)
+    visible_output = full_output[-5000:] if len(full_output) > 5000 else full_output
+    return ProjectTestResult(proc.returncode, visible_output, failure_kind)
 
 
 def _commit_subject(intent: str) -> str:
