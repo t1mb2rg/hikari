@@ -263,6 +263,34 @@ def hikari_engineering_capabilities(engineering_enabled: bool) -> dict[str, Capa
             scope="external_or_production_system",
             escalation_required=True,
         ),
+        "engineering.data.destructive_migration": CapabilityState(
+            "engineering.data.destructive_migration",
+            available=False,
+            delegated=False,
+            scope="persistent_project_data",
+            escalation_required=True,
+        ),
+        "engineering.permissions.expand": CapabilityState(
+            "engineering.permissions.expand",
+            available=False,
+            delegated=False,
+            scope="project_authority_boundary",
+            escalation_required=True,
+        ),
+        "engineering.project.change_north_star": CapabilityState(
+            "engineering.project.change_north_star",
+            available=False,
+            delegated=False,
+            scope="project_direction",
+            escalation_required=True,
+        ),
+        "engineering.external_cost.material": CapabilityState(
+            "engineering.external_cost.material",
+            available=False,
+            delegated=False,
+            scope="external_paid_resources",
+            escalation_required=True,
+        ),
     }
 
 
