@@ -156,9 +156,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--prompt-profile",
         choices=PROMPT_PROFILES,
-        default="production",
+        default="jarvis-openjarvis-zh",
         help=(
-            "production 使用当前 grounded Hikari 基线；"
+            "默认使用 jarvis-openjarvis-zh；"
+            "production 保留当前 grounded Hikari 基线用于回退；"
             "whiteboard/whiteboard0 是 Prompt + 最近真实对话的 Whiteboard 0；"
             "whiteboard1 只额外加入一段自然语言的长期关系背景；"
             "whiteboard2 不加关系背景，只把人工确认的当前相关事实作为 system 背景；"
