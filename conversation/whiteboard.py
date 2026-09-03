@@ -43,6 +43,13 @@ WHITEBOARD_1_RELATIONSHIP_CONTEXT = """关系背景：
 这只说明你们有持续关系、也一直一起推进项目；不代表你记得当前真实对话里没有出现的具体事件、项目事实、原话或过去感受。"""
 
 
+WHITEBOARD_2_RELEVANT_CONTEXT = """可参考的当前背景：
+以下是这次实验人为确认的事实，只在与眼前话题相关时使用，不要补出没有提供的细节。
+- 你们最近一直在推进 Hikari 的 M7。
+- M7 最近连续加入了 Engineering Runtime、运行状态感知、授权边界、能力判断和验证保护，工程结构因此明显变重。
+- M7-07 已经完成。现在你们暂停继续扩功能，正在重新检查 Hikari 的整体架构和对话体验。"""
+
+
 @dataclass(frozen=True)
 class WhiteboardOutput:
     reaction: str
@@ -103,6 +110,7 @@ class WhiteboardConversationEngine(ConversationEngine):
         self,
         *args,
         relationship_context_text: str | None = None,
+        relevant_context_text: str | None = None,
         **kwargs,
     ) -> None:
         super().__init__(*args, **kwargs)
@@ -110,6 +118,12 @@ class WhiteboardConversationEngine(ConversationEngine):
             relationship_context_text.strip()
             if isinstance(relationship_context_text, str)
             and relationship_context_text.strip()
+            else None
+        )
+        self.relevant_context_text = (
+            relevant_context_text.strip()
+            if isinstance(relevant_context_text, str)
+            and relevant_context_text.strip()
             else None
         )
 
@@ -129,6 +143,10 @@ class WhiteboardConversationEngine(ConversationEngine):
         if self.relationship_context_text is not None:
             messages.append(
                 ChatMessage(role="system", content=self.relationship_context_text)
+            )
+        if self.relevant_context_text is not None:
+            messages.append(
+                ChatMessage(role="system", content=self.relevant_context_text)
             )
         messages.extend(self._history_messages(history))
         messages.append(ChatMessage(role="user", content=turn.text))
