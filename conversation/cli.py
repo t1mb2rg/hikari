@@ -28,6 +28,7 @@ from .engine import (
 )
 from .models import UserTurn
 from .whiteboard import (
+    WHITEBOARD_1_RELATIONSHIP_CONTEXT,
     WHITEBOARD_HIKARI_SYSTEM_INSTRUCTIONS,
     WhiteboardConversationEngine,
 )
@@ -38,7 +39,14 @@ EXIT_COMMANDS = {"/exit", "/quit"}
 PASTE_COMMAND = "/paste"
 PASTE_SEND_COMMAND = "/send"
 PASTE_CANCEL_COMMAND = "/cancel"
-PROMPT_PROFILES = ("production", "whiteboard", "thin", "legacy")
+PROMPT_PROFILES = (
+    "production",
+    "whiteboard",
+    "whiteboard0",
+    "whiteboard1",
+    "thin",
+    "legacy",
+)
 
 
 def build_chat_provider(environment: Mapping[str, str]) -> ChatProvider:
@@ -136,7 +144,8 @@ def build_parser() -> argparse.ArgumentParser:
         default="production",
         help=(
             "production 使用当前 grounded Hikari 基线；"
-            "whiteboard 只给模型 Hikari prompt + 最近真实对话 + 当前消息；"
+            "whiteboard/whiteboard0 是 Prompt + 最近真实对话的 Whiteboard 0；"
+            "whiteboard1 只额外加入一段自然语言的长期关系背景；"
             "thin 与 production 等价并保留给盲测脚本；"
             "legacy 显式启用旧版完整 voice/personality steering。"
         ),
@@ -161,45 +170,64 @@ def main(argv: Sequence[str] | None = None) -> int:
             else (default_state_dir() / "memory.db").resolve()
         )
         legacy_prompt = args.prompt_profile == "legacy"
-        whiteboard_prompt = args.prompt_profile == "whiteboard"
+        whiteboard_prompt = args.prompt_profile in {
+            "whiteboard",
+            "whiteboard0",
+            "whiteboard1",
+        }
+        whiteboard_relationship = args.prompt_profile == "whiteboard1"
         user_model_service, user_fact_extractor = build_user_model_runtime(
             provider,
             memory_path.parent / "user_model.db",
         )
-        engine_type = WhiteboardConversationEngine if whiteboard_prompt else ConversationEngine
-        engine = engine_type(
-            provider,
-            MemoryStore(memory_path),
-            context_collector=(
-                None
-                if whiteboard_prompt
-                else default_context_collector(
-                    include_desktop_activity=args.desktop_context,
-                )
+
+        shared_kwargs = {
+            "history_limit": args.history_limit,
+            "user_model_service": user_model_service,
+            "user_fact_extractor": user_fact_extractor,
+        }
+        relationship_context = {
+            "kind": "primary_local_user",
+            "basis": "trusted_runtime_binding",
+            "memory_claim": "continuity_without_implied_episode_recall",
+            "continuity": (
+                "This local CLI is an explicit trusted conversation with "
+                "Hikari's primary local user. This is the person who has been "
+                "building, testing, and talking with Hikari across the current "
+                "development process. Specific personal facts remain unknown "
+                "unless durable memory supplies them. This binding establishes "
+                "the relationship but does not mean exact prior conversations "
+                "or development episodes are independently remembered."
             ),
-            personality_profile=load_personality() if legacy_prompt else None,
-            voice_profile=load_voice() if legacy_prompt else None,
-            relationship_context={
-                "kind": "primary_local_user",
-                "basis": "trusted_runtime_binding",
-                "memory_claim": "continuity_without_implied_episode_recall",
-                "continuity": (
-                    "This local CLI is an explicit trusted conversation with "
-                    "Hikari's primary local user. This is the person who has been "
-                    "building, testing, and talking with Hikari across the current "
-                    "development process. Specific personal facts remain unknown "
-                    "unless durable memory supplies them. This binding establishes "
-                    "the relationship but does not mean exact prior conversations "
-                    "or development episodes are independently remembered."
+        }
+
+        if whiteboard_prompt:
+            engine = WhiteboardConversationEngine(
+                provider,
+                MemoryStore(memory_path),
+                context_collector=None,
+                personality_profile=None,
+                voice_profile=None,
+                relationship_context=relationship_context,
+                system_instructions=WHITEBOARD_HIKARI_SYSTEM_INSTRUCTIONS,
+                relationship_context_text=(
+                    WHITEBOARD_1_RELATIONSHIP_CONTEXT
+                    if whiteboard_relationship
+                    else None
                 ),
-            },
-            history_limit=args.history_limit,
-            user_model_service=user_model_service,
-            user_fact_extractor=user_fact_extractor,
-            system_instructions=(
-                WHITEBOARD_HIKARI_SYSTEM_INSTRUCTIONS
-                if whiteboard_prompt
-                else (
+                **shared_kwargs,
+            )
+        else:
+            engine = ConversationEngine(
+                provider,
+                MemoryStore(memory_path),
+                context_collector=default_context_collector(
+                    include_desktop_activity=args.desktop_context,
+                ),
+                personality_profile=load_personality() if legacy_prompt else None,
+                voice_profile=load_voice() if legacy_prompt else None,
+                relationship_context=relationship_context,
+                system_instructions=(
                     LEGACY_INTERACTIVE_SYSTEM_INSTRUCTIONS
                     if legacy_prompt
                     else (
@@ -207,9 +235,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                         if args.prompt_profile == "thin"
                         else INTERACTIVE_SYSTEM_INSTRUCTIONS
                     )
-                )
-            ),
-        )
+                ),
+                **shared_kwargs,
+            )
     except ValueError as exc:
         print(f"Hikari 对话启动失败：{exc}")
         return 2
