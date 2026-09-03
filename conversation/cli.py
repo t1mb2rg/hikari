@@ -27,6 +27,7 @@ from .engine import (
     THIN_HIKARI_SYSTEM_INSTRUCTIONS,
 )
 from .jarvis import JARVIS_SYSTEM_INSTRUCTIONS
+from .jarvis_openjarvis import OPENJARVIS_SYSTEM_INSTRUCTIONS
 from .models import UserTurn
 from .whiteboard import (
     WHITEBOARD_1_RELATIONSHIP_CONTEXT,
@@ -51,6 +52,7 @@ PROMPT_PROFILES = (
     "whiteboard2b",
     "whiteboard2c",
     "jarvis",
+    "jarvis-openjarvis",
     "thin",
     "legacy",
 )
@@ -156,7 +158,8 @@ def build_parser() -> argparse.ArgumentParser:
             "whiteboard2 不加关系背景，只把人工确认的当前相关事实作为 system 背景；"
             "whiteboard2b 使用同一批相关事实，但把它们放到当前消息附近；"
             "whiteboard2c 在 2B 基础上只增加一小段 relational stance 行为约束；"
-            "jarvis 是独立的极简 Jarvis 人格对照，只看最近真实对话和当前消息；"
+            "jarvis 是我们从零写的极简 Jarvis 人格对照；"
+            "jarvis-openjarvis 原样使用 OpenJarvis 的 Apache-2.0 Jarvis persona；"
             "thin 与 production 等价并保留给盲测脚本；"
             "legacy 显式启用旧版完整 voice/personality steering。"
         ),
@@ -171,7 +174,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    assistant_name = "Jarvis" if args.prompt_profile == "jarvis" else "Hikari"
+    jarvis_profiles = {"jarvis", "jarvis-openjarvis"}
+    assistant_name = "Jarvis" if args.prompt_profile in jarvis_profiles else "Hikari"
 
     try:
         runtime_environment = load_runtime_environment(env_file=args.env_file)
@@ -182,7 +186,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             else (default_state_dir() / "memory.db").resolve()
         )
         legacy_prompt = args.prompt_profile == "legacy"
-        jarvis_prompt = args.prompt_profile == "jarvis"
+        jarvis_prompt = args.prompt_profile in jarvis_profiles
+        openjarvis_prompt = args.prompt_profile == "jarvis-openjarvis"
         whiteboard_prompt = args.prompt_profile in {
             "whiteboard",
             "whiteboard0",
@@ -191,6 +196,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             "whiteboard2b",
             "whiteboard2c",
             "jarvis",
+            "jarvis-openjarvis",
         }
         whiteboard_relationship = args.prompt_profile == "whiteboard1"
         whiteboard_relational_stance = args.prompt_profile == "whiteboard2c"
@@ -238,9 +244,13 @@ def main(argv: Sequence[str] | None = None) -> int:
                 voice_profile=None,
                 relationship_context=relationship_context,
                 system_instructions=(
-                    JARVIS_SYSTEM_INSTRUCTIONS
-                    if jarvis_prompt
-                    else WHITEBOARD_HIKARI_SYSTEM_INSTRUCTIONS
+                    OPENJARVIS_SYSTEM_INSTRUCTIONS
+                    if openjarvis_prompt
+                    else (
+                        JARVIS_SYSTEM_INSTRUCTIONS
+                        if jarvis_prompt
+                        else WHITEBOARD_HIKARI_SYSTEM_INSTRUCTIONS
+                    )
                 ),
                 relationship_context_text=(
                     WHITEBOARD_1_RELATIONSHIP_CONTEXT
