@@ -50,6 +50,9 @@ WHITEBOARD_2_RELEVANT_CONTEXT = """可参考的当前背景：
 - M7-07 已经完成。现在你们暂停继续扩功能，正在重新检查 Hikari 的整体架构和对话体验。"""
 
 
+RELEVANT_CONTEXT_PLACEMENTS = frozenset({"system", "current_turn"})
+
+
 @dataclass(frozen=True)
 class WhiteboardOutput:
     reaction: str
@@ -96,6 +99,16 @@ def parse_whiteboard_output(raw: str) -> WhiteboardOutput:
     return WhiteboardOutput(reaction=reaction, reply=reply)
 
 
+def _current_turn_with_relevant_context(context: str, text: str) -> str:
+    """Place trusted background next to the current utterance without making it system policy."""
+
+    return (
+        f"{context}\n\n"
+        f"【现在对你说】\n{text}\n\n"
+        "上面的背景只用于理解这句话，不需要单独回应背景；只回应【现在对你说】里的内容。"
+    )
+
+
 class WhiteboardConversationEngine(ConversationEngine):
     """Conversation A/B path with deliberately minimal model-visible context.
 
@@ -111,6 +124,7 @@ class WhiteboardConversationEngine(ConversationEngine):
         *args,
         relationship_context_text: str | None = None,
         relevant_context_text: str | None = None,
+        relevant_context_placement: str = "system",
         **kwargs,
     ) -> None:
         super().__init__(*args, **kwargs)
@@ -126,6 +140,12 @@ class WhiteboardConversationEngine(ConversationEngine):
             and relevant_context_text.strip()
             else None
         )
+        placement = str(relevant_context_placement).strip().casefold()
+        if placement not in RELEVANT_CONTEXT_PLACEMENTS:
+            raise ValueError(
+                "relevant_context_placement must be system or current_turn"
+            )
+        self.relevant_context_placement = placement
 
     def respond(
         self,
@@ -144,12 +164,25 @@ class WhiteboardConversationEngine(ConversationEngine):
             messages.append(
                 ChatMessage(role="system", content=self.relationship_context_text)
             )
-        if self.relevant_context_text is not None:
+        if (
+            self.relevant_context_text is not None
+            and self.relevant_context_placement == "system"
+        ):
             messages.append(
                 ChatMessage(role="system", content=self.relevant_context_text)
             )
         messages.extend(self._history_messages(history))
-        messages.append(ChatMessage(role="user", content=turn.text))
+
+        current_turn_text = turn.text
+        if (
+            self.relevant_context_text is not None
+            and self.relevant_context_placement == "current_turn"
+        ):
+            current_turn_text = _current_turn_with_relevant_context(
+                self.relevant_context_text,
+                turn.text,
+            )
+        messages.append(ChatMessage(role="user", content=current_turn_text))
 
         raw = self.provider.complete(messages).strip()
         if not raw:
