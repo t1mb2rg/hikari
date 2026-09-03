@@ -6,6 +6,7 @@ from brain.model_reasoner import ChatMessage
 from conversation.cli import build_parser
 from conversation.jarvis import JARVIS_SYSTEM_INSTRUCTIONS
 from conversation.jarvis_openjarvis import (
+    HIKARI_OPENJARVIS_CHINESE_OUTPUT_SYSTEM_INSTRUCTIONS,
     OPENJARVIS_CHINESE_OUTPUT_SYSTEM_INSTRUCTIONS,
     OPENJARVIS_SYSTEM_INSTRUCTIONS,
 )
@@ -47,6 +48,7 @@ def test_cli_accepts_jarvis_prompt_profiles():
         "jarvis",
         "jarvis-openjarvis",
         "jarvis-openjarvis-zh",
+        "hikari-openjarvis-zh",
     ):
         args = build_parser().parse_args(["--prompt-profile", profile])
         assert args.prompt_profile == profile
@@ -114,6 +116,38 @@ def test_openjarvis_chinese_output_changes_only_output_language_constraint(
     assert [(message.role, message.content) for message in provider.calls[0]] == [
         ("system", OPENJARVIS_CHINESE_OUTPUT_SYSTEM_INSTRUCTIONS),
         ("user", "jarvis"),
+    ]
+
+
+def test_hikari_identity_swap_changes_only_assistant_name_and_keeps_chinese_output(
+    tmp_path: Path,
+):
+    provider = FakeProvider(["您好，先生。"])
+    engine = _engine(
+        tmp_path / "memory.db",
+        provider,
+        system_instructions=HIKARI_OPENJARVIS_CHINESE_OUTPUT_SYSTEM_INSTRUCTIONS,
+    )
+
+    reply = engine.respond(UserTurn("cli", "hikari-openjarvis-zh-0", "hikari"))
+
+    assert reply.text == "您好，先生。"
+    expected = (
+        OPENJARVIS_SYSTEM_INSTRUCTIONS.replace(
+            "You are Jarvis — the local AI assistant.",
+            "You are Hikari — the local AI assistant.",
+            1,
+        )
+        + "\n\nLANGUAGE:\n- Always reply in Simplified Chinese."
+    )
+    assert HIKARI_OPENJARVIS_CHINESE_OUTPUT_SYSTEM_INSTRUCTIONS == expected
+    assert "You are Hikari — the local AI assistant." in expected
+    assert "You are Jarvis — the local AI assistant." not in expected
+    assert "not Jarvis" not in expected
+    assert "female" not in expected.casefold()
+    assert [(message.role, message.content) for message in provider.calls[0]] == [
+        ("system", HIKARI_OPENJARVIS_CHINESE_OUTPUT_SYSTEM_INSTRUCTIONS),
+        ("user", "hikari"),
     ]
 
 
