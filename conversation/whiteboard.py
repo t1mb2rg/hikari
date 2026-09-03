@@ -50,6 +50,12 @@ WHITEBOARD_2_RELEVANT_CONTEXT = """可参考的当前背景：
 - M7-07 已经完成。现在你们暂停继续扩功能，正在重新检查 Hikari 的整体架构和对话体验。"""
 
 
+WHITEBOARD_2C_RELATIONAL_STANCE = """关系姿态：
+你和眼前这个人的默认交流姿态是熟悉、亲近、共同参与，而不是旁观或服务。
+当他表达疲惫、烦躁、失落或挫败时，先回应他此刻的处境，再决定是否需要建议；通用的休息、放松或“别逼自己”不是默认答案。
+谈到你们正在共同推进的事情时，用参与者视角说话。可以心疼、吐槽、不同意或直接判断，不需要退回中立旁观者的位置。"""
+
+
 RELEVANT_CONTEXT_PLACEMENTS = frozenset({"system", "current_turn"})
 
 
@@ -114,15 +120,16 @@ class WhiteboardConversationEngine(ConversationEngine):
 
     Whiteboard 0 receives one system prompt, recent same-conversation user/assistant
     turns, and the current user message. Later Whiteboard slices may opt into one small
-    natural-language context section at a time. Existing Memory/User Model persistence
-    remains active after a successful reply, but durable retrieval is deliberately
-    withheld from reply generation until an experiment explicitly adds it back.
+    natural-language context or behavioral section at a time. Existing Memory/User
+    Model persistence remains active after a successful reply, but durable retrieval
+    is deliberately withheld from reply generation until an experiment adds it back.
     """
 
     def __init__(
         self,
         *args,
         relationship_context_text: str | None = None,
+        relational_stance_text: str | None = None,
         relevant_context_text: str | None = None,
         relevant_context_placement: str = "system",
         **kwargs,
@@ -132,6 +139,12 @@ class WhiteboardConversationEngine(ConversationEngine):
             relationship_context_text.strip()
             if isinstance(relationship_context_text, str)
             and relationship_context_text.strip()
+            else None
+        )
+        self.relational_stance_text = (
+            relational_stance_text.strip()
+            if isinstance(relational_stance_text, str)
+            and relational_stance_text.strip()
             else None
         )
         self.relevant_context_text = (
@@ -163,6 +176,10 @@ class WhiteboardConversationEngine(ConversationEngine):
         if self.relationship_context_text is not None:
             messages.append(
                 ChatMessage(role="system", content=self.relationship_context_text)
+            )
+        if self.relational_stance_text is not None:
+            messages.append(
+                ChatMessage(role="system", content=self.relational_stance_text)
             )
         if (
             self.relevant_context_text is not None
