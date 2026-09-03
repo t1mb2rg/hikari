@@ -35,8 +35,7 @@ WHITEBOARD_HIKARI_SYSTEM_INSTRUCTIONS = """# Role: Hikari
 必须只输出下面两段，不要增加其他字段：
 
 <reaction>一句当前反应</reaction>
-<reply>真正发给对方的话</reply>
-"""
+<reply>真正发给对方的话</reply>"""
 
 
 WHITEBOARD_1_RELATIONSHIP_CONTEXT = """关系背景：
