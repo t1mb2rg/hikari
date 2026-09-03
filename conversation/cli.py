@@ -27,6 +27,10 @@ from .engine import (
     THIN_HIKARI_SYSTEM_INSTRUCTIONS,
 )
 from .models import UserTurn
+from .whiteboard import (
+    WHITEBOARD_HIKARI_SYSTEM_INSTRUCTIONS,
+    WhiteboardConversationEngine,
+)
 
 
 DEFAULT_CHAT_TEMPERATURE = 0.65
@@ -34,7 +38,7 @@ EXIT_COMMANDS = {"/exit", "/quit"}
 PASTE_COMMAND = "/paste"
 PASTE_SEND_COMMAND = "/send"
 PASTE_CANCEL_COMMAND = "/cancel"
-PROMPT_PROFILES = ("production", "thin", "legacy")
+PROMPT_PROFILES = ("production", "whiteboard", "thin", "legacy")
 
 
 def build_chat_provider(environment: Mapping[str, str]) -> ChatProvider:
@@ -131,7 +135,8 @@ def build_parser() -> argparse.ArgumentParser:
         choices=PROMPT_PROFILES,
         default="production",
         help=(
-            "production 使用已通过模型盲测的最小 grounded Hikari 基线；"
+            "production 使用当前 grounded Hikari 基线；"
+            "whiteboard 只给模型 Hikari prompt + 最近真实对话 + 当前消息；"
             "thin 与 production 等价并保留给盲测脚本；"
             "legacy 显式启用旧版完整 voice/personality steering。"
         ),
@@ -139,7 +144,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--desktop-context",
         action="store_true",
-        help="显式允许直接聊天读取当前前台窗口和输入活跃度。默认关闭。",
+        help="显式允许 grounded 直接聊天读取当前前台窗口和输入活跃度。Whiteboard 会忽略该上下文。",
     )
     return parser
 
@@ -156,15 +161,21 @@ def main(argv: Sequence[str] | None = None) -> int:
             else (default_state_dir() / "memory.db").resolve()
         )
         legacy_prompt = args.prompt_profile == "legacy"
+        whiteboard_prompt = args.prompt_profile == "whiteboard"
         user_model_service, user_fact_extractor = build_user_model_runtime(
             provider,
             memory_path.parent / "user_model.db",
         )
-        engine = ConversationEngine(
+        engine_type = WhiteboardConversationEngine if whiteboard_prompt else ConversationEngine
+        engine = engine_type(
             provider,
             MemoryStore(memory_path),
-            context_collector=default_context_collector(
-                include_desktop_activity=args.desktop_context,
+            context_collector=(
+                None
+                if whiteboard_prompt
+                else default_context_collector(
+                    include_desktop_activity=args.desktop_context,
+                )
             ),
             personality_profile=load_personality() if legacy_prompt else None,
             voice_profile=load_voice() if legacy_prompt else None,
@@ -186,12 +197,16 @@ def main(argv: Sequence[str] | None = None) -> int:
             user_model_service=user_model_service,
             user_fact_extractor=user_fact_extractor,
             system_instructions=(
-                LEGACY_INTERACTIVE_SYSTEM_INSTRUCTIONS
-                if legacy_prompt
+                WHITEBOARD_HIKARI_SYSTEM_INSTRUCTIONS
+                if whiteboard_prompt
                 else (
-                    THIN_HIKARI_SYSTEM_INSTRUCTIONS
-                    if args.prompt_profile == "thin"
-                    else INTERACTIVE_SYSTEM_INSTRUCTIONS
+                    LEGACY_INTERACTIVE_SYSTEM_INSTRUCTIONS
+                    if legacy_prompt
+                    else (
+                        THIN_HIKARI_SYSTEM_INSTRUCTIONS
+                        if args.prompt_profile == "thin"
+                        else INTERACTIVE_SYSTEM_INSTRUCTIONS
+                    )
                 )
             ),
         )
