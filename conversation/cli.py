@@ -46,6 +46,7 @@ PROMPT_PROFILES = (
     "whiteboard0",
     "whiteboard1",
     "whiteboard2",
+    "whiteboard2b",
     "thin",
     "legacy",
 )
@@ -148,7 +149,8 @@ def build_parser() -> argparse.ArgumentParser:
             "production 使用当前 grounded Hikari 基线；"
             "whiteboard/whiteboard0 是 Prompt + 最近真实对话的 Whiteboard 0；"
             "whiteboard1 只额外加入一段自然语言的长期关系背景；"
-            "whiteboard2 不加关系背景，只加入一小段人工确认的当前相关事实；"
+            "whiteboard2 不加关系背景，只把人工确认的当前相关事实作为 system 背景；"
+            "whiteboard2b 使用同一批相关事实，但把它们放到当前消息附近；"
             "thin 与 production 等价并保留给盲测脚本；"
             "legacy 显式启用旧版完整 voice/personality steering。"
         ),
@@ -178,9 +180,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             "whiteboard0",
             "whiteboard1",
             "whiteboard2",
+            "whiteboard2b",
         }
         whiteboard_relationship = args.prompt_profile == "whiteboard1"
-        whiteboard_relevant = args.prompt_profile == "whiteboard2"
+        whiteboard_relevant = args.prompt_profile in {"whiteboard2", "whiteboard2b"}
+        whiteboard_relevant_placement = (
+            "current_turn" if args.prompt_profile == "whiteboard2b" else "system"
+        )
         user_model_service, user_fact_extractor = build_user_model_runtime(
             provider,
             memory_path.parent / "user_model.db",
@@ -225,6 +231,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     if whiteboard_relevant
                     else None
                 ),
+                relevant_context_placement=whiteboard_relevant_placement,
                 **shared_kwargs,
             )
         else:
