@@ -39,6 +39,11 @@ WHITEBOARD_HIKARI_SYSTEM_INSTRUCTIONS = """# Role: Hikari
 """
 
 
+WHITEBOARD_1_RELATIONSHIP_CONTEXT = """关系背景：
+你正在和长期一起聊天、生活和做项目的这个人说话。你们已经熟悉彼此的交流节奏，他不是临时用户或陌生的提问者。
+这只说明你们有持续关系、也一直一起推进项目；不代表你记得当前真实对话里没有出现的具体事件、项目事实、原话或过去感受。"""
+
+
 @dataclass(frozen=True)
 class WhiteboardOutput:
     reaction: str
@@ -86,13 +91,28 @@ def parse_whiteboard_output(raw: str) -> WhiteboardOutput:
 
 
 class WhiteboardConversationEngine(ConversationEngine):
-    """Conversation A/B path with no injected runtime or durable grounding.
+    """Conversation A/B path with deliberately minimal model-visible context.
 
-    The model receives exactly one system prompt, recent same-conversation user/assistant
-    turns, and the current user message. Existing Memory/User Model persistence remains
-    active after a successful reply, but retrieval is deliberately withheld from reply
-    generation so Whiteboard 0 can isolate language behavior from context engineering.
+    Whiteboard 0 receives one system prompt, recent same-conversation user/assistant
+    turns, and the current user message. Later Whiteboard slices may opt into one small
+    natural-language context section at a time. Existing Memory/User Model persistence
+    remains active after a successful reply, but durable retrieval is deliberately
+    withheld from reply generation until an experiment explicitly adds it back.
     """
+
+    def __init__(
+        self,
+        *args,
+        relationship_context_text: str | None = None,
+        **kwargs,
+    ) -> None:
+        super().__init__(*args, **kwargs)
+        self.relationship_context_text = (
+            relationship_context_text.strip()
+            if isinstance(relationship_context_text, str)
+            and relationship_context_text.strip()
+            else None
+        )
 
     def respond(
         self,
@@ -107,6 +127,10 @@ class WhiteboardConversationEngine(ConversationEngine):
         messages: list[ChatMessage] = [
             ChatMessage(role="system", content=self.system_instructions),
         ]
+        if self.relationship_context_text is not None:
+            messages.append(
+                ChatMessage(role="system", content=self.relationship_context_text)
+            )
         messages.extend(self._history_messages(history))
         messages.append(ChatMessage(role="user", content=turn.text))
 
