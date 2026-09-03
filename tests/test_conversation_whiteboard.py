@@ -7,6 +7,7 @@ from conversation.cli import build_parser
 from conversation.models import UserTurn
 from conversation.whiteboard import (
     WHITEBOARD_1_RELATIONSHIP_CONTEXT,
+    WHITEBOARD_2_RELEVANT_CONTEXT,
     WHITEBOARD_HIKARI_SYSTEM_INSTRUCTIONS,
     WhiteboardConversationEngine,
     parse_whiteboard_output,
@@ -30,6 +31,7 @@ def _engine(
     *,
     history_limit: int = 12,
     relationship_context_text: str | None = None,
+    relevant_context_text: str | None = None,
 ):
     return WhiteboardConversationEngine(
         provider,
@@ -39,13 +41,14 @@ def _engine(
             "basis": "trusted_runtime_binding",
         },
         relationship_context_text=relationship_context_text,
+        relevant_context_text=relevant_context_text,
         history_limit=history_limit,
         system_instructions=WHITEBOARD_HIKARI_SYSTEM_INSTRUCTIONS,
     )
 
 
 def test_cli_accepts_whiteboard_prompt_profiles():
-    for profile in ("whiteboard", "whiteboard0", "whiteboard1"):
+    for profile in ("whiteboard", "whiteboard0", "whiteboard1", "whiteboard2"):
         args = build_parser().parse_args(["--prompt-profile", profile])
         assert args.prompt_profile == profile
 
@@ -95,6 +98,33 @@ def test_whiteboard_one_adds_only_natural_relationship_context(tmp_path: Path):
         ("user", "hikari"),
     ]
     serialized = "\n".join(message.content for message in call)
+    assert "should_not_enter_whiteboard_prompt" not in serialized
+    assert "capabilities" not in serialized
+    assert "memory_provenance" not in serialized
+    assert "known_user" not in serialized
+
+
+def test_whiteboard_two_adds_only_manually_confirmed_relevant_context(tmp_path: Path):
+    provider = FakeProvider(
+        ["<reaction>这下有具体背景了。</reaction><reply>确实已经做得有点重了。</reply>"]
+    )
+    engine = _engine(
+        tmp_path / "memory.db",
+        provider,
+        relevant_context_text=WHITEBOARD_2_RELEVANT_CONTEXT,
+    )
+
+    reply = engine.respond(UserTurn("qq", "main", "为什么现在M7越来越大了fk"))
+
+    assert reply.text == "确实已经做得有点重了。"
+    call = provider.calls[0]
+    assert [(message.role, message.content) for message in call] == [
+        ("system", WHITEBOARD_HIKARI_SYSTEM_INSTRUCTIONS),
+        ("system", WHITEBOARD_2_RELEVANT_CONTEXT),
+        ("user", "为什么现在M7越来越大了fk"),
+    ]
+    serialized = "\n".join(message.content for message in call)
+    assert "关系背景：" not in serialized
     assert "should_not_enter_whiteboard_prompt" not in serialized
     assert "capabilities" not in serialized
     assert "memory_provenance" not in serialized
@@ -155,6 +185,35 @@ def test_whiteboard_one_preserves_history_after_relationship_section(tmp_path: P
     assert [(message.role, message.content) for message in second.calls[0]] == [
         ("system", WHITEBOARD_HIKARI_SYSTEM_INSTRUCTIONS),
         ("system", WHITEBOARD_1_RELATIONSHIP_CONTEXT),
+        ("user", "第一句"),
+        ("assistant", "第一句回复。"),
+        ("user", "第二句"),
+    ]
+
+
+def test_whiteboard_two_preserves_history_after_relevant_context(tmp_path: Path):
+    memory_path = tmp_path / "memory.db"
+    first = FakeProvider(
+        ["<reaction>接住。</reaction><reply>第一句回复。</reply>"]
+    )
+    _engine(
+        memory_path,
+        first,
+        relevant_context_text=WHITEBOARD_2_RELEVANT_CONTEXT,
+    ).respond(UserTurn("qq", "main", "第一句"))
+
+    second = FakeProvider(
+        ["<reaction>继续。</reaction><reply>第二句回复。</reply>"]
+    )
+    _engine(
+        memory_path,
+        second,
+        relevant_context_text=WHITEBOARD_2_RELEVANT_CONTEXT,
+    ).respond(UserTurn("qq", "main", "第二句"))
+
+    assert [(message.role, message.content) for message in second.calls[0]] == [
+        ("system", WHITEBOARD_HIKARI_SYSTEM_INSTRUCTIONS),
+        ("system", WHITEBOARD_2_RELEVANT_CONTEXT),
         ("user", "第一句"),
         ("assistant", "第一句回复。"),
         ("user", "第二句"),
