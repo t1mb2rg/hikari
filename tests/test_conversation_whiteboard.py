@@ -32,6 +32,7 @@ def _engine(
     history_limit: int = 12,
     relationship_context_text: str | None = None,
     relevant_context_text: str | None = None,
+    relevant_context_placement: str = "system",
 ):
     return WhiteboardConversationEngine(
         provider,
@@ -42,13 +43,20 @@ def _engine(
         },
         relationship_context_text=relationship_context_text,
         relevant_context_text=relevant_context_text,
+        relevant_context_placement=relevant_context_placement,
         history_limit=history_limit,
         system_instructions=WHITEBOARD_HIKARI_SYSTEM_INSTRUCTIONS,
     )
 
 
 def test_cli_accepts_whiteboard_prompt_profiles():
-    for profile in ("whiteboard", "whiteboard0", "whiteboard1", "whiteboard2"):
+    for profile in (
+        "whiteboard",
+        "whiteboard0",
+        "whiteboard1",
+        "whiteboard2",
+        "whiteboard2b",
+    ):
         args = build_parser().parse_args(["--prompt-profile", profile])
         assert args.prompt_profile == profile
 
@@ -129,6 +137,45 @@ def test_whiteboard_two_adds_only_manually_confirmed_relevant_context(tmp_path: 
     assert "capabilities" not in serialized
     assert "memory_provenance" not in serialized
     assert "known_user" not in serialized
+
+
+def test_whiteboard_two_b_places_same_context_next_to_current_turn(tmp_path: Path):
+    provider = FakeProvider(
+        ["<reaction>背景够用了。</reaction><reply>确实是保护层越叠越重了。</reply>"]
+    )
+    engine = _engine(
+        tmp_path / "memory.db",
+        provider,
+        relevant_context_text=WHITEBOARD_2_RELEVANT_CONTEXT,
+        relevant_context_placement="current_turn",
+    )
+
+    reply = engine.respond(UserTurn("qq", "main", "为什么现在M7越来越大了fk"))
+
+    assert reply.text == "确实是保护层越叠越重了。"
+    call = provider.calls[0]
+    expected_current_turn = (
+        f"{WHITEBOARD_2_RELEVANT_CONTEXT}\n\n"
+        "【现在对你说】\n为什么现在M7越来越大了fk\n\n"
+        "上面的背景只用于理解这句话，不需要单独回应背景；只回应【现在对你说】里的内容。"
+    )
+    assert [(message.role, message.content) for message in call] == [
+        ("system", WHITEBOARD_HIKARI_SYSTEM_INSTRUCTIONS),
+        ("user", expected_current_turn),
+    ]
+    assert all(
+        message.content != WHITEBOARD_2_RELEVANT_CONTEXT
+        for message in call
+        if message.role == "system"
+    )
+
+    events = list(reversed(MemoryStore(tmp_path / "memory.db").recent_events(10)))
+    assert [event.content for event in events] == [
+        "为什么现在M7越来越大了fk",
+        "确实是保护层越叠越重了。",
+    ]
+    assert "【现在对你说】" not in events[0].content
+    assert "可参考的当前背景" not in events[0].content
 
 
 def test_whiteboard_rehydrates_real_history_without_reaction(tmp_path: Path):
@@ -218,6 +265,55 @@ def test_whiteboard_two_preserves_history_after_relevant_context(tmp_path: Path)
         ("assistant", "第一句回复。"),
         ("user", "第二句"),
     ]
+
+
+def test_whiteboard_two_b_preserves_history_before_contextual_current_turn(tmp_path: Path):
+    memory_path = tmp_path / "memory.db"
+    first = FakeProvider(
+        ["<reaction>接住。</reaction><reply>第一句回复。</reply>"]
+    )
+    _engine(
+        memory_path,
+        first,
+        relevant_context_text=WHITEBOARD_2_RELEVANT_CONTEXT,
+        relevant_context_placement="current_turn",
+    ).respond(UserTurn("qq", "main", "第一句"))
+
+    second = FakeProvider(
+        ["<reaction>继续。</reaction><reply>第二句回复。</reply>"]
+    )
+    _engine(
+        memory_path,
+        second,
+        relevant_context_text=WHITEBOARD_2_RELEVANT_CONTEXT,
+        relevant_context_placement="current_turn",
+    ).respond(UserTurn("qq", "main", "第二句"))
+
+    call = second.calls[0]
+    assert [(message.role, message.content) for message in call[:3]] == [
+        ("system", WHITEBOARD_HIKARI_SYSTEM_INSTRUCTIONS),
+        ("user", "第一句"),
+        ("assistant", "第一句回复。"),
+    ]
+    assert call[-1].role == "user"
+    assert "【现在对你说】\n第二句" in call[-1].content
+    assert WHITEBOARD_2_RELEVANT_CONTEXT in call[-1].content
+
+
+def test_whiteboard_rejects_unknown_relevant_context_placement(tmp_path: Path):
+    provider = FakeProvider(["<reaction>不会调用。</reaction><reply>不会调用。</reply>"])
+
+    try:
+        _engine(
+            tmp_path / "memory.db",
+            provider,
+            relevant_context_text=WHITEBOARD_2_RELEVANT_CONTEXT,
+            relevant_context_placement="somewhere_else",
+        )
+    except ValueError as exc:
+        assert "relevant_context_placement" in str(exc)
+    else:
+        raise AssertionError("unknown context placement must be rejected")
 
 
 def test_whiteboard_plain_text_fallback_is_user_facing_reply():
