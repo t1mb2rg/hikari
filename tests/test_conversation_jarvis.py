@@ -5,7 +5,10 @@ from pathlib import Path
 from brain.model_reasoner import ChatMessage
 from conversation.cli import build_parser
 from conversation.jarvis import JARVIS_SYSTEM_INSTRUCTIONS
-from conversation.jarvis_openjarvis import OPENJARVIS_SYSTEM_INSTRUCTIONS
+from conversation.jarvis_openjarvis import (
+    OPENJARVIS_CHINESE_OUTPUT_SYSTEM_INSTRUCTIONS,
+    OPENJARVIS_SYSTEM_INSTRUCTIONS,
+)
 from conversation.models import UserTurn
 from conversation.whiteboard import WhiteboardConversationEngine
 from memory.store import MemoryStore
@@ -40,7 +43,11 @@ def _engine(
 
 
 def test_cli_accepts_jarvis_prompt_profiles():
-    for profile in ("jarvis", "jarvis-openjarvis"):
+    for profile in (
+        "jarvis",
+        "jarvis-openjarvis",
+        "jarvis-openjarvis-zh",
+    ):
         args = build_parser().parse_args(["--prompt-profile", profile])
         assert args.prompt_profile == profile
 
@@ -82,6 +89,32 @@ def test_openjarvis_sends_verbatim_upstream_prompt_and_current_turn(tmp_path: Pa
     assert "可参考的当前背景" not in serialized
     assert "关系姿态" not in serialized
     assert "# Role: Jarvis" not in serialized
+
+
+def test_openjarvis_chinese_output_changes_only_output_language_constraint(
+    tmp_path: Path,
+):
+    provider = FakeProvider(["随时为您效劳。"])
+    engine = _engine(
+        tmp_path / "memory.db",
+        provider,
+        system_instructions=OPENJARVIS_CHINESE_OUTPUT_SYSTEM_INSTRUCTIONS,
+    )
+
+    reply = engine.respond(UserTurn("cli", "jarvis-openjarvis-zh-0", "jarvis"))
+
+    assert reply.text == "随时为您效劳。"
+    assert OPENJARVIS_CHINESE_OUTPUT_SYSTEM_INSTRUCTIONS.startswith(
+        OPENJARVIS_SYSTEM_INSTRUCTIONS
+    )
+    assert OPENJARVIS_CHINESE_OUTPUT_SYSTEM_INSTRUCTIONS == (
+        OPENJARVIS_SYSTEM_INSTRUCTIONS
+        + "\n\nLANGUAGE:\n- Always reply in Simplified Chinese."
+    )
+    assert [(message.role, message.content) for message in provider.calls[0]] == [
+        ("system", OPENJARVIS_CHINESE_OUTPUT_SYSTEM_INSTRUCTIONS),
+        ("user", "jarvis"),
+    ]
 
 
 def test_jarvis_rehydrates_only_real_conversation_history(tmp_path: Path):
