@@ -26,6 +26,7 @@ from conversation.action_bridge import (
 from conversation.cli import build_chat_provider, default_context_collector
 from conversation.engine import ConversationEngine, INTERACTIVE_SYSTEM_INSTRUCTIONS
 from conversation.engineering_bridge import ConversationEngineeringBridge
+from conversation.jarvis_openjarvis import OPENJARVIS_CHINESE_OUTPUT_SYSTEM_INSTRUCTIONS
 from conversation.receipts import ConversationReceiptStore
 from conversation.remote import (
     DEFAULT_CONVERSATION_HOST,
@@ -281,13 +282,38 @@ def _conversation_context_profile(values: Mapping[str, str]) -> str:
     profile = _runtime_value(
         values,
         "HIKARI_CONVERSATION_CONTEXT_PROFILE",
-        "grounded",
+        "jarvis",
     ).casefold()
-    if profile not in {"grounded", "whiteboard"}:
+    if profile not in {"grounded", "whiteboard", "jarvis"}:
         raise ValueError(
-            "HIKARI_CONVERSATION_CONTEXT_PROFILE must be grounded or whiteboard"
+            "HIKARI_CONVERSATION_CONTEXT_PROFILE must be grounded, whiteboard, or jarvis"
         )
     return profile
+
+
+def _conversation_engine_configuration(
+    profile: str,
+) -> tuple[type[ConversationEngine], bool, str, Mapping[str, object] | None]:
+    if profile == "jarvis":
+        return (
+            WhiteboardConversationEngine,
+            True,
+            OPENJARVIS_CHINESE_OUTPUT_SYSTEM_INSTRUCTIONS,
+            None,
+        )
+    if profile == "whiteboard":
+        return (
+            WhiteboardConversationEngine,
+            True,
+            WHITEBOARD_HIKARI_SYSTEM_INSTRUCTIONS,
+            PRIMARY_REMOTE_RELATIONSHIP_CONTEXT,
+        )
+    return (
+        ConversationEngine,
+        False,
+        INTERACTIVE_SYSTEM_INSTRUCTIONS,
+        PRIMARY_REMOTE_RELATIONSHIP_CONTEXT,
+    )
 
 
 def _quiet_hours_description(config: PresencePolicyConfig) -> str:
@@ -377,7 +403,12 @@ def main(argv: Sequence[str] | None = None) -> None:
     try:
         provider = build_chat_provider(values)
         conversation_context_profile = _conversation_context_profile(values)
-        whiteboard = conversation_context_profile == "whiteboard"
+        (
+            engine_type,
+            minimal_context,
+            system_instructions,
+            relationship_context,
+        ) = _conversation_engine_configuration(conversation_context_profile)
         bind_host = _runtime_value(
             values,
             "HIKARI_CONVERSATION_HOST",
@@ -398,26 +429,21 @@ def main(argv: Sequence[str] | None = None) -> None:
             user_model_path,
         )
 
-        engine_type = WhiteboardConversationEngine if whiteboard else ConversationEngine
         engine = engine_type(
             provider,
             memory,
             context_collector=(
                 None
-                if whiteboard
+                if minimal_context
                 else default_context_collector(include_desktop_activity=False)
             ),
             personality_profile=None,
             voice_profile=None,
-            relationship_context=PRIMARY_REMOTE_RELATIONSHIP_CONTEXT,
+            relationship_context=relationship_context,
             history_limit=12,
             user_model_service=user_model_service,
             user_fact_extractor=user_fact_extractor,
-            system_instructions=(
-                WHITEBOARD_HIKARI_SYSTEM_INSTRUCTIONS
-                if whiteboard
-                else INTERACTIVE_SYSTEM_INSTRUCTIONS
-            ),
+            system_instructions=system_instructions,
         )
         forge_bridge: ConversationForgeBridge | None = None
         if runtime_bool(values, "HIKARI_FORGE_ENABLED", default=False):
