@@ -3,6 +3,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 import re
 
+from brain.model_reasoner import ChatMessage
+
+from .engine import ASSISTANT_EVENT_TYPE, USER_EVENT_TYPE, ConversationEngine
+from .models import AssistantReply, UserTurn
+
 
 WHITEBOARD_HIKARI_SYSTEM_INSTRUCTIONS = """# Role: Hikari
 
@@ -40,17 +45,19 @@ class WhiteboardOutput:
     reply: str
 
 
-_REACTION_RE = re.compile(r"<reaction>(.*?)(?:</reaction>|<reply>|$)", re.IGNORECASE | re.DOTALL)
+_REACTION_RE = re.compile(
+    r"<reaction>(.*?)(?:</reaction>|<reply>|$)",
+    re.IGNORECASE | re.DOTALL,
+)
 _REPLY_RE = re.compile(r"<reply>(.*?)(?:</reply>|$)", re.IGNORECASE | re.DOTALL)
 
 
 def parse_whiteboard_output(raw: str) -> WhiteboardOutput:
     """Extract the private reaction and user-facing reply from Whiteboard output.
 
-    The reaction is intentionally ephemeral. Callers may inspect it for diagnostics,
-    but only ``reply`` is allowed to enter normal conversation persistence or delivery.
-    A plain-text model response is accepted as a compatibility fallback so a formatting
-    miss cannot expose an empty reply to the user.
+    The reaction is intentionally ephemeral. It is not persisted, delivered, treated
+    as factual state, or passed into action routing. A plain-text model response is
+    accepted as a compatibility fallback so a formatting miss does not blank the turn.
     """
 
     if not isinstance(raw, str) or not raw.strip():
@@ -65,9 +72,77 @@ def parse_whiteboard_output(raw: str) -> WhiteboardOutput:
         reply = reply_match.group(1).strip()
     else:
         reply = _REACTION_RE.sub("", text)
-        reply = re.sub(r"</?(?:reaction|reply)>", "", reply, flags=re.IGNORECASE).strip()
+        reply = re.sub(
+            r"</?(?:reaction|reply)>",
+            "",
+            reply,
+            flags=re.IGNORECASE,
+        ).strip()
 
     if not reply:
         raise ValueError("whiteboard model output did not contain a usable reply")
 
     return WhiteboardOutput(reaction=reaction, reply=reply)
+
+
+class WhiteboardConversationEngine(ConversationEngine):
+    """Conversation A/B path with no injected runtime or durable grounding.
+
+    The model receives exactly one system prompt, recent same-conversation user/assistant
+    turns, and the current user message. Existing Memory/User Model persistence remains
+    active after a successful reply, but retrieval is deliberately withheld from reply
+    generation so Whiteboard 0 can isolate language behavior from context engineering.
+    """
+
+    def respond(
+        self,
+        turn: UserTurn,
+        *,
+        source_ref: str | None = None,
+    ) -> AssistantReply:
+        if not isinstance(turn, UserTurn):
+            raise TypeError("respond requires UserTurn")
+
+        history = self._recent_history(turn.channel, turn.conversation_id)
+        messages: list[ChatMessage] = [
+            ChatMessage(role="system", content=self.system_instructions),
+        ]
+        messages.extend(self._history_messages(history))
+        messages.append(ChatMessage(role="user", content=turn.text))
+
+        raw = self.provider.complete(messages).strip()
+        if not raw:
+            raise RuntimeError("model provider returned empty conversation reply")
+        try:
+            output = parse_whiteboard_output(raw)
+        except ValueError as exc:
+            raise RuntimeError(str(exc)) from exc
+        text = output.reply
+
+        user_event = self.memory.remember_event(
+            USER_EVENT_TYPE,
+            turn.text,
+            context=self._event_context(turn.channel, turn.conversation_id, "user"),
+            importance=1.0,
+        )
+        self.memory.remember_event(
+            ASSISTANT_EVENT_TYPE,
+            text,
+            context=self._event_context(
+                turn.channel,
+                turn.conversation_id,
+                "assistant",
+            ),
+            importance=1.0,
+        )
+        reply = AssistantReply(
+            channel=turn.channel,
+            conversation_id=turn.conversation_id,
+            text=text,
+        )
+        self._assimilate_user_model(
+            source_ref=(source_ref or f"conversation-event:{user_event.id}"),
+            turn=turn,
+            history=history,
+        )
+        return reply
