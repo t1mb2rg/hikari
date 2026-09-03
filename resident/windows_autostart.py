@@ -12,6 +12,7 @@ from typing import Any
 
 from .app import build_reasoner
 from .environment import load_runtime_environment
+from .environment_manager import EnvironmentManager
 from .windows_host import ResidentHostConfig, WindowsResidentHost, default_state_dir
 
 
@@ -221,9 +222,13 @@ def _launch_config(config: AutostartConfig) -> None:
         reasoner=config.reasoner,
         env_file=config.env_file,
     )
+    selected_python = EnvironmentManager(
+        config.repository,
+        config.state_dir,
+    ).current_python(config.python_executable)
     WindowsResidentHost(
         host_config,
-        python_executable=config.python_executable,
+        python_executable=str(selected_python),
     ).start()
 
 

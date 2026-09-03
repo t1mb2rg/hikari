@@ -2,6 +2,7 @@ from dataclasses import replace
 import json
 
 from core.capabilities import describe_capabilities
+from core.delivery import DeliveryOutbox, DeliveryRequest
 from core.operational_state import OperationalStateConfig, OperationalStateService
 from engineering.heartbeat import (
     EngineeringWorkerHeartbeat,
@@ -27,6 +28,7 @@ def _service(
     process_probe=None,
     onebot_open=True,
     worker_heartbeat=None,
+    delivery_outbox=None,
     wall_time=1000.0,
 ):
     state_dir = tmp_path / "resident"
@@ -52,6 +54,7 @@ def _service(
         napcat_probe=napcat_probe,
         engineering_store=_EngineeringStore(states),
         heartbeat_store=heartbeat_store,
+        delivery_outbox=delivery_outbox,
         wall_clock=lambda: wall_time,
     )
 
@@ -165,7 +168,13 @@ def test_operational_snapshot_reports_active_engineering_session_without_inventi
         repository=tmp_path,
         authority_ceiling=EngineeringAuthority.read_only(),
     )
-    state = replace(state, status="running", current_turn_id="turn-1")
+    state = replace(
+        state,
+        status="running",
+        current_turn_id="turn-1",
+        latest_summary="正在运行项目测试",
+        updated_at=995.0,
+    )
     service = _service(
         tmp_path,
         napcat_probe=_healthy_napcat,
@@ -176,9 +185,53 @@ def test_operational_snapshot_reports_active_engineering_session_without_inventi
     engineering = snapshot["components"]["engineering"]
 
     assert engineering["status"] == "running"
+    assert engineering["phase"] == "testing"
     assert engineering["details"]["active_session_count"] == 1
     assert engineering["details"]["latest_session_status"] == "running"
+    assert engineering["details"]["latest_session_phase"] == "testing"
+    assert engineering["details"]["latest_progress_at"] is not None
     assert engineering["details"]["worker_liveness"] == "unknown"
+
+
+def test_operational_snapshot_exposes_terminal_delivery_state_without_message_body(tmp_path) -> None:
+    state = EngineeringSessionState.create(
+        project_id="hikari",
+        repository=tmp_path,
+        authority_ceiling=EngineeringAuthority.read_only(),
+        session_id="done-session",
+    )
+    state = replace(
+        state,
+        status="completed",
+        current_turn_id="turn-1",
+        latest_summary="sensitive terminal text must not be copied into operational snapshot",
+        updated_at=995.0,
+    )
+    outbox = DeliveryOutbox(tmp_path / "resident" / "proactive_delivery.db")
+    outbox.enqueue(
+        DeliveryRequest(
+            delivery_id="engineering:done-session:turn-1",
+            channel="qq",
+            recipient="42",
+            text="terminal body",
+            source="engineering",
+        )
+    )
+    service = _service(
+        tmp_path,
+        napcat_probe=_healthy_napcat,
+        states=[state],
+        delivery_outbox=outbox,
+    )
+
+    snapshot = service.capture(force=True)
+    engineering = snapshot["components"]["engineering"]
+
+    assert engineering["details"]["latest_session_phase"] == "completed"
+    assert engineering["details"]["latest_delivery_state"] == "pending"
+    encoded = json.dumps(snapshot)
+    assert "terminal body" not in encoded
+    assert "sensitive terminal text" not in encoded
 
 
 def test_capability_grounding_accepts_explicit_operational_snapshot_without_host_probe() -> None:
@@ -204,4 +257,4 @@ def test_capability_grounding_accepts_explicit_operational_snapshot_without_host
 
     assert capabilities["operational_state"]["overall"] == "degraded"
     assert capabilities["operational_state"]["components"]["qq"]["status"] == "waiting"
-    assert capabilities["self_state"]["development"]["active_slice"] == "M7-06"
+    assert capabilities["self_state"]["development"]["active_slice"] == "M7-07"

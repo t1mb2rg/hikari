@@ -28,6 +28,20 @@ def _safe_slug(value: str) -> str:
     return (slug[:48] or "session").lower()
 
 
+def _clean_file_list(items: list[str]) -> tuple[str, ...]:
+    seen: set[str] = set()
+    changed: list[str] = []
+    for item in items:
+        normalized = item.strip()
+        if not normalized or normalized in seen:
+            continue
+        if "__pycache__/" in normalized or normalized.endswith((".pyc", ".pyo")):
+            continue
+        seen.add(normalized)
+        changed.append(normalized)
+    return tuple(changed)
+
+
 @dataclass(frozen=True, slots=True)
 class EngineeringWorkspace:
     source_repo: Path
@@ -39,9 +53,9 @@ class EngineeringWorkspace:
     def source_head(cls, repository: str | Path) -> str:
         """Resolve one trustworthy committed source snapshot.
 
-        Read-only EngineeringSession worktrees intentionally ignore uncommitted
-        source changes. Refuse a dirty source instead of silently answering from
-        either the old committed tree or a partial working-copy view.
+        EngineeringSession worktrees intentionally refuse an ambiguous dirty source.
+        A task operates on a committed repository snapshot rather than silently mixing
+        old committed files with arbitrary local working-copy edits.
         """
 
         source = Path(repository).expanduser().resolve()
@@ -108,6 +122,8 @@ class EngineeringWorkspace:
         return cls(source, path, branch.strip(), baseline_commit.strip())
 
     def changed_files(self) -> tuple[str, ...]:
+        """Return all files changed by this EngineeringSession since its immutable baseline."""
+
         tracked = _git(
             self.path,
             "diff",
@@ -124,14 +140,73 @@ class EngineeringWorkspace:
             "-z",
             check=False,
         ).stdout.split("\0")
-        seen: set[str] = set()
-        changed: list[str] = []
-        for item in [*tracked, *untracked]:
-            normalized = item.strip()
-            if not normalized or normalized in seen:
+        return _clean_file_list([*tracked, *untracked])
+
+    def uncommitted_files(self) -> tuple[str, ...]:
+        """Return only current dirty worktree/index files relative to this branch HEAD.
+
+        This deliberately excludes earlier authorized commits in the same EngineeringSession.
+        It is therefore the correct mutation check for a read-only follow-up turn after a prior
+        maintainer turn has already committed legitimate session history.
+        """
+
+        tracked = _git(
+            self.path,
+            "diff",
+            "--name-only",
+            "-z",
+            "HEAD",
+            check=False,
+        ).stdout.split("\0")
+        staged = _git(
+            self.path,
+            "diff",
+            "--cached",
+            "--name-only",
+            "-z",
+            "HEAD",
+            check=False,
+        ).stdout.split("\0")
+        untracked = _git(
+            self.path,
+            "ls-files",
+            "--others",
+            "--exclude-standard",
+            "-z",
+            check=False,
+        ).stdout.split("\0")
+        return _clean_file_list([*tracked, *staged, *untracked])
+
+    def diff_text(self) -> str:
+        """Return the session diff, including readable untracked text files."""
+
+        tracked = _git(
+            self.path,
+            "diff",
+            "--no-ext-diff",
+            "--unified=0",
+            self.baseline_commit,
+            check=False,
+        ).stdout
+        chunks = [tracked]
+        for relative in _git(
+            self.path,
+            "ls-files",
+            "--others",
+            "--exclude-standard",
+            "-z",
+            check=False,
+        ).stdout.split("\0"):
+            if not relative:
                 continue
-            if "__pycache__/" in normalized or normalized.endswith((".pyc", ".pyo")):
+            path = self.path / relative
+            try:
+                content = path.read_text(encoding="utf-8")
+            except (OSError, UnicodeError):
                 continue
-            seen.add(normalized)
-            changed.append(normalized)
-        return tuple(changed)
+            chunks.append(
+                f"diff --git a/{relative} b/{relative}\n"
+                f"--- /dev/null\n+++ b/{relative}\n"
+                + "".join(f"+{line}\n" for line in content.splitlines())
+            )
+        return "\n".join(chunks)

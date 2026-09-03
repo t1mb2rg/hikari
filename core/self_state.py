@@ -7,8 +7,8 @@ import os
 DEVELOPMENT_STATE = {
     "milestone": "M7",
     "milestone_name": "Evolution",
-    "active_slice": "M7-06",
-    "active_slice_name": "Operational Self Awareness",
+    "active_slice": "M7-07",
+    "active_slice_name": "Capability-Aware Delegation",
     "status": "active",
     "source": "runtime_manifest",
     "note": (
@@ -63,8 +63,9 @@ def describe_self_state(
                 "context, notice important changes, and proactively coordinate bounded capabilities."
             ),
             "evolution_meaning": (
-                "Find useful capability gaps, understand user impact, propose bounded improvements, "
-                "implement through authorized Engineering Runtime, validate, then expose the capability."
+                "When a real user goal needs capability Hikari does not yet have, identify the "
+                "missing capability, improve through the delegated Engineering Runtime, validate "
+                "the result, then resume the original user goal."
             ),
             "not_a_project_target": (
                 "simulated_human_consciousness",
@@ -129,21 +130,42 @@ def describe_self_state(
         "engineering": {
             "relationship": "internal_hikari_capability",
             "conversation_read_only_enabled": engineering_enabled,
+            "conversation_maintainer_session_enabled": engineering_enabled,
             "execution_model": "durable_engineering_session_plus_separate_worker_process",
             "result_model": "result_is_persisted_in_hikari_state_then_exposed_through_hikari_delivery",
-            "repository_write_enabled": False,
+            "repository_write_enabled": engineering_enabled,
+            "project_tests_enabled": engineering_enabled,
+            "engineering_branch_commit_enabled": engineering_enabled,
+            "generic_project_commands_enabled": False,
+            "non_protected_push_enabled": False,
+            "draft_pr_publish_enabled": False,
             "direct_filesystem_perception": False,
             "continuous_filesystem_perception": False,
             "instantaneous_filesystem_access_claim": False,
             "worker_liveness": "not_asserted_by_self_state",
+        },
+        "delegated_authority": {
+            "model": "standing_project_mandate_plus_low_level_session_authority",
+            "default_human_role": "define_mandate_and_handle_exceptions",
+            "default_hikari_role": "execute_within_mandate",
+            "per_action_approval_is_not_default": True,
+            "hikari_project_role": "maintainer",
+            "implemented_capability_is_separate_from_delegation": True,
+            "summary": (
+                "M7-07 separates standing project delegation from actual implementation capability. "
+                "Inside a project mandate, routine engineering outcomes should not require repeated "
+                "human approval. Missing implementation is a capability gap; crossing the mandate "
+                "or causing high-impact external effects requires escalation."
+            ),
         },
         "operational_awareness": {
             "point_in_time_runtime_state": True,
             "status_source": "read_only_operational_probes",
             "unknown_is_not_healthy": True,
             "summary": (
-                "M7-06 adds bounded point-in-time observation of current Resident, QQ, and "
-                "Engineering session state. A component with no trustworthy probe remains unknown."
+                "M7-06 adds bounded point-in-time observation of current Resident, QQ, Engineering "
+                "session state, and Engineering Worker liveness. A component with no trustworthy "
+                "probe remains unknown."
             ),
         },
         "delivery_semantics": {
@@ -189,10 +211,16 @@ def describe_self_state(
                 "Static capability, historical conversation, or a past successful task does not "
                 "prove that a component is healthy or alive now. Unknown remains unknown."
             ),
+            "delegation": (
+                "Do not confuse unavailable implementation with absent permission. A capability can "
+                "be inside the standing project mandate but still not yet implemented. Conversely, "
+                "a technically possible high-impact action can remain outside the mandate and require "
+                "human escalation."
+            ),
             "evolution": (
-                "M7 Evolution means improving useful system capability under bounded authority; "
-                "do not reinterpret the milestone as becoming a human-like consciousness, digital "
-                "life form, or autonomous personality with its own life goals."
+                "M7 Evolution means improving useful system capability in service of real user goals "
+                "under standing delegated authority. It does not grant Hikari permission to expand "
+                "its own mandate or reinterpret itself as a human-like consciousness or digital life."
             ),
             "metaphor_vs_fact": (
                 "Expressive metaphors may be used as personality, but factual questions about "

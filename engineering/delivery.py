@@ -6,12 +6,21 @@ from .bindings import EngineeringConversationBindingStore
 from .session import EngineeringProtocolError, EngineeringSessionStore
 
 
+def _task_label(intent: str) -> str:
+    text = " ".join(intent.split())
+    if len(text) > 140:
+        text = text[:137].rstrip() + "..."
+    return text or "未命名工程任务"
+
+
 class EngineeringCompletionDelivery:
     """Project terminal EngineeringSession results into Hikari's durable delivery outbox.
 
-    This is not an external callback. The worker advances Hikari-owned session
-    state, then this adapter exposes terminal internal state through the same
-    M6 DeliveryOutbox already used by Presence.
+    Historical terminal results remain recoverable after crashes or binding rotation,
+    but every newly enqueued user-visible delivery identifies the original task and
+    whether it is a delayed historical result. Existing durable DeliveryOutbox rows
+    are immutable historical facts and are never rewritten merely because the message
+    format evolved.
     """
 
     def __init__(
@@ -48,6 +57,7 @@ class EngineeringCompletionDelivery:
                 continue
             try:
                 result = self.sessions.load_result(state.session_id, turn_id)
+                turn = self.sessions.load_turn(state.session_id, turn_id)
             except EngineeringProtocolError:
                 continue
             if not binding.conversation_id.startswith("private:"):
@@ -56,14 +66,36 @@ class EngineeringCompletionDelivery:
             if not recipient:
                 continue
 
-            if result.status == "completed":
-                text = "我看完了。\n\n" + result.message
-            elif result.status == "blocked":
-                text = "工程会话被权限或安全边界阻止了。\n\n" + result.message
-            else:
-                text = "工程会话没有完成。\n\n" + result.message
-
             delivery_id = f"engineering:{state.session_id}:{turn_id}"
+
+            # Delivery ids are durable idempotency keys. A record created by an
+            # older Hikari version must retain its original text; resubmitting the
+            # same id with a newer presentation format would correctly violate the
+            # DeliveryOutbox immutability check and could crash-loop the Worker.
+            try:
+                existing = self.router.outbox.get(delivery_id)
+            except Exception:
+                existing = None
+            if existing is not None:
+                if existing.state in {"pending", "sending", "sent", "uncertain"}:
+                    submitted += 1
+                continue
+
+            current = self.bindings.for_conversation(binding.channel, binding.conversation_id)
+            historical = current is not None and current.session_id != state.session_id
+            task = _task_label(turn.intent)
+            context = "补发旧工程任务结果" if historical else "工程任务结果"
+
+            if result.status == "completed":
+                text = f"{context}：已完成。\n任务：{task}\n\n{result.message}"
+            elif result.status == "blocked":
+                text = (
+                    f"{context}：被权限或安全边界阻止。\n"
+                    f"任务：{task}\n\n{result.message}"
+                )
+            else:
+                text = f"{context}：没有完成。\n任务：{task}\n\n{result.message}"
+
             record = self.router.submit(
                 DeliveryRequest(
                     delivery_id=delivery_id,

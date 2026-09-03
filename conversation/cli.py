@@ -26,7 +26,20 @@ from .engine import (
     LEGACY_INTERACTIVE_SYSTEM_INSTRUCTIONS,
     THIN_HIKARI_SYSTEM_INSTRUCTIONS,
 )
+from .jarvis import JARVIS_SYSTEM_INSTRUCTIONS
+from .jarvis_openjarvis import (
+    HIKARI_OPENJARVIS_CHINESE_OUTPUT_SYSTEM_INSTRUCTIONS,
+    OPENJARVIS_CHINESE_OUTPUT_SYSTEM_INSTRUCTIONS,
+    OPENJARVIS_SYSTEM_INSTRUCTIONS,
+)
 from .models import UserTurn
+from .whiteboard import (
+    WHITEBOARD_1_RELATIONSHIP_CONTEXT,
+    WHITEBOARD_2_RELEVANT_CONTEXT,
+    WHITEBOARD_2C_RELATIONAL_STANCE,
+    WHITEBOARD_HIKARI_SYSTEM_INSTRUCTIONS,
+    WhiteboardConversationEngine,
+)
 
 
 DEFAULT_CHAT_TEMPERATURE = 0.65
@@ -34,7 +47,21 @@ EXIT_COMMANDS = {"/exit", "/quit"}
 PASTE_COMMAND = "/paste"
 PASTE_SEND_COMMAND = "/send"
 PASTE_CANCEL_COMMAND = "/cancel"
-PROMPT_PROFILES = ("production", "thin", "legacy")
+PROMPT_PROFILES = (
+    "production",
+    "whiteboard",
+    "whiteboard0",
+    "whiteboard1",
+    "whiteboard2",
+    "whiteboard2b",
+    "whiteboard2c",
+    "jarvis",
+    "jarvis-openjarvis",
+    "jarvis-openjarvis-zh",
+    "hikari-openjarvis-zh",
+    "thin",
+    "legacy",
+)
 
 
 def build_chat_provider(environment: Mapping[str, str]) -> ChatProvider:
@@ -129,9 +156,19 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--prompt-profile",
         choices=PROMPT_PROFILES,
-        default="production",
+        default="jarvis-openjarvis-zh",
         help=(
-            "production 使用已通过模型盲测的最小 grounded Hikari 基线；"
+            "默认使用 jarvis-openjarvis-zh；"
+            "production 保留当前 grounded Hikari 基线用于回退；"
+            "whiteboard/whiteboard0 是 Prompt + 最近真实对话的 Whiteboard 0；"
+            "whiteboard1 只额外加入一段自然语言的长期关系背景；"
+            "whiteboard2 不加关系背景，只把人工确认的当前相关事实作为 system 背景；"
+            "whiteboard2b 使用同一批相关事实，但把它们放到当前消息附近；"
+            "whiteboard2c 在 2B 基础上只增加一小段 relational stance 行为约束；"
+            "jarvis 是我们从零写的极简 Jarvis 人格对照；"
+            "jarvis-openjarvis 原样使用 OpenJarvis 的 Apache-2.0 Jarvis persona；"
+            "jarvis-openjarvis-zh 保留同一份英文 persona，只额外要求输出简体中文；"
+            "hikari-openjarvis-zh 只把同一份 persona 的身份名 Jarvis 换成 Hikari，并保持中文输出；"
             "thin 与 production 等价并保留给盲测脚本；"
             "legacy 显式启用旧版完整 voice/personality steering。"
         ),
@@ -139,13 +176,16 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--desktop-context",
         action="store_true",
-        help="显式允许直接聊天读取当前前台窗口和输入活跃度。默认关闭。",
+        help="显式允许 grounded 直接聊天读取当前前台窗口和输入活跃度。Whiteboard/Jarvis 对照会忽略该上下文。",
     )
     return parser
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    jarvis_profiles = {"jarvis", "jarvis-openjarvis", "jarvis-openjarvis-zh"}
+    identity_swap_profile = args.prompt_profile == "hikari-openjarvis-zh"
+    assistant_name = "Jarvis" if args.prompt_profile in jarvis_profiles else "Hikari"
 
     try:
         runtime_environment = load_runtime_environment(env_file=args.env_file)
@@ -156,50 +196,130 @@ def main(argv: Sequence[str] | None = None) -> int:
             else (default_state_dir() / "memory.db").resolve()
         )
         legacy_prompt = args.prompt_profile == "legacy"
+        jarvis_prompt = args.prompt_profile in jarvis_profiles
+        openjarvis_prompt = args.prompt_profile in {
+            "jarvis-openjarvis",
+            "jarvis-openjarvis-zh",
+            "hikari-openjarvis-zh",
+        }
+        openjarvis_chinese_output = args.prompt_profile == "jarvis-openjarvis-zh"
+        whiteboard_prompt = args.prompt_profile in {
+            "whiteboard",
+            "whiteboard0",
+            "whiteboard1",
+            "whiteboard2",
+            "whiteboard2b",
+            "whiteboard2c",
+            "jarvis",
+            "jarvis-openjarvis",
+            "jarvis-openjarvis-zh",
+            "hikari-openjarvis-zh",
+        }
+        whiteboard_relationship = args.prompt_profile == "whiteboard1"
+        whiteboard_relational_stance = args.prompt_profile == "whiteboard2c"
+        whiteboard_relevant = args.prompt_profile in {
+            "whiteboard2",
+            "whiteboard2b",
+            "whiteboard2c",
+        }
+        whiteboard_relevant_placement = (
+            "current_turn"
+            if args.prompt_profile in {"whiteboard2b", "whiteboard2c"}
+            else "system"
+        )
         user_model_service, user_fact_extractor = build_user_model_runtime(
             provider,
             memory_path.parent / "user_model.db",
         )
-        engine = ConversationEngine(
-            provider,
-            MemoryStore(memory_path),
-            context_collector=default_context_collector(
-                include_desktop_activity=args.desktop_context,
+
+        shared_kwargs = {
+            "history_limit": args.history_limit,
+            "user_model_service": user_model_service,
+            "user_fact_extractor": user_fact_extractor,
+        }
+        relationship_context = {
+            "kind": "primary_local_user",
+            "basis": "trusted_runtime_binding",
+            "memory_claim": "continuity_without_implied_episode_recall",
+            "continuity": (
+                "This local CLI is an explicit trusted conversation with "
+                "Hikari's primary local user. This is the person who has been "
+                "building, testing, and talking with Hikari across the current "
+                "development process. Specific personal facts remain unknown "
+                "unless durable memory supplies them. This binding establishes "
+                "the relationship but does not mean exact prior conversations "
+                "or development episodes are independently remembered."
             ),
-            personality_profile=load_personality() if legacy_prompt else None,
-            voice_profile=load_voice() if legacy_prompt else None,
-            relationship_context={
-                "kind": "primary_local_user",
-                "basis": "trusted_runtime_binding",
-                "memory_claim": "continuity_without_implied_episode_recall",
-                "continuity": (
-                    "This local CLI is an explicit trusted conversation with "
-                    "Hikari's primary local user. This is the person who has been "
-                    "building, testing, and talking with Hikari across the current "
-                    "development process. Specific personal facts remain unknown "
-                    "unless durable memory supplies them. This binding establishes "
-                    "the relationship but does not mean exact prior conversations "
-                    "or development episodes are independently remembered."
-                ),
-            },
-            history_limit=args.history_limit,
-            user_model_service=user_model_service,
-            user_fact_extractor=user_fact_extractor,
-            system_instructions=(
-                LEGACY_INTERACTIVE_SYSTEM_INSTRUCTIONS
-                if legacy_prompt
-                else (
-                    THIN_HIKARI_SYSTEM_INSTRUCTIONS
-                    if args.prompt_profile == "thin"
-                    else INTERACTIVE_SYSTEM_INSTRUCTIONS
+        }
+
+        if whiteboard_prompt:
+            if identity_swap_profile:
+                comparison_system_instructions = (
+                    HIKARI_OPENJARVIS_CHINESE_OUTPUT_SYSTEM_INSTRUCTIONS
                 )
-            ),
-        )
+            elif openjarvis_chinese_output:
+                comparison_system_instructions = (
+                    OPENJARVIS_CHINESE_OUTPUT_SYSTEM_INSTRUCTIONS
+                )
+            elif openjarvis_prompt:
+                comparison_system_instructions = OPENJARVIS_SYSTEM_INSTRUCTIONS
+            elif jarvis_prompt:
+                comparison_system_instructions = JARVIS_SYSTEM_INSTRUCTIONS
+            else:
+                comparison_system_instructions = WHITEBOARD_HIKARI_SYSTEM_INSTRUCTIONS
+
+            engine = WhiteboardConversationEngine(
+                provider,
+                MemoryStore(memory_path),
+                context_collector=None,
+                personality_profile=None,
+                voice_profile=None,
+                relationship_context=relationship_context,
+                system_instructions=comparison_system_instructions,
+                relationship_context_text=(
+                    WHITEBOARD_1_RELATIONSHIP_CONTEXT
+                    if whiteboard_relationship
+                    else None
+                ),
+                relational_stance_text=(
+                    WHITEBOARD_2C_RELATIONAL_STANCE
+                    if whiteboard_relational_stance
+                    else None
+                ),
+                relevant_context_text=(
+                    WHITEBOARD_2_RELEVANT_CONTEXT
+                    if whiteboard_relevant
+                    else None
+                ),
+                relevant_context_placement=whiteboard_relevant_placement,
+                **shared_kwargs,
+            )
+        else:
+            engine = ConversationEngine(
+                provider,
+                MemoryStore(memory_path),
+                context_collector=default_context_collector(
+                    include_desktop_activity=args.desktop_context,
+                ),
+                personality_profile=load_personality() if legacy_prompt else None,
+                voice_profile=load_voice() if legacy_prompt else None,
+                relationship_context=relationship_context,
+                system_instructions=(
+                    LEGACY_INTERACTIVE_SYSTEM_INSTRUCTIONS
+                    if legacy_prompt
+                    else (
+                        THIN_HIKARI_SYSTEM_INSTRUCTIONS
+                        if args.prompt_profile == "thin"
+                        else INTERACTIVE_SYSTEM_INSTRUCTIONS
+                    )
+                ),
+                **shared_kwargs,
+            )
     except ValueError as exc:
-        print(f"Hikari 对话启动失败：{exc}")
+        print(f"{assistant_name} 对话启动失败：{exc}")
         return 2
 
-    print("Hikari 对话已连接。输入 /exit 退出，/paste 粘贴多行内容。")
+    print(f"{assistant_name} 对话已连接。输入 /exit 退出，/paste 粘贴多行内容。")
     if runtime_environment.env_file is not None:
         print(f"环境文件：{runtime_environment.env_file}")
     print(f"模型：{getattr(provider, 'model', type(provider).__name__)}")
@@ -210,18 +330,18 @@ def main(argv: Sequence[str] | None = None) -> int:
         try:
             text = input("你> ")
         except (EOFError, KeyboardInterrupt):
-            print("\nHikari 对话已断开。")
+            print(f"\n{assistant_name} 对话已断开。")
             return 0
 
         command = text.strip().lower()
         if command in EXIT_COMMANDS:
-            print("Hikari 对话已断开。")
+            print(f"{assistant_name} 对话已断开。")
             return 0
         if command == PASTE_COMMAND:
             try:
                 text = collect_multiline_turn()
             except (EOFError, KeyboardInterrupt):
-                print("\nHikari 对话已断开。")
+                print(f"\n{assistant_name} 对话已断开。")
                 return 0
             if text is None:
                 continue
@@ -237,9 +357,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                 )
             )
         except Exception as exc:
-            print(f"Hikari> 对话处理失败：{exc}")
+            print(f"{assistant_name}> 对话处理失败：{exc}")
             continue
-        print(f"Hikari> {reply.text}")
+        print(f"{assistant_name}> {reply.text}")
 
 
 if __name__ == "__main__":
