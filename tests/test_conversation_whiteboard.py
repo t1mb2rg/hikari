@@ -8,6 +8,7 @@ from conversation.models import UserTurn
 from conversation.whiteboard import (
     WHITEBOARD_1_RELATIONSHIP_CONTEXT,
     WHITEBOARD_2_RELEVANT_CONTEXT,
+    WHITEBOARD_2C_RELATIONAL_STANCE,
     WHITEBOARD_HIKARI_SYSTEM_INSTRUCTIONS,
     WhiteboardConversationEngine,
     parse_whiteboard_output,
@@ -31,6 +32,7 @@ def _engine(
     *,
     history_limit: int = 12,
     relationship_context_text: str | None = None,
+    relational_stance_text: str | None = None,
     relevant_context_text: str | None = None,
     relevant_context_placement: str = "system",
 ):
@@ -42,6 +44,7 @@ def _engine(
             "basis": "trusted_runtime_binding",
         },
         relationship_context_text=relationship_context_text,
+        relational_stance_text=relational_stance_text,
         relevant_context_text=relevant_context_text,
         relevant_context_placement=relevant_context_placement,
         history_limit=history_limit,
@@ -56,6 +59,7 @@ def test_cli_accepts_whiteboard_prompt_profiles():
         "whiteboard1",
         "whiteboard2",
         "whiteboard2b",
+        "whiteboard2c",
     ):
         args = build_parser().parse_args(["--prompt-profile", profile])
         assert args.prompt_profile == profile
@@ -178,6 +182,38 @@ def test_whiteboard_two_b_places_same_context_next_to_current_turn(tmp_path: Pat
     assert "可参考的当前背景" not in events[0].content
 
 
+def test_whiteboard_two_c_adds_only_relational_stance_to_two_b(tmp_path: Path):
+    provider = FakeProvider(
+        ["<reaction>这话听着确实磨人。</reaction><reply>嗯，这东西现在确实挺磨人的。</reply>"]
+    )
+    engine = _engine(
+        tmp_path / "memory.db",
+        provider,
+        relational_stance_text=WHITEBOARD_2C_RELATIONAL_STANCE,
+        relevant_context_text=WHITEBOARD_2_RELEVANT_CONTEXT,
+        relevant_context_placement="current_turn",
+    )
+
+    reply = engine.respond(UserTurn("qq", "main", "让我有点累了"))
+
+    assert reply.text == "嗯，这东西现在确实挺磨人的。"
+    call = provider.calls[0]
+    assert [(message.role, message.content) for message in call[:2]] == [
+        ("system", WHITEBOARD_HIKARI_SYSTEM_INSTRUCTIONS),
+        ("system", WHITEBOARD_2C_RELATIONAL_STANCE),
+    ]
+    assert call[-1].role == "user"
+    assert WHITEBOARD_2_RELEVANT_CONTEXT in call[-1].content
+    assert "【现在对你说】\n让我有点累了" in call[-1].content
+
+    serialized = "\n".join(message.content for message in call)
+    assert "关系背景：" not in serialized
+    assert "should_not_enter_whiteboard_prompt" not in serialized
+    assert "capabilities" not in serialized
+    assert "memory_provenance" not in serialized
+    assert "known_user" not in serialized
+
+
 def test_whiteboard_rehydrates_real_history_without_reaction(tmp_path: Path):
     memory_path = tmp_path / "memory.db"
     first = FakeProvider(
@@ -292,6 +328,42 @@ def test_whiteboard_two_b_preserves_history_before_contextual_current_turn(tmp_p
     call = second.calls[0]
     assert [(message.role, message.content) for message in call[:3]] == [
         ("system", WHITEBOARD_HIKARI_SYSTEM_INSTRUCTIONS),
+        ("user", "第一句"),
+        ("assistant", "第一句回复。"),
+    ]
+    assert call[-1].role == "user"
+    assert "【现在对你说】\n第二句" in call[-1].content
+    assert WHITEBOARD_2_RELEVANT_CONTEXT in call[-1].content
+
+
+def test_whiteboard_two_c_preserves_history_between_stance_and_current_context(tmp_path: Path):
+    memory_path = tmp_path / "memory.db"
+    first = FakeProvider(
+        ["<reaction>接住。</reaction><reply>第一句回复。</reply>"]
+    )
+    _engine(
+        memory_path,
+        first,
+        relational_stance_text=WHITEBOARD_2C_RELATIONAL_STANCE,
+        relevant_context_text=WHITEBOARD_2_RELEVANT_CONTEXT,
+        relevant_context_placement="current_turn",
+    ).respond(UserTurn("qq", "main", "第一句"))
+
+    second = FakeProvider(
+        ["<reaction>继续。</reaction><reply>第二句回复。</reply>"]
+    )
+    _engine(
+        memory_path,
+        second,
+        relational_stance_text=WHITEBOARD_2C_RELATIONAL_STANCE,
+        relevant_context_text=WHITEBOARD_2_RELEVANT_CONTEXT,
+        relevant_context_placement="current_turn",
+    ).respond(UserTurn("qq", "main", "第二句"))
+
+    call = second.calls[0]
+    assert [(message.role, message.content) for message in call[:4]] == [
+        ("system", WHITEBOARD_HIKARI_SYSTEM_INSTRUCTIONS),
+        ("system", WHITEBOARD_2C_RELATIONAL_STANCE),
         ("user", "第一句"),
         ("assistant", "第一句回复。"),
     ]
