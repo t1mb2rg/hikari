@@ -35,6 +35,10 @@ from conversation.remote import (
     ConversationWebSocketHost,
     _is_loopback_host,
 )
+from conversation.whiteboard import (
+    WHITEBOARD_HIKARI_SYSTEM_INSTRUCTIONS,
+    WhiteboardConversationEngine,
+)
 from core.delivery import DeliveryOutbox, DeliveryRouter
 from core.presence import (
     ConsoleFeedbackSink,
@@ -273,6 +277,19 @@ def _conversation_port(values: Mapping[str, str]) -> int:
     return port
 
 
+def _conversation_context_profile(values: Mapping[str, str]) -> str:
+    profile = _runtime_value(
+        values,
+        "HIKARI_CONVERSATION_CONTEXT_PROFILE",
+        "grounded",
+    ).casefold()
+    if profile not in {"grounded", "whiteboard"}:
+        raise ValueError(
+            "HIKARI_CONVERSATION_CONTEXT_PROFILE must be grounded or whiteboard"
+        )
+    return profile
+
+
 def _quiet_hours_description(config: PresencePolicyConfig) -> str:
     if not config.quiet_hours_enabled:
         return "关闭"
@@ -359,6 +376,8 @@ def main(argv: Sequence[str] | None = None) -> None:
 
     try:
         provider = build_chat_provider(values)
+        conversation_context_profile = _conversation_context_profile(values)
+        whiteboard = conversation_context_profile == "whiteboard"
         bind_host = _runtime_value(
             values,
             "HIKARI_CONVERSATION_HOST",
@@ -379,17 +398,26 @@ def main(argv: Sequence[str] | None = None) -> None:
             user_model_path,
         )
 
-        engine = ConversationEngine(
+        engine_type = WhiteboardConversationEngine if whiteboard else ConversationEngine
+        engine = engine_type(
             provider,
             memory,
-            context_collector=default_context_collector(include_desktop_activity=False),
+            context_collector=(
+                None
+                if whiteboard
+                else default_context_collector(include_desktop_activity=False)
+            ),
             personality_profile=None,
             voice_profile=None,
             relationship_context=PRIMARY_REMOTE_RELATIONSHIP_CONTEXT,
             history_limit=12,
             user_model_service=user_model_service,
             user_fact_extractor=user_fact_extractor,
-            system_instructions=INTERACTIVE_SYSTEM_INSTRUCTIONS,
+            system_instructions=(
+                WHITEBOARD_HIKARI_SYSTEM_INSTRUCTIONS
+                if whiteboard
+                else INTERACTIVE_SYSTEM_INSTRUCTIONS
+            ),
         )
         forge_bridge: ConversationForgeBridge | None = None
         if runtime_bool(values, "HIKARI_FORGE_ENABLED", default=False):
@@ -471,6 +499,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     )
     print(f"Hikari Conversation Host：ws://{bind_host}:{bind_port}", flush=True)
     print(f"Hikari 对话模型：{getattr(provider, 'model', type(provider).__name__)}", flush=True)
+    print(f"Hikari Conversation Context：{conversation_context_profile}", flush=True)
     print(
         f"Hikari Engineering Runtime：{'启用' if engineering_bridge is not None else '关闭'}",
         flush=True,
