@@ -6,6 +6,7 @@ from brain.model_reasoner import ChatMessage
 from conversation.cli import build_parser
 from conversation.models import UserTurn
 from conversation.whiteboard import (
+    WHITEBOARD_1_RELATIONSHIP_CONTEXT,
     WHITEBOARD_HIKARI_SYSTEM_INSTRUCTIONS,
     WhiteboardConversationEngine,
     parse_whiteboard_output,
@@ -23,7 +24,13 @@ class FakeProvider:
         return self.replies.pop(0)
 
 
-def _engine(path: Path, provider: FakeProvider, *, history_limit: int = 12):
+def _engine(
+    path: Path,
+    provider: FakeProvider,
+    *,
+    history_limit: int = 12,
+    relationship_context_text: str | None = None,
+):
     return WhiteboardConversationEngine(
         provider,
         MemoryStore(path),
@@ -31,15 +38,16 @@ def _engine(path: Path, provider: FakeProvider, *, history_limit: int = 12):
             "kind": "should_not_enter_whiteboard_prompt",
             "basis": "trusted_runtime_binding",
         },
+        relationship_context_text=relationship_context_text,
         history_limit=history_limit,
         system_instructions=WHITEBOARD_HIKARI_SYSTEM_INSTRUCTIONS,
     )
 
 
-def test_cli_accepts_whiteboard_prompt_profile():
-    args = build_parser().parse_args(["--prompt-profile", "whiteboard"])
-
-    assert args.prompt_profile == "whiteboard"
+def test_cli_accepts_whiteboard_prompt_profiles():
+    for profile in ("whiteboard", "whiteboard0", "whiteboard1"):
+        args = build_parser().parse_args(["--prompt-profile", profile])
+        assert args.prompt_profile == profile
 
 
 def test_whiteboard_parser_separates_reaction_from_reply():
@@ -51,7 +59,7 @@ def test_whiteboard_parser_separates_reaction_from_reply():
     assert output.reply == "在呢，怎么了？"
 
 
-def test_whiteboard_sends_only_prompt_history_and_current_turn(tmp_path: Path):
+def test_whiteboard_zero_sends_only_prompt_history_and_current_turn(tmp_path: Path):
     provider = FakeProvider(
         ["<reaction>先接住这句话。</reaction><reply>嗯，我在。</reply>"]
     )
@@ -65,6 +73,32 @@ def test_whiteboard_sends_only_prompt_history_and_current_turn(tmp_path: Path):
         ("system", WHITEBOARD_HIKARI_SYSTEM_INSTRUCTIONS),
         ("user", "hikari"),
     ]
+
+
+def test_whiteboard_one_adds_only_natural_relationship_context(tmp_path: Path):
+    provider = FakeProvider(
+        ["<reaction>熟悉的人又来找我了。</reaction><reply>在呢。</reply>"]
+    )
+    engine = _engine(
+        tmp_path / "memory.db",
+        provider,
+        relationship_context_text=WHITEBOARD_1_RELATIONSHIP_CONTEXT,
+    )
+
+    reply = engine.respond(UserTurn("qq", "main", "hikari"))
+
+    assert reply.text == "在呢。"
+    call = provider.calls[0]
+    assert [(message.role, message.content) for message in call] == [
+        ("system", WHITEBOARD_HIKARI_SYSTEM_INSTRUCTIONS),
+        ("system", WHITEBOARD_1_RELATIONSHIP_CONTEXT),
+        ("user", "hikari"),
+    ]
+    serialized = "\n".join(message.content for message in call)
+    assert "should_not_enter_whiteboard_prompt" not in serialized
+    assert "capabilities" not in serialized
+    assert "memory_provenance" not in serialized
+    assert "known_user" not in serialized
 
 
 def test_whiteboard_rehydrates_real_history_without_reaction(tmp_path: Path):
@@ -96,6 +130,35 @@ def test_whiteboard_rehydrates_real_history_without_reaction(tmp_path: Path):
     ]
     assert all("reaction" not in event.content for event in events)
     assert all("先回一句" not in event.content for event in events)
+
+
+def test_whiteboard_one_preserves_history_after_relationship_section(tmp_path: Path):
+    memory_path = tmp_path / "memory.db"
+    first = FakeProvider(
+        ["<reaction>接住。</reaction><reply>第一句回复。</reply>"]
+    )
+    _engine(
+        memory_path,
+        first,
+        relationship_context_text=WHITEBOARD_1_RELATIONSHIP_CONTEXT,
+    ).respond(UserTurn("qq", "main", "第一句"))
+
+    second = FakeProvider(
+        ["<reaction>继续。</reaction><reply>第二句回复。</reply>"]
+    )
+    _engine(
+        memory_path,
+        second,
+        relationship_context_text=WHITEBOARD_1_RELATIONSHIP_CONTEXT,
+    ).respond(UserTurn("qq", "main", "第二句"))
+
+    assert [(message.role, message.content) for message in second.calls[0]] == [
+        ("system", WHITEBOARD_HIKARI_SYSTEM_INSTRUCTIONS),
+        ("system", WHITEBOARD_1_RELATIONSHIP_CONTEXT),
+        ("user", "第一句"),
+        ("assistant", "第一句回复。"),
+        ("user", "第二句"),
+    ]
 
 
 def test_whiteboard_plain_text_fallback_is_user_facing_reply():
