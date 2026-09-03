@@ -28,6 +28,7 @@ from .engine import (
 )
 from .jarvis import JARVIS_SYSTEM_INSTRUCTIONS
 from .jarvis_openjarvis import (
+    HIKARI_OPENJARVIS_CHINESE_OUTPUT_SYSTEM_INSTRUCTIONS,
     OPENJARVIS_CHINESE_OUTPUT_SYSTEM_INSTRUCTIONS,
     OPENJARVIS_SYSTEM_INSTRUCTIONS,
 )
@@ -57,6 +58,7 @@ PROMPT_PROFILES = (
     "jarvis",
     "jarvis-openjarvis",
     "jarvis-openjarvis-zh",
+    "hikari-openjarvis-zh",
     "thin",
     "legacy",
 )
@@ -165,6 +167,7 @@ def build_parser() -> argparse.ArgumentParser:
             "jarvis 是我们从零写的极简 Jarvis 人格对照；"
             "jarvis-openjarvis 原样使用 OpenJarvis 的 Apache-2.0 Jarvis persona；"
             "jarvis-openjarvis-zh 保留同一份英文 persona，只额外要求输出简体中文；"
+            "hikari-openjarvis-zh 只把同一份 persona 的身份名 Jarvis 换成 Hikari，并保持中文输出；"
             "thin 与 production 等价并保留给盲测脚本；"
             "legacy 显式启用旧版完整 voice/personality steering。"
         ),
@@ -172,7 +175,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--desktop-context",
         action="store_true",
-        help="显式允许 grounded 直接聊天读取当前前台窗口和输入活跃度。Whiteboard/Jarvis 会忽略该上下文。",
+        help="显式允许 grounded 直接聊天读取当前前台窗口和输入活跃度。Whiteboard/Jarvis 对照会忽略该上下文。",
     )
     return parser
 
@@ -180,6 +183,7 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     jarvis_profiles = {"jarvis", "jarvis-openjarvis", "jarvis-openjarvis-zh"}
+    identity_swap_profile = args.prompt_profile == "hikari-openjarvis-zh"
     assistant_name = "Jarvis" if args.prompt_profile in jarvis_profiles else "Hikari"
 
     try:
@@ -195,6 +199,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         openjarvis_prompt = args.prompt_profile in {
             "jarvis-openjarvis",
             "jarvis-openjarvis-zh",
+            "hikari-openjarvis-zh",
         }
         openjarvis_chinese_output = args.prompt_profile == "jarvis-openjarvis-zh"
         whiteboard_prompt = args.prompt_profile in {
@@ -207,6 +212,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             "jarvis",
             "jarvis-openjarvis",
             "jarvis-openjarvis-zh",
+            "hikari-openjarvis-zh",
         }
         whiteboard_relationship = args.prompt_profile == "whiteboard1"
         whiteboard_relational_stance = args.prompt_profile == "whiteboard2c"
@@ -246,14 +252,20 @@ def main(argv: Sequence[str] | None = None) -> int:
         }
 
         if whiteboard_prompt:
-            if openjarvis_chinese_output:
-                jarvis_system_instructions = (
+            if identity_swap_profile:
+                comparison_system_instructions = (
+                    HIKARI_OPENJARVIS_CHINESE_OUTPUT_SYSTEM_INSTRUCTIONS
+                )
+            elif openjarvis_chinese_output:
+                comparison_system_instructions = (
                     OPENJARVIS_CHINESE_OUTPUT_SYSTEM_INSTRUCTIONS
                 )
             elif openjarvis_prompt:
-                jarvis_system_instructions = OPENJARVIS_SYSTEM_INSTRUCTIONS
+                comparison_system_instructions = OPENJARVIS_SYSTEM_INSTRUCTIONS
+            elif jarvis_prompt:
+                comparison_system_instructions = JARVIS_SYSTEM_INSTRUCTIONS
             else:
-                jarvis_system_instructions = JARVIS_SYSTEM_INSTRUCTIONS
+                comparison_system_instructions = WHITEBOARD_HIKARI_SYSTEM_INSTRUCTIONS
 
             engine = WhiteboardConversationEngine(
                 provider,
@@ -262,11 +274,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 personality_profile=None,
                 voice_profile=None,
                 relationship_context=relationship_context,
-                system_instructions=(
-                    jarvis_system_instructions
-                    if jarvis_prompt
-                    else WHITEBOARD_HIKARI_SYSTEM_INSTRUCTIONS
-                ),
+                system_instructions=comparison_system_instructions,
                 relationship_context_text=(
                     WHITEBOARD_1_RELATIONSHIP_CONTEXT
                     if whiteboard_relationship
