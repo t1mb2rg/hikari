@@ -23,3 +23,11 @@ CONSTRAINTS:
 - No markdown formatting, no emojis, no bullet points, no headers — this is spoken aloud
 - If a data source is disconnected or errored, skip it silently — do not mention connection issues
 """.strip()
+
+
+# Controlled derivative: keep the upstream English persona unchanged and add only
+# one output-language constraint. This isolates language from persona/style effects.
+OPENJARVIS_CHINESE_OUTPUT_SYSTEM_INSTRUCTIONS = (
+    OPENJARVIS_SYSTEM_INSTRUCTIONS
+    + "\n\nLANGUAGE:\n- Always reply in Simplified Chinese."
+)
