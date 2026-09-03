@@ -5,6 +5,7 @@ from pathlib import Path
 from brain.model_reasoner import ChatMessage
 from conversation.cli import build_parser
 from conversation.jarvis import JARVIS_SYSTEM_INSTRUCTIONS
+from conversation.jarvis_openjarvis import OPENJARVIS_SYSTEM_INSTRUCTIONS
 from conversation.models import UserTurn
 from conversation.whiteboard import WhiteboardConversationEngine
 from memory.store import MemoryStore
@@ -20,7 +21,12 @@ class FakeProvider:
         return self.replies.pop(0)
 
 
-def _engine(path: Path, provider: FakeProvider) -> WhiteboardConversationEngine:
+def _engine(
+    path: Path,
+    provider: FakeProvider,
+    *,
+    system_instructions: str = JARVIS_SYSTEM_INSTRUCTIONS,
+) -> WhiteboardConversationEngine:
     return WhiteboardConversationEngine(
         provider,
         MemoryStore(path),
@@ -29,14 +35,14 @@ def _engine(path: Path, provider: FakeProvider) -> WhiteboardConversationEngine:
             "basis": "trusted_runtime_binding",
         },
         history_limit=12,
-        system_instructions=JARVIS_SYSTEM_INSTRUCTIONS,
+        system_instructions=system_instructions,
     )
 
 
-def test_cli_accepts_jarvis_prompt_profile():
-    args = build_parser().parse_args(["--prompt-profile", "jarvis"])
-
-    assert args.prompt_profile == "jarvis"
+def test_cli_accepts_jarvis_prompt_profiles():
+    for profile in ("jarvis", "jarvis-openjarvis"):
+        args = build_parser().parse_args(["--prompt-profile", profile])
+        assert args.prompt_profile == profile
 
 
 def test_jarvis_sends_only_jarvis_prompt_and_current_turn(tmp_path: Path):
@@ -56,6 +62,28 @@ def test_jarvis_sends_only_jarvis_prompt_and_current_turn(tmp_path: Path):
     assert "关系姿态" not in serialized
 
 
+def test_openjarvis_sends_verbatim_upstream_prompt_and_current_turn(tmp_path: Path):
+    provider = FakeProvider(["At your service."])
+    engine = _engine(
+        tmp_path / "memory.db",
+        provider,
+        system_instructions=OPENJARVIS_SYSTEM_INSTRUCTIONS,
+    )
+
+    reply = engine.respond(UserTurn("cli", "jarvis-openjarvis-0", "jarvis"))
+
+    assert reply.text == "At your service."
+    assert [(message.role, message.content) for message in provider.calls[0]] == [
+        ("system", OPENJARVIS_SYSTEM_INSTRUCTIONS),
+        ("user", "jarvis"),
+    ]
+    serialized = "\n".join(message.content for message in provider.calls[0])
+    assert "should_not_enter_jarvis_prompt" not in serialized
+    assert "可参考的当前背景" not in serialized
+    assert "关系姿态" not in serialized
+    assert "# Role: Jarvis" not in serialized
+
+
 def test_jarvis_rehydrates_only_real_conversation_history(tmp_path: Path):
     memory_path = tmp_path / "memory.db"
     first = FakeProvider(["第一句回复。"])
@@ -72,4 +100,29 @@ def test_jarvis_rehydrates_only_real_conversation_history(tmp_path: Path):
         ("user", "第一句"),
         ("assistant", "第一句回复。"),
         ("user", "第二句"),
+    ]
+
+
+def test_openjarvis_rehydrates_only_real_conversation_history(tmp_path: Path):
+    memory_path = tmp_path / "memory.db"
+    first = FakeProvider(["First reply."])
+    _engine(
+        memory_path,
+        first,
+        system_instructions=OPENJARVIS_SYSTEM_INSTRUCTIONS,
+    ).respond(UserTurn("cli", "jarvis-openjarvis-0", "first"))
+
+    second = FakeProvider(["Second reply."])
+    reply = _engine(
+        memory_path,
+        second,
+        system_instructions=OPENJARVIS_SYSTEM_INSTRUCTIONS,
+    ).respond(UserTurn("cli", "jarvis-openjarvis-0", "second"))
+
+    assert reply.text == "Second reply."
+    assert [(message.role, message.content) for message in second.calls[0]] == [
+        ("system", OPENJARVIS_SYSTEM_INSTRUCTIONS),
+        ("user", "first"),
+        ("assistant", "First reply."),
+        ("user", "second"),
     ]
