@@ -31,3 +31,16 @@ OPENJARVIS_CHINESE_OUTPUT_SYSTEM_INSTRUCTIONS = (
     OPENJARVIS_SYSTEM_INSTRUCTIONS
     + "\n\nLANGUAGE:\n- Always reply in Simplified Chinese."
 )
+
+
+# Identity-swap control: preserve the OpenJarvis persona wording and Chinese-output
+# constraint, changing only the assistant's identity name from Jarvis to Hikari.
+# No gender instruction is added.
+HIKARI_OPENJARVIS_CHINESE_OUTPUT_SYSTEM_INSTRUCTIONS = (
+    OPENJARVIS_SYSTEM_INSTRUCTIONS.replace(
+        "You are Jarvis — the local AI assistant.",
+        "You are Hikari — the local AI assistant.",
+        1,
+    )
+    + "\n\nLANGUAGE:\n- Always reply in Simplified Chinese."
+)
