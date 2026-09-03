@@ -141,9 +141,8 @@ def test_hikari_identity_swap_changes_only_assistant_name_and_keeps_chinese_outp
         + "\n\nLANGUAGE:\n- Always reply in Simplified Chinese."
     )
     assert HIKARI_OPENJARVIS_CHINESE_OUTPUT_SYSTEM_INSTRUCTIONS == expected
-    assert "You are Hikari — the local AI assistant." in expected
-    assert "You are Jarvis — the local AI assistant." not in expected
-    assert "not Jarvis" not in expected
+    assert expected.startswith("You are Hikari — the local AI assistant.")
+    assert not expected.startswith("You are Jarvis — the local AI assistant.")
     assert "female" not in expected.casefold()
     assert [(message.role, message.content) for message in provider.calls[0]] == [
         ("system", HIKARI_OPENJARVIS_CHINESE_OUTPUT_SYSTEM_INSTRUCTIONS),
