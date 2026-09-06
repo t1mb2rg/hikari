@@ -132,7 +132,7 @@ class WhiteboardConversationEngine(ConversationEngine):
         relationship_context_text: str | None = None,
         relational_stance_text: str | None = None,
         relevant_context_text: str | None = None,
-        relevant_context_provider: Callable[[], str | None] | None = None,
+        relevant_context_provider: Callable[[UserTurn], str | None] | None = None,
         relevant_context_placement: str = "system",
         **kwargs,
     ) -> None:
@@ -179,7 +179,7 @@ class WhiteboardConversationEngine(ConversationEngine):
         history = self._recent_history(turn.channel, turn.conversation_id)
         relevant_context = self.relevant_context_text
         if self.relevant_context_provider is not None:
-            provided_context = self.relevant_context_provider()
+            provided_context = self.relevant_context_provider(turn)
             if isinstance(provided_context, str) and provided_context.strip():
                 relevant_context = provided_context.strip()
 
