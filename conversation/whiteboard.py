@@ -8,6 +8,7 @@ from brain.model_reasoner import ChatMessage
 
 from .engine import ASSISTANT_EVENT_TYPE, USER_EVENT_TYPE, ConversationEngine
 from .models import AssistantReply, UserTurn
+from .natural_context import add_recalled_conversation_context
 
 
 WHITEBOARD_HIKARI_SYSTEM_INSTRUCTIONS = """# Role: Hikari
@@ -132,7 +133,7 @@ class WhiteboardConversationEngine(ConversationEngine):
         relationship_context_text: str | None = None,
         relational_stance_text: str | None = None,
         relevant_context_text: str | None = None,
-        relevant_context_provider: Callable[[UserTurn], str | None] | None = None,
+        relevant_context_provider: Callable[[], str | None] | None = None,
         relevant_context_placement: str = "system",
         **kwargs,
     ) -> None:
@@ -179,9 +180,15 @@ class WhiteboardConversationEngine(ConversationEngine):
         history = self._recent_history(turn.channel, turn.conversation_id)
         relevant_context = self.relevant_context_text
         if self.relevant_context_provider is not None:
-            provided_context = self.relevant_context_provider(turn)
+            provided_context = self.relevant_context_provider()
             if isinstance(provided_context, str) and provided_context.strip():
-                relevant_context = provided_context.strip()
+                relevant_context = add_recalled_conversation_context(
+                    provided_context.strip(),
+                    memory=self.memory,
+                    query=turn.text,
+                    channel=turn.channel,
+                    conversation_id=turn.conversation_id,
+                )
 
         messages: list[ChatMessage] = [
             ChatMessage(role="system", content=self.system_instructions),
