@@ -26,7 +26,7 @@ from conversation.action_bridge import (
 from conversation.cli import build_chat_provider, default_context_collector
 from conversation.engine import ConversationEngine, INTERACTIVE_SYSTEM_INSTRUCTIONS
 from conversation.engineering_bridge import ConversationEngineeringBridge
-from conversation.jarvis_openjarvis import OPENJARVIS_CHINESE_OUTPUT_SYSTEM_INSTRUCTIONS
+from conversation.jarvis_openjarvis import JARVIS_PRODUCTION_SYSTEM_INSTRUCTIONS
 from conversation.receipts import ConversationReceiptStore
 from conversation.remote import (
     DEFAULT_CONVERSATION_HOST,
@@ -298,7 +298,7 @@ def _conversation_engine_configuration(
         return (
             WhiteboardConversationEngine,
             True,
-            OPENJARVIS_CHINESE_OUTPUT_SYSTEM_INSTRUCTIONS,
+            JARVIS_PRODUCTION_SYSTEM_INSTRUCTIONS,
             None,
         )
     if profile == "whiteboard":
