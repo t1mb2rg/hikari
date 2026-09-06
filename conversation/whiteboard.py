@@ -186,8 +186,7 @@ class WhiteboardConversationEngine(ConversationEngine):
                     provided_context.strip(),
                     memory=self.memory,
                     query=turn.text,
-                    channel=turn.channel,
-                    conversation_id=turn.conversation_id,
+                    exclude_event_ids={event.id for event in history},
                 )
 
         messages: list[ChatMessage] = [
