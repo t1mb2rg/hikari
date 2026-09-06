@@ -6,6 +6,7 @@ import unicodedata
 
 from engineering.session import EngineeringSessionStore
 from memory.store import MemoryStore
+from user_model import UserModelService
 
 
 _ACTIVE_ENGINEERING_STATUSES = {"pending", "running"}
@@ -94,6 +95,32 @@ def add_recalled_conversation_context(
     lines = [context, "", "过去对话中可能与眼前这句话有关的用户原话："]
     lines.extend(f"- {text}" for text in recalled)
     lines.append("只有确实有助于当前问题时才使用这些过去内容。")
+    return "\n".join(lines)
+
+
+def add_user_model_context(
+    context: str,
+    *,
+    user_model_service: UserModelService | None,
+    query: str,
+    limit: int = 2,
+) -> str:
+    """Expose only a few relevant active user facts, without database metadata."""
+
+    if user_model_service is None or limit <= 0:
+        return context
+    try:
+        facts = user_model_service.retrieve(query, limit=limit)
+    except Exception:
+        return context
+
+    statements = [fact.statement.strip() for fact in facts if fact.statement.strip()]
+    if not statements:
+        return context
+
+    lines = [context, "", "与当前问题相关的当前有效用户事实："]
+    lines.extend(f"- {statement}" for statement in statements[:limit])
+    lines.append("只在确实相关时自然使用这些事实，不需要提及其存储方式或内部字段。")
     return "\n".join(lines)
 
 
