@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 import re
 
@@ -131,6 +132,7 @@ class WhiteboardConversationEngine(ConversationEngine):
         relationship_context_text: str | None = None,
         relational_stance_text: str | None = None,
         relevant_context_text: str | None = None,
+        relevant_context_provider: Callable[[], str | None] | None = None,
         relevant_context_placement: str = "system",
         **kwargs,
     ) -> None:
@@ -153,6 +155,11 @@ class WhiteboardConversationEngine(ConversationEngine):
             and relevant_context_text.strip()
             else None
         )
+        if relevant_context_provider is not None and not callable(
+            relevant_context_provider
+        ):
+            raise TypeError("relevant_context_provider must be callable")
+        self.relevant_context_provider = relevant_context_provider
         placement = str(relevant_context_placement).strip().casefold()
         if placement not in RELEVANT_CONTEXT_PLACEMENTS:
             raise ValueError(
@@ -170,6 +177,12 @@ class WhiteboardConversationEngine(ConversationEngine):
             raise TypeError("respond requires UserTurn")
 
         history = self._recent_history(turn.channel, turn.conversation_id)
+        relevant_context = self.relevant_context_text
+        if self.relevant_context_provider is not None:
+            provided_context = self.relevant_context_provider()
+            if isinstance(provided_context, str) and provided_context.strip():
+                relevant_context = provided_context.strip()
+
         messages: list[ChatMessage] = [
             ChatMessage(role="system", content=self.system_instructions),
         ]
@@ -182,21 +195,19 @@ class WhiteboardConversationEngine(ConversationEngine):
                 ChatMessage(role="system", content=self.relational_stance_text)
             )
         if (
-            self.relevant_context_text is not None
+            relevant_context is not None
             and self.relevant_context_placement == "system"
         ):
-            messages.append(
-                ChatMessage(role="system", content=self.relevant_context_text)
-            )
+            messages.append(ChatMessage(role="system", content=relevant_context))
         messages.extend(self._history_messages(history))
 
         current_turn_text = turn.text
         if (
-            self.relevant_context_text is not None
+            relevant_context is not None
             and self.relevant_context_placement == "current_turn"
         ):
             current_turn_text = _current_turn_with_relevant_context(
-                self.relevant_context_text,
+                relevant_context,
                 turn.text,
             )
         messages.append(ChatMessage(role="user", content=current_turn_text))
