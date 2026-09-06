@@ -1,6 +1,7 @@
 from dataclasses import replace
 from pathlib import Path
 
+from conversation.action_bridge import ConversationForgeBridge
 from conversation.engine import ConversationEngine
 from conversation.engineering_bridge import (
     ConversationEngineeringBridge,
@@ -36,6 +37,14 @@ class _ExplodingProvider:
         raise AssertionError("deterministic engineering status query must not call the model")
 
 
+class _ExplodingForgeFallback(ConversationForgeBridge):
+    def __init__(self) -> None:
+        pass
+
+    def respond(self, engine, turn, *, source_ref=None):
+        raise AssertionError("ordinary conversation must not fall into legacy Forge")
+
+
 def test_engineering_intent_gate_distinguishes_read_and_maintain_tasks():
     assert looks_like_read_only_engineering_intent("先去看看 README，告诉我项目现在是什么状态")
     assert looks_like_read_only_engineering_intent("再分析一下 memory 模块")
@@ -49,6 +58,25 @@ def test_engineering_intent_gate_distinguishes_read_and_maintain_tasks():
     assert looks_like_engineering_status_query("现在engineering任务是什么状态？")
     assert looks_like_engineering_status_query("Engineering Worker 进度怎么样了")
     assert not looks_like_engineering_status_query("今天状态怎么样")
+
+
+def test_project_preference_question_bypasses_legacy_forge(tmp_path: Path):
+    repository = tmp_path / "repo"
+    repository.mkdir()
+    bridge = ConversationEngineeringBridge(
+        EngineeringSessionStore(tmp_path / "engineering"),
+        EngineeringConversationBindingStore(tmp_path / "engineering_bindings.json"),
+        repository=repository,
+        fallback=_ExplodingForgeFallback(),
+    )
+    engine = ConversationEngine(_Provider(), MemoryStore(tmp_path / "memory.db"))
+
+    reply = bridge.respond(
+        engine,
+        UserTurn("qq", "private:42", "你知道我平时做项目更喜欢什么样的开发方式吗"),
+    )
+
+    assert reply.text == "unused"
 
 
 def test_conversation_binding_round_trips(tmp_path: Path):
