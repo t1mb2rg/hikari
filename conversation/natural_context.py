@@ -9,9 +9,8 @@ _ACTIVE_ENGINEERING_STATUSES = {"pending", "running"}
 
 
 def _current_project_context(repository: str | Path | None) -> str | None:
-    if repository is None:
-        return None
-    path = Path(repository) / "CURRENT.md"
+    root = Path(repository) if repository is not None else Path.cwd()
+    path = root / "CURRENT.md"
     try:
         text = path.read_text(encoding="utf-8").strip()
     except OSError:
