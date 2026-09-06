@@ -8,13 +8,25 @@ from engineering.session import EngineeringSessionStore
 _ACTIVE_ENGINEERING_STATUSES = {"pending", "running"}
 
 
+def _current_project_context(repository: str | Path | None) -> str | None:
+    if repository is None:
+        return None
+    path = Path(repository) / "CURRENT.md"
+    try:
+        text = path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    return text or None
+
+
 def build_resident_natural_context(
     *,
     state_dir: str | Path,
     qq_enabled: bool,
     engineering_enabled: bool,
+    repository: str | Path | None = None,
 ) -> str:
-    """Turn a few current resident facts into compact model-visible context."""
+    """Turn a few current resident/project facts into compact model-visible context."""
 
     lines = [
         "当前可用的系统事实：",
@@ -42,7 +54,11 @@ def build_resident_natural_context(
     else:
         lines.append("- Engineering Runtime 当前未启用。")
 
+    project_context = _current_project_context(repository)
+    if project_context:
+        lines.extend(["", "当前项目上下文：", project_context])
+
     lines.append(
-        "这些只是当前系统事实；只在与眼前问题相关时自然使用，不需要逐条复述。"
+        "这些只是当前事实；只在与眼前问题相关时自然使用，不需要逐条复述。"
     )
     return "\n".join(lines)
