@@ -72,3 +72,41 @@ def test_dynamic_natural_context_sits_next_to_current_turn(tmp_path: Path):
     assert current.role == "user"
     assert "当前没有后台工程任务" in current.content
     assert "【现在对你说】\n你在干嘛" in current.content
+
+
+def test_dynamic_context_recalls_related_prior_user_turn_only(tmp_path: Path):
+    memory = MemoryStore(tmp_path / "memory.db")
+    memory.remember_event(
+        "conversation.user",
+        "我感觉 M7 最近越来越大了，工程结构有点太重。",
+        context={"channel": "qq", "conversation_id": "old", "role": "user"},
+        importance=1.0,
+    )
+    memory.remember_event(
+        "conversation.assistant",
+        "M7 已经完全失控了。",
+        context={"channel": "qq", "conversation_id": "old", "role": "assistant"},
+        importance=1.0,
+    )
+    memory.remember_event(
+        "conversation.user",
+        "当前会话里也提到了 M7。",
+        context={"channel": "qq", "conversation_id": "current", "role": "user"},
+        importance=1.0,
+    )
+
+    provider = RecordingProvider()
+    engine = WhiteboardConversationEngine(
+        provider,
+        memory,
+        system_instructions=JARVIS_PRODUCTION_SYSTEM_INSTRUCTIONS,
+        relevant_context_provider=lambda: "当前可用的系统事实：\n- Resident 正在运行。",
+        relevant_context_placement="current_turn",
+    )
+
+    engine.respond(UserTurn("qq", "current", "我之前为什么觉得 M7 有问题来着"))
+
+    current = provider.calls[0][-1].content
+    assert "我感觉 M7 最近越来越大了，工程结构有点太重。" in current
+    assert "M7 已经完全失控了。" not in current
+    assert "当前会话里也提到了 M7。" not in current
