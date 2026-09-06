@@ -4,7 +4,7 @@ import pytest
 
 from conversation.cli import build_parser
 from conversation.engine import ConversationEngine, INTERACTIVE_SYSTEM_INSTRUCTIONS
-from conversation.jarvis_openjarvis import OPENJARVIS_CHINESE_OUTPUT_SYSTEM_INSTRUCTIONS
+from conversation.jarvis_openjarvis import JARVIS_PRODUCTION_SYSTEM_INSTRUCTIONS
 from conversation.remote import PRIMARY_REMOTE_RELATIONSHIP_CONTEXT
 from conversation.whiteboard import (
     WHITEBOARD_HIKARI_SYSTEM_INSTRUCTIONS,
@@ -16,10 +16,10 @@ from resident.app import (
 )
 
 
-def test_cli_defaults_to_openjarvis_chinese_profile():
+def test_cli_defaults_to_bounded_jarvis_production_profile():
     args = build_parser().parse_args([])
 
-    assert args.prompt_profile == "jarvis-openjarvis-zh"
+    assert args.prompt_profile == "jarvis-production"
 
 
 def test_resident_conversation_defaults_to_jarvis_profile():
@@ -44,14 +44,14 @@ def test_resident_conversation_rejects_unknown_profile():
         )
 
 
-def test_resident_jarvis_profile_is_minimal_openjarvis_chinese_path():
+def test_resident_jarvis_profile_is_minimal_bounded_production_path():
     engine_type, minimal_context, system_instructions, relationship_context = (
         _conversation_engine_configuration("jarvis")
     )
 
     assert engine_type is WhiteboardConversationEngine
     assert minimal_context is True
-    assert system_instructions == OPENJARVIS_CHINESE_OUTPUT_SYSTEM_INSTRUCTIONS
+    assert system_instructions == JARVIS_PRODUCTION_SYSTEM_INSTRUCTIONS
     assert relationship_context is None
 
 
