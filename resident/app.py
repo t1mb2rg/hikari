@@ -27,6 +27,7 @@ from conversation.cli import build_chat_provider, default_context_collector
 from conversation.engine import ConversationEngine, INTERACTIVE_SYSTEM_INSTRUCTIONS
 from conversation.engineering_bridge import ConversationEngineeringBridge
 from conversation.jarvis_openjarvis import JARVIS_PRODUCTION_SYSTEM_INSTRUCTIONS
+from conversation.natural_context import build_resident_natural_context
 from conversation.receipts import ConversationReceiptStore
 from conversation.remote import (
     DEFAULT_CONVERSATION_HOST,
@@ -428,6 +429,22 @@ def main(argv: Sequence[str] | None = None) -> None:
             provider,
             user_model_path,
         )
+        engineering_enabled = runtime_bool(
+            values,
+            "HIKARI_ENGINEERING_ENABLED",
+            default=False,
+        )
+
+        whiteboard_kwargs: dict[str, object] = {}
+        if conversation_context_profile == "jarvis":
+            whiteboard_kwargs = {
+                "relevant_context_provider": lambda: build_resident_natural_context(
+                    state_dir=state_dir,
+                    qq_enabled=qq_enabled,
+                    engineering_enabled=engineering_enabled,
+                ),
+                "relevant_context_placement": "current_turn",
+            }
 
         engine = engine_type(
             provider,
@@ -444,6 +461,7 @@ def main(argv: Sequence[str] | None = None) -> None:
             user_model_service=user_model_service,
             user_fact_extractor=user_fact_extractor,
             system_instructions=system_instructions,
+            **whiteboard_kwargs,
         )
         forge_bridge: ConversationForgeBridge | None = None
         if runtime_bool(values, "HIKARI_FORGE_ENABLED", default=False):
@@ -456,7 +474,7 @@ def main(argv: Sequence[str] | None = None) -> None:
 
         engineering_bridge: ConversationEngineeringBridge | None = None
         engineering_supervisor: EngineeringWorkerSupervisor | None = None
-        if runtime_bool(values, "HIKARI_ENGINEERING_ENABLED", default=False):
+        if engineering_enabled:
             engineering_bridge = ConversationEngineeringBridge(
                 EngineeringSessionStore(state_dir / "engineering"),
                 EngineeringConversationBindingStore(
