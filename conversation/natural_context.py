@@ -52,8 +52,7 @@ def _recalled_user_turns(
     memory: MemoryStore,
     query: str,
     *,
-    channel: str,
-    conversation_id: str,
+    exclude_event_ids: set[int] | None = None,
     scan_limit: int = 240,
     limit: int = 2,
 ) -> list[str]:
@@ -61,14 +60,10 @@ def _recalled_user_turns(
     if not query_tokens:
         return []
 
+    excluded = exclude_event_ids or set()
     scored: list[tuple[int, int, str]] = []
     for event in memory.recent_events(scan_limit):
-        if event.event_type != "conversation.user":
-            continue
-        if (
-            event.context.get("channel") == channel
-            and event.context.get("conversation_id") == conversation_id
-        ):
+        if event.id in excluded or event.event_type != "conversation.user":
             continue
         overlap = len(query_tokens.intersection(_memory_tokens(event.content)))
         if overlap <= 0:
@@ -86,14 +81,12 @@ def add_recalled_conversation_context(
     *,
     memory: MemoryStore,
     query: str,
-    channel: str,
-    conversation_id: str,
+    exclude_event_ids: set[int] | None = None,
 ) -> str:
     recalled = _recalled_user_turns(
         memory,
         query,
-        channel=channel,
-        conversation_id=conversation_id,
+        exclude_event_ids=exclude_event_ids,
     )
     if not recalled:
         return context
