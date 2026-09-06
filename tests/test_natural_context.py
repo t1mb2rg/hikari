@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 from brain.model_reasoner import ChatMessage
 from conversation.jarvis_openjarvis import JARVIS_PRODUCTION_SYSTEM_INSTRUCTIONS
 from conversation.models import UserTurn
-from conversation.natural_context import build_resident_natural_context
+from conversation.natural_context import (
+    add_user_model_context,
+    build_resident_natural_context,
+)
 from conversation.whiteboard import WhiteboardConversationEngine
 from engineering.session import (
     EngineeringAuthority,
@@ -110,3 +114,27 @@ def test_dynamic_context_recalls_related_prior_user_turn_only(tmp_path: Path):
     assert "我感觉 M7 最近越来越大了，工程结构有点太重。" in current
     assert "M7 已经完全失控了。" not in current
     assert "当前会话里也提到了 M7。" not in current
+
+
+def test_user_model_context_exposes_statements_without_internal_metadata():
+    class FakeUserModelService:
+        def retrieve(self, query: str, *, limit: int):
+            assert "开发方式" in query
+            assert limit == 2
+            return [
+                SimpleNamespace(
+                    statement="用户偏好先做最小实现，再根据实际问题增加复杂度。",
+                    confidence=0.97,
+                    revision=4,
+                )
+            ]
+
+    context = add_user_model_context(
+        "当前事实：\n- Resident 正在运行。",
+        user_model_service=FakeUserModelService(),
+        query="我平时喜欢什么样的开发方式",
+    )
+
+    assert "用户偏好先做最小实现，再根据实际问题增加复杂度。" in context
+    assert "0.97" not in context
+    assert "revision" not in context
