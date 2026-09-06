@@ -8,7 +8,7 @@ from brain.model_reasoner import ChatMessage
 
 from .engine import ASSISTANT_EVENT_TYPE, USER_EVENT_TYPE, ConversationEngine
 from .models import AssistantReply, UserTurn
-from .natural_context import add_recalled_conversation_context
+from .natural_context import add_recalled_conversation_context, add_user_model_context
 
 
 WHITEBOARD_HIKARI_SYSTEM_INSTRUCTIONS = """# Role: Hikari
@@ -187,6 +187,12 @@ class WhiteboardConversationEngine(ConversationEngine):
                     memory=self.memory,
                     query=turn.text,
                     exclude_event_ids={event.id for event in history},
+                )
+                relevant_context = add_user_model_context(
+                    relevant_context,
+                    user_model_service=self.user_model_service,
+                    query=turn.text,
+                    limit=2,
                 )
 
         messages: list[ChatMessage] = [
