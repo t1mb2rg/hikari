@@ -24,7 +24,7 @@ class RecordingProvider:
         return "知道了，先生。"
 
 
-def test_resident_natural_context_reports_active_engineering_task(tmp_path: Path):
+def test_resident_natural_context_reports_runtime_and_current_project(tmp_path: Path):
     store = EngineeringSessionStore(tmp_path / "engineering")
     state = store.create(
         EngineeringSessionState.create(
@@ -38,16 +38,22 @@ def test_resident_natural_context_reports_active_engineering_task(tmp_path: Path
         status="running",
         latest_summary="正在执行目标测试",
     )
+    (tmp_path / "CURRENT.md").write_text(
+        "# Current\n\n- 当前正在推进 Natural Context。\n",
+        encoding="utf-8",
+    )
 
     context = build_resident_natural_context(
         state_dir=tmp_path,
         qq_enabled=True,
         engineering_enabled=True,
+        repository=tmp_path,
     )
 
     assert "Hikari Resident 当前正在运行" in context
     assert "QQ Bridge 当前由 Resident 托管" in context
     assert "Engineering 任务处于 running 状态：正在执行目标测试" in context
+    assert "当前正在推进 Natural Context" in context
 
 
 def test_dynamic_natural_context_sits_next_to_current_turn(tmp_path: Path):
