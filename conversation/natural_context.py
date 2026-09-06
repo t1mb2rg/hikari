@@ -73,10 +73,35 @@ def _recalled_user_turns(
         overlap = len(query_tokens.intersection(_memory_tokens(event.content)))
         if overlap <= 0:
             continue
-        scored.append((overlap, event.id, event.content.strip()))
+        content = event.content.strip()
+        if content:
+            scored.append((overlap, event.id, content))
 
     scored.sort(key=lambda item: (item[0], item[1]), reverse=True)
-    return [content for _, _, content in scored[:limit] if content]
+    return [content for _, _, content in scored[:limit]]
+
+
+def add_recalled_conversation_context(
+    context: str,
+    *,
+    memory: MemoryStore,
+    query: str,
+    channel: str,
+    conversation_id: str,
+) -> str:
+    recalled = _recalled_user_turns(
+        memory,
+        query,
+        channel=channel,
+        conversation_id=conversation_id,
+    )
+    if not recalled:
+        return context
+
+    lines = [context, "", "过去对话中可能与眼前这句话有关的用户原话："]
+    lines.extend(f"- {text}" for text in recalled)
+    lines.append("只有确实有助于当前问题时才使用这些过去内容。")
+    return "\n".join(lines)
 
 
 def build_resident_natural_context(
@@ -85,12 +110,8 @@ def build_resident_natural_context(
     qq_enabled: bool,
     engineering_enabled: bool,
     repository: str | Path | None = None,
-    memory: MemoryStore | None = None,
-    query: str | None = None,
-    channel: str = "",
-    conversation_id: str = "",
 ) -> str:
-    """Turn a few current resident/project/memory facts into compact context."""
+    """Turn a few current resident/project facts into compact model-visible context."""
 
     lines = [
         "当前可用的系统事实：",
@@ -121,18 +142,6 @@ def build_resident_natural_context(
     project_context = _current_project_context(repository)
     if project_context:
         lines.extend(["", "当前项目上下文：", project_context])
-
-    if memory is not None and isinstance(query, str) and query.strip():
-        recalled = _recalled_user_turns(
-            memory,
-            query,
-            channel=channel,
-            conversation_id=conversation_id,
-        )
-        if recalled:
-            lines.extend(["", "过去对话中可能与眼前这句话有关的用户原话："])
-            lines.extend(f"- {text}" for text in recalled)
-            lines.append("只有确实有助于当前问题时才使用这些过去内容。")
 
     lines.append(
         "这些只是当前事实；只在与眼前问题相关时自然使用，不需要逐条复述。"
