@@ -479,7 +479,7 @@ class ConversationEngineeringBridge(ConversationForgeBridge):
 
         requirements = engineering_requirements_for_intent(turn.text)
         if requirements is None:
-            if self.fallback is not None:
+            if self.fallback is not None and "forge" in turn.text.casefold():
                 return self.fallback.respond(engine, turn, source_ref=source_ref)
             return engine.respond(turn, source_ref=source_ref)
 
