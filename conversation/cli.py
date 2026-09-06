@@ -29,6 +29,7 @@ from .engine import (
 from .jarvis import JARVIS_SYSTEM_INSTRUCTIONS
 from .jarvis_openjarvis import (
     HIKARI_OPENJARVIS_CHINESE_OUTPUT_SYSTEM_INSTRUCTIONS,
+    JARVIS_PRODUCTION_SYSTEM_INSTRUCTIONS,
     OPENJARVIS_CHINESE_OUTPUT_SYSTEM_INSTRUCTIONS,
     OPENJARVIS_SYSTEM_INSTRUCTIONS,
 )
@@ -56,6 +57,7 @@ PROMPT_PROFILES = (
     "whiteboard2b",
     "whiteboard2c",
     "jarvis",
+    "jarvis-production",
     "jarvis-openjarvis",
     "jarvis-openjarvis-zh",
     "hikari-openjarvis-zh",
@@ -156,9 +158,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--prompt-profile",
         choices=PROMPT_PROFILES,
-        default="jarvis-openjarvis-zh",
+        default="jarvis-production",
         help=(
-            "默认使用 jarvis-openjarvis-zh；"
+            "默认使用 jarvis-production（OpenJarvis 人格 + 中文输出 + Hikari factual boundary）；"
             "production 保留当前 grounded Hikari 基线用于回退；"
             "whiteboard/whiteboard0 是 Prompt + 最近真实对话的 Whiteboard 0；"
             "whiteboard1 只额外加入一段自然语言的长期关系背景；"
@@ -183,7 +185,12 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    jarvis_profiles = {"jarvis", "jarvis-openjarvis", "jarvis-openjarvis-zh"}
+    jarvis_profiles = {
+        "jarvis",
+        "jarvis-production",
+        "jarvis-openjarvis",
+        "jarvis-openjarvis-zh",
+    }
     identity_swap_profile = args.prompt_profile == "hikari-openjarvis-zh"
     assistant_name = "Jarvis" if args.prompt_profile in jarvis_profiles else "Hikari"
 
@@ -197,6 +204,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         legacy_prompt = args.prompt_profile == "legacy"
         jarvis_prompt = args.prompt_profile in jarvis_profiles
+        jarvis_production = args.prompt_profile == "jarvis-production"
         openjarvis_prompt = args.prompt_profile in {
             "jarvis-openjarvis",
             "jarvis-openjarvis-zh",
@@ -211,6 +219,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             "whiteboard2b",
             "whiteboard2c",
             "jarvis",
+            "jarvis-production",
             "jarvis-openjarvis",
             "jarvis-openjarvis-zh",
             "hikari-openjarvis-zh",
@@ -257,6 +266,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 comparison_system_instructions = (
                     HIKARI_OPENJARVIS_CHINESE_OUTPUT_SYSTEM_INSTRUCTIONS
                 )
+            elif jarvis_production:
+                comparison_system_instructions = JARVIS_PRODUCTION_SYSTEM_INSTRUCTIONS
             elif openjarvis_chinese_output:
                 comparison_system_instructions = (
                     OPENJARVIS_CHINESE_OUTPUT_SYSTEM_INSTRUCTIONS
