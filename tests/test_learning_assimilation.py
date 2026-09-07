@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from attention import AttentionPolicy
 from brain import Feedback
 from core.presence import PresencePipeline
@@ -31,12 +33,12 @@ class CapturingSink:
         self.feedback.append(feedback)
 
 
-def test_assimilation_selects_only_confident_learned_memory(tmp_path):
+def test_assimilation_selects_only_confident_semantic_learning(tmp_path):
     store = MemoryStore(tmp_path / "memory.db")
     store.remember_memory(MemoryKind.EPISODIC, "raw experience", confidence=1.0)
-    old_user_model = store.remember_memory(
+    store.remember_memory(
         MemoryKind.USER_MODEL,
-        "older accepted user understanding",
+        "legacy user understanding that now belongs to user_model/",
         confidence=0.90,
     )
     store.remember_memory(
@@ -44,25 +46,28 @@ def test_assimilation_selects_only_confident_learned_memory(tmp_path):
         "weak semantic guess",
         confidence=0.60,
     )
-    new_semantic = store.remember_memory(
+    learned = store.remember_memory(
         MemoryKind.SEMANTIC,
         "new accepted semantic learning",
         confidence=0.85,
     )
 
-    policy = LearningAssimilationPolicy(min_confidence=0.75, limit=2)
-    recalled = policy.recall(store)
+    recalled = LearningAssimilationPolicy(min_confidence=0.75, limit=2).recall(store)
 
-    assert [memory.id for memory in recalled] == [new_semantic.id, old_user_model.id]
-    assert all(memory.kind in {MemoryKind.USER_MODEL, MemoryKind.SEMANTIC} for memory in recalled)
-    assert all(memory.confidence >= 0.75 for memory in recalled)
+    assert [memory.id for memory in recalled] == [learned.id]
+    assert all(memory.kind is MemoryKind.SEMANTIC for memory in recalled)
 
 
-def test_presence_assimilates_learning_only_on_reasoning_path(tmp_path):
+def test_assimilation_rejects_user_model_ownership():
+    with pytest.raises(ValueError, match="only accepts semantic"):
+        LearningAssimilationPolicy(eligible_kinds=(MemoryKind.USER_MODEL,))
+
+
+def test_presence_assimilates_semantic_learning_only_on_reasoning_path(tmp_path):
     store = MemoryStore(tmp_path / "memory.db")
     learned = store.remember_memory(
-        MemoryKind.USER_MODEL,
-        "The user prefers short milestone loops.",
+        MemoryKind.SEMANTIC,
+        "Closing a fully green gate before adding unrelated validation keeps work bounded.",
         confidence=0.95,
     )
     reasoner = CapturingReasoner()
@@ -107,12 +112,12 @@ def test_presence_assimilates_learning_only_on_reasoning_path(tmp_path):
     assert reasoner.calls == 1
 
 
-def test_presence_omits_learning_context_when_nothing_is_eligible(tmp_path):
+def test_presence_omits_learning_context_when_nothing_semantic_is_eligible(tmp_path):
     store = MemoryStore(tmp_path / "memory.db")
     store.remember_memory(
         MemoryKind.USER_MODEL,
-        "low confidence hypothesis",
-        confidence=0.4,
+        "high confidence user fact owned elsewhere",
+        confidence=0.95,
     )
     store.remember_memory(
         MemoryKind.EPISODIC,
