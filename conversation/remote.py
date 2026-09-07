@@ -6,6 +6,7 @@ from collections.abc import Mapping, Sequence
 import hmac
 import ipaddress
 from pathlib import Path
+from typing import Protocol, runtime_checkable
 
 from memory.store import MemoryStore
 from resident.environment import load_runtime_environment
@@ -13,7 +14,6 @@ from resident.paths import default_state_dir
 from user_model import build_user_model_runtime
 from websockets.asyncio.server import ServerConnection, serve
 
-from .action_bridge import ConversationForgeBridge
 from .cli import build_chat_provider, default_context_collector
 from .engine import ConversationEngine, INTERACTIVE_SYSTEM_INSTRUCTIONS
 from .models import AssistantReply, UserTurn
@@ -46,6 +46,20 @@ PRIMARY_REMOTE_RELATIONSHIP_CONTEXT = {
 }
 
 
+@runtime_checkable
+class ConversationActionBridge(Protocol):
+    """Optional control-path router layered in front of normal Conversation generation."""
+
+    def respond(
+        self,
+        engine: ConversationEngine,
+        turn: UserTurn,
+        *,
+        source_ref: str | None = None,
+    ) -> AssistantReply:
+        ...
+
+
 def _is_loopback_host(host: str) -> bool:
     value = host.strip().lower()
     if value in {"localhost", "::1"}:
@@ -64,14 +78,16 @@ class ConversationRequestProcessor:
         engine: ConversationEngine,
         receipts: ConversationReceiptStore,
         *,
-        action_bridge: ConversationForgeBridge | None = None,
+        action_bridge: ConversationActionBridge | None = None,
     ) -> None:
         if not isinstance(engine, ConversationEngine):
             raise TypeError("ConversationRequestProcessor requires ConversationEngine")
         if not isinstance(receipts, ConversationReceiptStore):
             raise TypeError("ConversationRequestProcessor requires ConversationReceiptStore")
-        if action_bridge is not None and not isinstance(action_bridge, ConversationForgeBridge):
-            raise TypeError("ConversationRequestProcessor action_bridge must be ConversationForgeBridge or None")
+        if action_bridge is not None and not isinstance(action_bridge, ConversationActionBridge):
+            raise TypeError(
+                "ConversationRequestProcessor action_bridge must implement the conversation bridge contract or be None"
+            )
         self.engine = engine
         self.receipts = receipts
         self.action_bridge = action_bridge
