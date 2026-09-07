@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 from core.delegation import (
@@ -23,9 +24,11 @@ from engineering.session import (
 )
 from engineering.workspace import EngineeringWorkspace, EngineeringWorkspaceError
 
-from .action_bridge import _remember_control_exchange
-from .engine import ConversationEngine
+from .engine import ASSISTANT_EVENT_TYPE, USER_EVENT_TYPE, ConversationEngine
 from .models import AssistantReply, UserTurn
+
+
+logger = logging.getLogger(__name__)
 
 
 _PROJECT_NOUNS = (
@@ -255,6 +258,41 @@ _MAINTAIN_REQUIREMENTS = (
     "engineering.tests.run",
     "engineering.git.commit",
 )
+
+
+def _remember_control_exchange(
+    engine: ConversationEngine,
+    turn: UserTurn,
+    reply: AssistantReply,
+) -> None:
+    """Keep deterministic Engineering control turns in ordinary conversation history."""
+
+    try:
+        engine.memory.remember_event(
+            USER_EVENT_TYPE,
+            turn.text,
+            context={
+                "channel": turn.channel,
+                "conversation_id": turn.conversation_id,
+                "role": "user",
+            },
+            importance=1.0,
+        )
+        engine.memory.remember_event(
+            ASSISTANT_EVENT_TYPE,
+            reply.text,
+            context={
+                "channel": turn.channel,
+                "conversation_id": turn.conversation_id,
+                "role": "assistant",
+            },
+            importance=1.0,
+        )
+    except Exception as exc:
+        logger.warning(
+            "Hikari Engineering control-memory write degraded: %s",
+            type(exc).__name__,
+        )
 
 
 def _contains_any(text: str, markers: tuple[str, ...]) -> bool:
