@@ -3,8 +3,9 @@ from __future__ import annotations
 from collections.abc import Mapping
 from copy import deepcopy
 
+from resident.operational_state import capture_operational_state
+
 from .delegation import hikari_engineering_capabilities, hikari_project_mandate
-from .operational_state import capture_operational_state
 from .self_state import describe_self_state
 
 
