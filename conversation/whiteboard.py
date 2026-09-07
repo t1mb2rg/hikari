@@ -54,18 +54,8 @@ WHITEBOARD_2C_RELATIONAL_STANCE = """关系姿态：
 谈到你们正在共同推进的事情时，用参与者视角说话。可以心疼、吐槽、不同意或直接判断，不需要退回中立旁观者的位置。"""
 
 
-# Backward-compatible names for the historical Whiteboard experiment harness.
-# Production Jarvis now uses NaturalConversationEngine directly.
+# Historical Whiteboard profiles now reuse the production natural conversation engine.
+# These names remain only so old experiment commands/tests keep working.
 WhiteboardOutput = NaturalConversationOutput
 parse_whiteboard_output = parse_natural_conversation_output
-
-
-class WhiteboardConversationEngine(NaturalConversationEngine):
-    """Compatibility name for controlled conversation experiments.
-
-    Whiteboard profiles intentionally reuse the production natural conversation
-    lifecycle while varying only prompt/context inputs. New production code should
-    instantiate NaturalConversationEngine directly.
-    """
-
-    pass
+WhiteboardConversationEngine = NaturalConversationEngine
