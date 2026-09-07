@@ -4,6 +4,11 @@ from pathlib import Path
 import re
 import unicodedata
 
+from awareness import (
+    ContextCollector,
+    ForegroundContextProvider,
+    InputActivityContextProvider,
+)
 from engineering.session import EngineeringSessionStore
 from memory.store import MemoryStore
 from user_model import UserModelService
@@ -29,6 +34,36 @@ _RECALL_STOPWORDS = {
     "还是",
     "已经",
 }
+_FOREGROUND_DIRECT_MARKERS = (
+    "前台窗口",
+    "当前前台",
+    "当前窗口",
+    "我现在在干嘛",
+    "我正在干嘛",
+    "我现在在做什么",
+    "我正在做什么",
+    "我现在在用什么",
+    "我正在用什么",
+    "我现在打开",
+    "我现在开着",
+    "我现在是在",
+    "我的屏幕",
+    "foreground",
+)
+_ACTIVITY_DIRECT_MARKERS = (
+    "没动电脑",
+    "没碰电脑",
+    "没操作电脑",
+    "多久没动",
+    "多久没碰",
+    "多久没操作",
+    "空闲多久",
+    "闲置多久",
+    "idle",
+)
+_TIME_MARKERS = ("现在", "当前", "刚刚", "刚才")
+_FOREGROUND_OBJECT_MARKERS = ("窗口", "应用", "程序", "软件", "浏览器", "屏幕", "桌面")
+_ACTIVITY_OBJECT_MARKERS = ("键盘", "鼠标", "键鼠", "输入", "操作电脑", "动电脑")
 
 
 def _current_project_context(repository: str | Path | None) -> str | None:
@@ -122,6 +157,127 @@ def add_user_model_context(
     lines.extend(f"- {statement}" for statement in statements[:limit])
     lines.append("只在确实相关时自然使用这些事实，不需要提及其存储方式或内部字段。")
     return "\n".join(lines)
+
+
+def _foreground_relevant(query: str) -> bool:
+    text = unicodedata.normalize("NFKC", query).casefold()
+    if any(marker in text for marker in _FOREGROUND_DIRECT_MARKERS):
+        return True
+    has_personal_anchor = any(marker in text for marker in ("我现在", "我正在", "我刚刚", "我刚才", "电脑现在"))
+    return (
+        has_personal_anchor
+        and any(marker in text for marker in _TIME_MARKERS)
+        and any(marker in text for marker in _FOREGROUND_OBJECT_MARKERS)
+    )
+
+
+def _activity_relevant(query: str) -> bool:
+    text = unicodedata.normalize("NFKC", query).casefold()
+    if any(marker in text for marker in _ACTIVITY_DIRECT_MARKERS):
+        return True
+    has_personal_anchor = any(marker in text for marker in ("我现在", "我正在", "我刚刚", "我刚才", "电脑现在"))
+    return (
+        has_personal_anchor
+        and any(marker in text for marker in _TIME_MARKERS)
+        and any(marker in text for marker in _ACTIVITY_OBJECT_MARKERS)
+    )
+
+
+def _default_conversation_awareness_collector() -> ContextCollector:
+    return ContextCollector(
+        [
+            InputActivityContextProvider(),
+            ForegroundContextProvider(),
+        ]
+    )
+
+
+def add_awareness_context(
+    context: str,
+    *,
+    query: str,
+    awareness_collector: ContextCollector | None = None,
+) -> str:
+    """Expose raw local activity signals only when the current turn asks for them."""
+
+    wants_foreground = _foreground_relevant(query)
+    wants_activity = _activity_relevant(query)
+    if not wants_foreground and not wants_activity:
+        return context
+
+    collector = awareness_collector or _default_conversation_awareness_collector()
+    try:
+        snapshot = collector.capture()
+    except Exception:
+        return context
+
+    facts: list[str] = []
+    if wants_foreground:
+        foreground = snapshot.providers.get("foreground", {})
+        if foreground.get("available") is True:
+            title = str(foreground.get("title", "")).strip()
+            if title:
+                facts.append(f"- 操作系统当前报告的前台窗口标题是“{title}”。")
+            else:
+                facts.append("- 操作系统当前报告存在前台窗口，但没有可用的窗口标题。")
+        elif foreground.get("supported") is False:
+            facts.append("- 当前系统不支持前台窗口信号。")
+        else:
+            facts.append("- 当前没有可用的前台窗口信号。")
+
+    if wants_activity:
+        activity = snapshot.providers.get("input_activity", {})
+        if activity.get("supported") is True:
+            idle_seconds = activity.get("idle_seconds")
+            if isinstance(idle_seconds, (int, float)) and not isinstance(idle_seconds, bool):
+                facts.append(
+                    f"- 系统记录的最近一次本机键盘或鼠标输入距今约 {max(0, round(float(idle_seconds)))} 秒。"
+                )
+            elif activity.get("recent_input") is True:
+                facts.append("- 最近检测到本机键盘或鼠标输入。")
+            elif activity.get("recent_input") is False:
+                facts.append("- 最近没有检测到本机键盘或鼠标输入。")
+        else:
+            facts.append("- 当前没有可用的本机输入活动信号。")
+
+    if not facts:
+        return context
+
+    lines = [context, "", "与眼前问题直接相关的当前环境信号：", *facts]
+    lines.append(
+        "这些只是操作系统观测到的信号，不代表用户的意图、专注状态或是否在场。"
+    )
+    return "\n".join(lines)
+
+
+def build_selected_conversation_context(
+    base_context: str,
+    *,
+    memory: MemoryStore,
+    user_model_service: UserModelService | None,
+    query: str,
+    exclude_event_ids: set[int] | None = None,
+    awareness_collector: ContextCollector | None = None,
+) -> str:
+    """Select the small model-visible context for one conversation turn."""
+
+    context = add_recalled_conversation_context(
+        base_context,
+        memory=memory,
+        query=query,
+        exclude_event_ids=exclude_event_ids,
+    )
+    context = add_user_model_context(
+        context,
+        user_model_service=user_model_service,
+        query=query,
+        limit=2,
+    )
+    return add_awareness_context(
+        context,
+        query=query,
+        awareness_collector=awareness_collector,
+    )
 
 
 def build_resident_natural_context(
