@@ -10,4 +10,5 @@
 - Conversation Consolidation A / Production Promotion 已完成验收：Whiteboard 实验中通过物理验收的自然对话生命周期已晋升为 `NaturalConversationEngine`；历史 Whiteboard profile 只保留兼容名称与实验 prompt/context 输入，不再维护第二份实现。
 - Conversation Consolidation B 已完成验收：Resident 与 standalone `hikari-conversation-host` 均统一走 `NaturalConversationEngine` + Jarvis production + thin Natural Context；旧 `ConversationEngine.respond()` 的 heavy JSON grounding 已退出正式 Host 路径。
 - `ConversationEngine` 当前仍同时承担公共 conversation lifecycle 与 legacy grounded fallback；其最终命名/拆分已登记为发布前 Release Cleanup blocker，不阻塞当前 Architecture Cleanup / Awareness Integration。
+- Learning Ownership Cleanup 已实施并等待针对性验收：`user_model/` 独占用户当前稳定事实/偏好；`learning/` 只允许从 episodic / experience memory 提炼并召回 reviewed semantic learning，不再生成或召回 `MemoryKind.USER_MODEL`。
 - 当前方向：Hikari 是系统身份，Jarvis 是默认对话人格；开发进度由 CURRENT.md 表达，运行时 self-state 只描述稳定系统事实；工程动作统一进入 Engineering Runtime；正式 Conversation Host 统一走 Natural/Jarvis 主线。
