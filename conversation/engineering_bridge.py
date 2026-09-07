@@ -23,7 +23,7 @@ from engineering.session import (
 )
 from engineering.workspace import EngineeringWorkspace, EngineeringWorkspaceError
 
-from .action_bridge import ConversationForgeBridge, _remember_control_exchange
+from .action_bridge import _remember_control_exchange
 from .engine import ConversationEngine
 from .models import AssistantReply, UserTurn
 
@@ -370,7 +370,7 @@ def _task_label(turn: EngineeringTurn | None) -> str:
     return text or "当前绑定的工程任务"
 
 
-class ConversationEngineeringBridge(ConversationForgeBridge):
+class ConversationEngineeringBridge:
     """Route delegated project work into Hikari EngineeringSession.
 
     Explicit Engineering status questions are answered directly from durable
@@ -384,21 +384,17 @@ class ConversationEngineeringBridge(ConversationForgeBridge):
         bindings: EngineeringConversationBindingStore,
         *,
         repository: str | Path,
-        fallback: ConversationForgeBridge | None = None,
     ) -> None:
         if not isinstance(store, EngineeringSessionStore):
             raise TypeError("ConversationEngineeringBridge requires EngineeringSessionStore")
         if not isinstance(bindings, EngineeringConversationBindingStore):
             raise TypeError("ConversationEngineeringBridge requires EngineeringConversationBindingStore")
-        if fallback is not None and not isinstance(fallback, ConversationForgeBridge):
-            raise TypeError("engineering fallback must be ConversationForgeBridge or None")
         repository_path = Path(repository).expanduser().resolve()
         if not repository_path.is_dir():
             raise ValueError(f"engineering repository must exist: {repository_path}")
         self.store = store
         self.bindings = bindings
         self.repository = repository_path
-        self.fallback = fallback
 
     def _bound_state(
         self,
@@ -479,8 +475,6 @@ class ConversationEngineeringBridge(ConversationForgeBridge):
 
         requirements = engineering_requirements_for_intent(turn.text)
         if requirements is None:
-            if self.fallback is not None and "forge" in turn.text.casefold():
-                return self.fallback.respond(engine, turn, source_ref=source_ref)
             return engine.respond(turn, source_ref=source_ref)
 
         capabilities = hikari_engineering_capabilities(True)
