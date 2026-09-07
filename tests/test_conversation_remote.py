@@ -9,7 +9,7 @@ from websockets.asyncio.server import serve
 
 from brain.model_reasoner import ChatMessage
 from conversation.engine import ConversationEngine
-from conversation.models import UserTurn
+from conversation.models import AssistantReply, UserTurn
 from conversation.protocol import (
     decode_envelope,
     encode_envelope,
@@ -54,6 +54,35 @@ def test_request_processor_deduplicates_same_request(tmp_path: Path):
     assert len(provider.calls) == 1
     events = MemoryStore(tmp_path / "memory.db").recent_events(10)
     assert len(events) == 2
+
+
+def test_request_processor_accepts_generic_conversation_bridge(tmp_path: Path):
+    class FakeBridge:
+        def respond(
+            self,
+            engine: ConversationEngine,
+            turn: UserTurn,
+            *,
+            source_ref: str | None = None,
+        ) -> AssistantReply:
+            return AssistantReply(turn.channel, turn.conversation_id, "bridge ok")
+
+    provider = FakeProvider(["unused"])
+    engine = ConversationEngine(provider, MemoryStore(tmp_path / "memory.db"))
+    processor = ConversationRequestProcessor(
+        engine,
+        ConversationReceiptStore(tmp_path / "receipts.db"),
+        action_bridge=FakeBridge(),
+    )
+
+    reply, duplicate = processor.process(
+        "qq:bridge:1",
+        UserTurn("qq", "private:7", "route me"),
+    )
+
+    assert reply.text == "bridge ok"
+    assert duplicate is False
+    assert provider.calls == []
 
 
 def test_request_id_cannot_be_reused_for_different_turn(tmp_path: Path):
