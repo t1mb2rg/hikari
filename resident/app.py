@@ -19,10 +19,6 @@ from awareness import (
 )
 from brain import ModelReasoner, Reasoner, SimpleReasoner
 from brain.providers import OpenAICompatibleProvider
-from conversation.action_bridge import (
-    ConversationForgeBridge,
-    build_conversation_forge_bridge,
-)
 from conversation.cli import build_chat_provider, default_context_collector
 from conversation.engine import ConversationEngine, INTERACTIVE_SYSTEM_INSTRUCTIONS
 from conversation.engineering_bridge import ConversationEngineeringBridge
@@ -463,14 +459,6 @@ def main(argv: Sequence[str] | None = None) -> None:
             system_instructions=system_instructions,
             **whiteboard_kwargs,
         )
-        forge_bridge: ConversationForgeBridge | None = None
-        if runtime_bool(values, "HIKARI_FORGE_ENABLED", default=False):
-            forge_bridge = build_conversation_forge_bridge(
-                values,
-                provider,
-                repository=repository,
-                state_dir=state_dir,
-            )
 
         engineering_bridge: ConversationEngineeringBridge | None = None
         engineering_supervisor: EngineeringWorkerSupervisor | None = None
@@ -481,7 +469,6 @@ def main(argv: Sequence[str] | None = None) -> None:
                     state_dir / "engineering_bindings.json"
                 ),
                 repository=repository,
-                fallback=forge_bridge,
             )
             engineering_supervisor = EngineeringWorkerSupervisor(
                 EngineeringWorkerProcessConfig(
@@ -492,12 +479,11 @@ def main(argv: Sequence[str] | None = None) -> None:
                     python_executable=child_python,
                 )
             )
-        action_bridge = engineering_bridge or forge_bridge
         conversation_host = ConversationWebSocketHost(
             ConversationRequestProcessor(
                 engine,
                 ConversationReceiptStore(receipt_path),
-                action_bridge=action_bridge,
+                action_bridge=engineering_bridge,
             ),
             shared_secret=shared_secret,
         )
@@ -551,10 +537,6 @@ def main(argv: Sequence[str] | None = None) -> None:
     print(
         "Hikari Engineering Worker："
         f"{'resident 托管' if engineering_supervisor is not None else '关闭'}",
-        flush=True,
-    )
-    print(
-        f"Hikari legacy Forge bridge：{'启用' if forge_bridge is not None else '关闭'}",
         flush=True,
     )
     print(f"Hikari QQ Bridge：{'resident 托管' if qq_enabled else '关闭'}", flush=True)
