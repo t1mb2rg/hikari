@@ -64,7 +64,7 @@ Conversation Transport
        ↓
 Conversation Host
        ↓
-Conversation Engine
+NaturalConversationEngine
        ↓
 Natural Context + Memory + User Model + Persona
        ↓
@@ -86,7 +86,7 @@ QQ Bridge
  ↓ hikari.conversation.v1
 Conversation Host
  ↓
-Conversation Engine
+NaturalConversationEngine
 ```
 
 Platform SDK types remain outside cognition packages. NoneBot / OneBot types belong only to the QQ integration package.
@@ -154,7 +154,11 @@ Direct user conversation bypasses ambient Attention because the user has already
 
 Owns direct, persistent, channel-neutral dialogue.
 
-The current production Jarvis path uses a thin model-visible context: recent conversation plus small selected Natural Context near the current utterance. Durable persistence and User Model assimilation continue behind that boundary.
+`NaturalConversationEngine` is the current production conversation implementation. Resident Conversation Host and standalone `hikari-conversation-host` both use this Natural/Jarvis path, with recent conversation plus small selected Natural Context near the current utterance. Durable persistence and User Model assimilation continue behind that boundary.
+
+`ConversationEngine` currently remains as a shared lifecycle/base implementation plus an explicit legacy grounded fallback. Its old `respond()` path builds the historical heavy JSON grounding payload and is not part of the default production Host path. Final naming/decomposition of this compatibility surface is a pre-release cleanup requirement so the production and legacy responsibilities are unambiguous before release.
+
+Historical Whiteboard profiles reuse the production natural conversation lifecycle and vary only prompt/context inputs; they do not maintain a second conversation engine implementation.
 
 ### Brain Interface
 
