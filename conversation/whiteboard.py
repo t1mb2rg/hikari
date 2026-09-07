@@ -1,14 +1,10 @@
 from __future__ import annotations
 
-from collections.abc import Callable
-from dataclasses import dataclass
-import re
-
-from brain.model_reasoner import ChatMessage
-
-from .engine import ASSISTANT_EVENT_TYPE, USER_EVENT_TYPE, ConversationEngine
-from .models import AssistantReply, UserTurn
-from .natural_context import add_recalled_conversation_context, add_user_model_context
+from .natural import (
+    NaturalConversationEngine,
+    NaturalConversationOutput,
+    parse_natural_conversation_output,
+)
 
 
 WHITEBOARD_HIKARI_SYSTEM_INSTRUCTIONS = """# Role: Hikari
@@ -58,205 +54,18 @@ WHITEBOARD_2C_RELATIONAL_STANCE = """关系姿态：
 谈到你们正在共同推进的事情时，用参与者视角说话。可以心疼、吐槽、不同意或直接判断，不需要退回中立旁观者的位置。"""
 
 
-RELEVANT_CONTEXT_PLACEMENTS = frozenset({"system", "current_turn"})
+# Backward-compatible names for the historical Whiteboard experiment harness.
+# Production Jarvis now uses NaturalConversationEngine directly.
+WhiteboardOutput = NaturalConversationOutput
+parse_whiteboard_output = parse_natural_conversation_output
 
 
-@dataclass(frozen=True)
-class WhiteboardOutput:
-    reaction: str
-    reply: str
+class WhiteboardConversationEngine(NaturalConversationEngine):
+    """Compatibility name for controlled conversation experiments.
 
-
-_REACTION_RE = re.compile(
-    r"<reaction>(.*?)(?:</reaction>|<reply>|$)",
-    re.IGNORECASE | re.DOTALL,
-)
-_REPLY_RE = re.compile(r"<reply>(.*?)(?:</reply>|$)", re.IGNORECASE | re.DOTALL)
-
-
-def parse_whiteboard_output(raw: str) -> WhiteboardOutput:
-    """Extract the private reaction and user-facing reply from Whiteboard output.
-
-    The reaction is intentionally ephemeral. It is not persisted, delivered, treated
-    as factual state, or passed into action routing. A plain-text model response is
-    accepted as a compatibility fallback so a formatting miss does not blank the turn.
+    Whiteboard profiles intentionally reuse the production natural conversation
+    lifecycle while varying only prompt/context inputs. New production code should
+    instantiate NaturalConversationEngine directly.
     """
 
-    if not isinstance(raw, str) or not raw.strip():
-        raise ValueError("whiteboard model output must not be empty")
-
-    text = raw.strip()
-    reaction_match = _REACTION_RE.search(text)
-    reply_match = _REPLY_RE.search(text)
-
-    reaction = reaction_match.group(1).strip() if reaction_match else ""
-    if reply_match:
-        reply = reply_match.group(1).strip()
-    else:
-        reply = _REACTION_RE.sub("", text)
-        reply = re.sub(
-            r"</?(?:reaction|reply)>",
-            "",
-            reply,
-            flags=re.IGNORECASE,
-        ).strip()
-
-    if not reply:
-        raise ValueError("whiteboard model output did not contain a usable reply")
-
-    return WhiteboardOutput(reaction=reaction, reply=reply)
-
-
-def _current_turn_with_relevant_context(context: str, text: str) -> str:
-    """Place trusted background next to the current utterance without making it system policy."""
-
-    return (
-        f"{context}\n\n"
-        f"【现在对你说】\n{text}\n\n"
-        "上面的背景只用于理解这句话，不需要单独回应背景；只回应【现在对你说】里的内容。"
-    )
-
-
-class WhiteboardConversationEngine(ConversationEngine):
-    """Conversation A/B path with deliberately minimal model-visible context.
-
-    Whiteboard 0 receives one system prompt, recent same-conversation user/assistant
-    turns, and the current user message. Later Whiteboard slices may opt into one small
-    natural-language context or behavioral section at a time. Existing Memory/User
-    Model persistence remains active after a successful reply, but durable retrieval
-    is deliberately withheld from reply generation until an experiment adds it back.
-    """
-
-    def __init__(
-        self,
-        *args,
-        relationship_context_text: str | None = None,
-        relational_stance_text: str | None = None,
-        relevant_context_text: str | None = None,
-        relevant_context_provider: Callable[[], str | None] | None = None,
-        relevant_context_placement: str = "system",
-        **kwargs,
-    ) -> None:
-        super().__init__(*args, **kwargs)
-        self.relationship_context_text = (
-            relationship_context_text.strip()
-            if isinstance(relationship_context_text, str)
-            and relationship_context_text.strip()
-            else None
-        )
-        self.relational_stance_text = (
-            relational_stance_text.strip()
-            if isinstance(relational_stance_text, str)
-            and relational_stance_text.strip()
-            else None
-        )
-        self.relevant_context_text = (
-            relevant_context_text.strip()
-            if isinstance(relevant_context_text, str)
-            and relevant_context_text.strip()
-            else None
-        )
-        if relevant_context_provider is not None and not callable(
-            relevant_context_provider
-        ):
-            raise TypeError("relevant_context_provider must be callable")
-        self.relevant_context_provider = relevant_context_provider
-        placement = str(relevant_context_placement).strip().casefold()
-        if placement not in RELEVANT_CONTEXT_PLACEMENTS:
-            raise ValueError(
-                "relevant_context_placement must be system or current_turn"
-            )
-        self.relevant_context_placement = placement
-
-    def respond(
-        self,
-        turn: UserTurn,
-        *,
-        source_ref: str | None = None,
-    ) -> AssistantReply:
-        if not isinstance(turn, UserTurn):
-            raise TypeError("respond requires UserTurn")
-
-        history = self._recent_history(turn.channel, turn.conversation_id)
-        relevant_context = self.relevant_context_text
-        if self.relevant_context_provider is not None:
-            provided_context = self.relevant_context_provider()
-            if isinstance(provided_context, str) and provided_context.strip():
-                relevant_context = add_recalled_conversation_context(
-                    provided_context.strip(),
-                    memory=self.memory,
-                    query=turn.text,
-                    exclude_event_ids={event.id for event in history},
-                )
-                relevant_context = add_user_model_context(
-                    relevant_context,
-                    user_model_service=self.user_model_service,
-                    query=turn.text,
-                    limit=2,
-                )
-
-        messages: list[ChatMessage] = [
-            ChatMessage(role="system", content=self.system_instructions),
-        ]
-        if self.relationship_context_text is not None:
-            messages.append(
-                ChatMessage(role="system", content=self.relationship_context_text)
-            )
-        if self.relational_stance_text is not None:
-            messages.append(
-                ChatMessage(role="system", content=self.relational_stance_text)
-            )
-        if (
-            relevant_context is not None
-            and self.relevant_context_placement == "system"
-        ):
-            messages.append(ChatMessage(role="system", content=relevant_context))
-        messages.extend(self._history_messages(history))
-
-        current_turn_text = turn.text
-        if (
-            relevant_context is not None
-            and self.relevant_context_placement == "current_turn"
-        ):
-            current_turn_text = _current_turn_with_relevant_context(
-                relevant_context,
-                turn.text,
-            )
-        messages.append(ChatMessage(role="user", content=current_turn_text))
-
-        raw = self.provider.complete(messages).strip()
-        if not raw:
-            raise RuntimeError("model provider returned empty conversation reply")
-        try:
-            output = parse_whiteboard_output(raw)
-        except ValueError as exc:
-            raise RuntimeError(str(exc)) from exc
-        text = output.reply
-
-        user_event = self.memory.remember_event(
-            USER_EVENT_TYPE,
-            turn.text,
-            context=self._event_context(turn.channel, turn.conversation_id, "user"),
-            importance=1.0,
-        )
-        self.memory.remember_event(
-            ASSISTANT_EVENT_TYPE,
-            text,
-            context=self._event_context(
-                turn.channel,
-                turn.conversation_id,
-                "assistant",
-            ),
-            importance=1.0,
-        )
-        reply = AssistantReply(
-            channel=turn.channel,
-            conversation_id=turn.conversation_id,
-            text=text,
-        )
-        self._assimilate_user_model(
-            source_ref=(source_ref or f"conversation-event:{user_event.id}"),
-            turn=turn,
-            history=history,
-        )
-        return reply
+    pass
