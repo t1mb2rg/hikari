@@ -8,7 +8,7 @@ from brain.model_reasoner import ChatMessage
 
 from .engine import ASSISTANT_EVENT_TYPE, USER_EVENT_TYPE, ConversationEngine
 from .models import AssistantReply, UserTurn
-from .natural_context import add_recalled_conversation_context, add_user_model_context
+from .natural_context import build_selected_conversation_context
 
 
 RELEVANT_CONTEXT_PLACEMENTS = frozenset({"system", "current_turn"})
@@ -74,9 +74,9 @@ class NaturalConversationEngine(ConversationEngine):
     """Production conversation path with selective natural-language context.
 
     The model sees the persona/system instructions, recent same-conversation turns,
-    one small relevant natural context when available, and the current user message.
-    Durable Conversation Memory and User Model remain behind selection boundaries
-    rather than being serialized wholesale into every prompt.
+    one small selected natural context when available, and the current user message.
+    Durable memory, User Model, runtime facts, and Awareness remain behind the same
+    selection boundary rather than being serialized wholesale into every prompt.
     """
 
     def __init__(
@@ -130,17 +130,12 @@ class NaturalConversationEngine(ConversationEngine):
         if self.relevant_context_provider is not None:
             provided_context = self.relevant_context_provider()
             if isinstance(provided_context, str) and provided_context.strip():
-                relevant_context = add_recalled_conversation_context(
+                relevant_context = build_selected_conversation_context(
                     provided_context.strip(),
                     memory=self.memory,
-                    query=turn.text,
-                    exclude_event_ids={event.id for event in history},
-                )
-                relevant_context = add_user_model_context(
-                    relevant_context,
                     user_model_service=self.user_model_service,
                     query=turn.text,
-                    limit=2,
+                    exclude_event_ids={event.id for event in history},
                 )
 
         messages: list[ChatMessage] = [
