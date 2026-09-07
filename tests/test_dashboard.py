@@ -1,17 +1,21 @@
 from __future__ import annotations
 
-import json
+from dataclasses import replace
 from pathlib import Path
-import time
 
 import pytest
 
 from dashboard.app import DEFAULT_DASHBOARD_PORT, _require_loopback, build_parser
 from dashboard.models import ComponentStatus
 from dashboard.probes import DashboardProbeConfig, DashboardProbeService
+from engineering.session import (
+    EngineeringAuthority,
+    EngineeringSessionState,
+    EngineeringSessionStore,
+)
 
 
-def _service(tmp_path: Path, *, stale_seconds: float = 180.0) -> DashboardProbeService:
+def _service(tmp_path: Path) -> DashboardProbeService:
     repository = tmp_path / "hikari"
     repository.mkdir()
     return DashboardProbeService(
@@ -19,58 +23,41 @@ def _service(tmp_path: Path, *, stale_seconds: float = 180.0) -> DashboardProbeS
             repository=repository,
             state_dir=tmp_path / "resident-state",
             napcat_root=tmp_path / "napcat",
-            forge_stale_seconds=stale_seconds,
         )
     )
 
 
-def _forge_state(service: DashboardProbeService, payload: dict[str, object]) -> Path:
-    state_file = service.forge_run_root / "task-1" / "control" / "state.json"
-    state_file.parent.mkdir(parents=True)
-    state_file.write_text(json.dumps(payload), encoding="utf-8")
-    return state_file
-
-
-def test_forge_probe_surfaces_current_verification_blocker(tmp_path: Path):
+def test_engineering_probe_is_idle_without_session(tmp_path: Path):
     service = _service(tmp_path)
-    _forge_state(
-        service,
-        {
-            "phase": "VERIFYING",
-            "outcome": None,
-            "attempt": 1,
-            "max_attempts": 3,
-            "worktree": str(tmp_path / "worktree"),
-            "updated_at": time.time(),
-        },
-    )
 
-    snapshot = service.probe_forge()
-
-    assert snapshot.status is ComponentStatus.RUNNING
-    assert snapshot.phase == "验证中"
-    assert snapshot.blocking_on == "项目测试"
-    assert snapshot.details["attempt"] == 1
-
-
-def test_forge_probe_treats_stale_running_state_as_historical(tmp_path: Path):
-    service = _service(tmp_path, stale_seconds=10)
-    _forge_state(
-        service,
-        {
-            "phase": "VERIFYING",
-            "outcome": None,
-            "updated_at": time.time() - 30,
-        },
-    )
-
-    snapshot = service.probe_forge()
+    snapshot = service.probe_engineering()
 
     assert snapshot.status is ComponentStatus.IDLE
-    assert snapshot.phase == "上次任务未收尾"
-    assert snapshot.blocking_on is None
-    assert snapshot.last_error == "历史运行状态未收尾"
-    assert snapshot.details["stale_phase"] == "VERIFYING"
+    assert snapshot.label == "Engineering Runtime"
+    assert snapshot.phase == "空闲"
+
+
+def test_engineering_probe_surfaces_running_test_phase(tmp_path: Path):
+    service = _service(tmp_path)
+    store = EngineeringSessionStore(service.config.state_dir / "engineering")
+    state = EngineeringSessionState.create(
+        project_id="hikari",
+        repository=service.config.repository,
+        authority_ceiling=EngineeringAuthority.read_only(),
+    )
+    state = replace(
+        state,
+        status="running",
+        latest_summary="正在运行项目测试。",
+    )
+    store.create(state)
+
+    snapshot = service.probe_engineering()
+
+    assert snapshot.status is ComponentStatus.RUNNING
+    assert snapshot.label == "Engineering Runtime"
+    assert snapshot.phase == "测试中"
+    assert snapshot.details["session_id"] == state.session_id
 
 
 def test_resident_probe_is_offline_without_host_state(tmp_path: Path):
