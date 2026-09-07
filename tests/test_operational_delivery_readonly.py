@@ -1,8 +1,8 @@
 from dataclasses import replace
 
-from core.operational_state import OperationalStateConfig, OperationalStateService
 from engineering.session import EngineeringAuthority, EngineeringSessionState
 from resident.napcat_login_guard import NapCatLoginStatus
+from resident.operational_state import OperationalStateConfig, OperationalStateService
 
 
 class _EngineeringStore:
