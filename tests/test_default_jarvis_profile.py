@@ -5,6 +5,7 @@ import pytest
 from conversation.cli import build_parser
 from conversation.engine import ConversationEngine, INTERACTIVE_SYSTEM_INSTRUCTIONS
 from conversation.jarvis_openjarvis import JARVIS_PRODUCTION_SYSTEM_INSTRUCTIONS
+from conversation.natural import NaturalConversationEngine
 from conversation.remote import PRIMARY_REMOTE_RELATIONSHIP_CONTEXT
 from conversation.whiteboard import (
     WHITEBOARD_HIKARI_SYSTEM_INSTRUCTIONS,
@@ -44,11 +45,12 @@ def test_resident_conversation_rejects_unknown_profile():
         )
 
 
-def test_resident_jarvis_profile_is_minimal_bounded_production_path():
+def test_resident_jarvis_profile_is_natural_bounded_production_path():
     engine_type, minimal_context, system_instructions, relationship_context = (
         _conversation_engine_configuration("jarvis")
     )
 
+    assert engine_type is NaturalConversationEngine
     assert engine_type is WhiteboardConversationEngine
     assert minimal_context is True
     assert system_instructions == JARVIS_PRODUCTION_SYSTEM_INSTRUCTIONS
