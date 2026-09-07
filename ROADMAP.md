@@ -180,6 +180,22 @@ Legacy Forge is not a separate active runtime component in this architecture. En
 
 ---
 
+# Pre-release Cleanup Gate
+
+Before a release is considered ready, architecture compatibility surfaces must make the production path unambiguous.
+
+Required Conversation cleanup:
+
+- `NaturalConversationEngine` remains the clearly named production conversation implementation.
+- `ConversationEngine` must no longer ambiguously combine shared lifecycle ownership with a legacy grounded generation path under a production-looking name.
+- The historical heavy JSON grounded path must be explicitly named or isolated as compatibility-only.
+- Rollback, diagnostic, and bake-off profiles may remain available, but they must not blur the default production architecture.
+- Tests and documentation must distinguish production behavior from compatibility behavior.
+
+This is a release blocker, not a blocker for the current Architecture Cleanup or Awareness Integration work.
+
+---
+
 # Development Principle
 
 Build the smallest loop that proves real user value.
