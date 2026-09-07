@@ -3,12 +3,14 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 
+from awareness import ContextCollector
 from brain.model_reasoner import ChatMessage
 from conversation.jarvis_openjarvis import JARVIS_PRODUCTION_SYSTEM_INSTRUCTIONS
 from conversation.models import UserTurn
 from conversation.natural_context import (
     add_user_model_context,
     build_resident_natural_context,
+    build_selected_conversation_context,
 )
 from conversation.whiteboard import WhiteboardConversationEngine
 from engineering.session import (
@@ -138,3 +140,66 @@ def test_user_model_context_exposes_statements_without_internal_metadata():
     assert "用户偏好先做最小实现，再根据实际问题增加复杂度。" in context
     assert "0.97" not in context
     assert "revision" not in context
+
+
+def test_selected_context_reads_awareness_only_for_relevant_current_environment_question(
+    tmp_path: Path,
+):
+    calls = {"foreground": 0, "input_activity": 0}
+
+    class FakeForegroundProvider:
+        name = "foreground"
+
+        def capture(self):
+            calls["foreground"] += 1
+            return {
+                "supported": True,
+                "available": True,
+                "title": "Visual Studio Code - hikari",
+                "class_name": "Chrome_WidgetWin_1",
+                "process_id": 1234,
+            }
+
+    class FakeInputActivityProvider:
+        name = "input_activity"
+
+        def capture(self):
+            calls["input_activity"] += 1
+            return {
+                "supported": True,
+                "recent_input": True,
+                "idle_seconds": 8.4,
+                "recent_input_threshold_seconds": 120.0,
+            }
+
+    collector = ContextCollector(
+        [FakeInputActivityProvider(), FakeForegroundProvider()]
+    )
+    memory = MemoryStore(tmp_path / "memory.db")
+    base = "当前可用的系统事实：\n- Resident 正在运行。"
+
+    ordinary = build_selected_conversation_context(
+        base,
+        memory=memory,
+        user_model_service=None,
+        query="我们下一步怎么做？",
+        awareness_collector=collector,
+    )
+
+    assert calls == {"foreground": 0, "input_activity": 0}
+    assert "Visual Studio Code" not in ordinary
+
+    environment = build_selected_conversation_context(
+        base,
+        memory=memory,
+        user_model_service=None,
+        query="我现在前台是什么窗口，刚刚多久没动电脑？",
+        awareness_collector=collector,
+    )
+
+    assert calls == {"foreground": 1, "input_activity": 1}
+    assert "Visual Studio Code - hikari" in environment
+    assert "最近一次本机键盘或鼠标输入距今约 8 秒" in environment
+    assert "不代表用户的意图、专注状态或是否在场" in environment
+    assert "process_id" not in environment
+    assert "Chrome_WidgetWin_1" not in environment
