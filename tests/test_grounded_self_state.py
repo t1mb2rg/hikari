@@ -2,13 +2,13 @@ from core.capabilities import describe_capabilities
 from core.self_state import describe_self_state
 
 
-def test_self_state_uses_canonical_m7_07_development_state() -> None:
+def test_self_state_does_not_own_project_development_phase() -> None:
     state = describe_self_state({})
 
-    assert state["development"]["milestone"] == "M7"
-    assert state["development"]["active_slice"] == "M7-07"
-    assert state["development"]["active_slice_name"] == "Capability-Aware Delegation"
-    assert state["development"]["source"] == "runtime_manifest"
+    assert "development" not in state
+    encoded = repr(state)
+    assert "M7-07" not in encoded
+    assert "Capability-Aware Delegation" not in encoded
 
 
 def test_self_state_anchors_jarvis_style_north_star() -> None:
@@ -57,12 +57,15 @@ def test_awareness_is_not_reduced_to_engineering_request_response() -> None:
     assert awareness["filesystem_observation_via_engineering_is_direct_sensor"] is False
 
 
-def test_self_state_does_not_equate_conversation_model_or_host_with_hikari_identity() -> None:
+def test_self_state_separates_hikari_system_identity_from_jarvis_persona_and_models() -> None:
     state = describe_self_state({"HIKARI_ENGINEERING_ENABLED": "true"})
 
-    assert state["identity_scope"]["system_identity"] == "hikari"
-    assert state["identity_scope"]["model_is_not_identity"] is True
-    assert state["identity_scope"]["host_is_not_identity"] is True
+    identity = state["identity_scope"]
+    assert identity["system_identity"] == "hikari"
+    assert identity["conversation_persona"] == "jarvis"
+    assert identity["persona_is_not_system_identity"] is True
+    assert identity["model_is_not_identity"] is True
+    assert identity["host_is_not_identity"] is True
     assert (
         state["cognition_topology"]["conversation"]["identity_relation"]
         == "part_of_hikari_not_hikari_itself"
