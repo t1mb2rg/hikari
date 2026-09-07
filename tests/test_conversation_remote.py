@@ -9,7 +9,9 @@ from websockets.asyncio.server import serve
 
 from brain.model_reasoner import ChatMessage
 from conversation.engine import ConversationEngine
+from conversation.jarvis_openjarvis import JARVIS_PRODUCTION_SYSTEM_INSTRUCTIONS
 from conversation.models import AssistantReply, UserTurn
+from conversation.natural import NaturalConversationEngine
 from conversation.protocol import (
     decode_envelope,
     encode_envelope,
@@ -17,7 +19,11 @@ from conversation.protocol import (
     turn_envelope,
 )
 from conversation.receipts import ConversationReceiptStore
-from conversation.remote import ConversationRequestProcessor, ConversationWebSocketHost
+from conversation.remote import (
+    ConversationRequestProcessor,
+    ConversationWebSocketHost,
+    build_remote_conversation_engine,
+)
 from integrations.qq_bridge.core_client import ConversationCoreClient
 from memory.store import MemoryStore
 
@@ -38,6 +44,24 @@ def _processor(tmp_path: Path, provider: FakeProvider) -> ConversationRequestPro
         engine,
         ConversationReceiptStore(tmp_path / "receipts.db"),
     )
+
+
+def test_standalone_host_builds_natural_jarvis_engine(tmp_path: Path):
+    provider = FakeProvider(["<reaction>ok</reaction><reply>ok</reply>"])
+    engine = build_remote_conversation_engine(
+        provider,
+        MemoryStore(tmp_path / "memory.db"),
+        state_dir=tmp_path,
+        history_limit=12,
+        user_model_service=None,
+        user_fact_extractor=None,
+        qq_enabled=False,
+        engineering_enabled=False,
+    )
+
+    assert isinstance(engine, NaturalConversationEngine)
+    assert engine.system_instructions == JARVIS_PRODUCTION_SYSTEM_INSTRUCTIONS
+    assert engine.relevant_context_placement == "current_turn"
 
 
 def test_request_processor_deduplicates_same_request(tmp_path: Path):
