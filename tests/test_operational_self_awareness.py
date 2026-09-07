@@ -3,13 +3,13 @@ import json
 
 from core.capabilities import describe_capabilities
 from core.delivery import DeliveryOutbox, DeliveryRequest
-from core.operational_state import OperationalStateConfig, OperationalStateService
 from engineering.heartbeat import (
     EngineeringWorkerHeartbeat,
     EngineeringWorkerHeartbeatStore,
 )
 from engineering.session import EngineeringAuthority, EngineeringSessionState
 from resident.napcat_login_guard import NapCatLoginError, NapCatLoginStatus
+from resident.operational_state import OperationalStateConfig, OperationalStateService
 
 
 class _EngineeringStore:
@@ -257,4 +257,4 @@ def test_capability_grounding_accepts_explicit_operational_snapshot_without_host
 
     assert capabilities["operational_state"]["overall"] == "degraded"
     assert capabilities["operational_state"]["components"]["qq"]["status"] == "waiting"
-    assert capabilities["self_state"]["development"]["active_slice"] == "M7-07"
+    assert "development" not in capabilities["self_state"]
