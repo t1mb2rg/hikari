@@ -41,17 +41,16 @@ def _build_pipeline(store: MemoryStore, reasoner: ModelReasoner) -> PresencePipe
 
 def _accept_gate_learning(store: MemoryStore) -> None:
     candidate = MemoryCandidate(
-        kind=MemoryKind.USER_MODEL,
+        kind=MemoryKind.SEMANTIC,
         content=(
-            "The user prefers short milestone loops: when a gate is fully green, "
-            "close it and move directly to the next bounded task instead of lingering "
-            "on redundant validation."
+            "Once a bounded development gate has decisive green evidence, adding unrelated "
+            "validation tends to delay forward progress without materially improving confidence."
         ),
         context={"gate": "m4-03"},
         confidence=0.96,
         salience=0.96,
         source_event_id=None,
-        reason="M4-03 physical gate accepted learning",
+        reason="M4-03 physical gate accepted semantic learning",
     )
     review = MemoryReviewPolicy().review(candidate)
     learned = apply_memory_review(store, review)
