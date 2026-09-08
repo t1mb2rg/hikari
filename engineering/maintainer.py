@@ -264,14 +264,15 @@ def commit_project_changes(worktree: str | Path, intent: str) -> str | None:
 def push_engineering_branch(
     worktree: str | Path,
     branch: str,
+    baseline_commit: str,
     *,
     timeout_seconds: float = 120.0,
 ) -> str:
     """Push exactly one clean Hikari engineering branch to the configured ``origin``.
 
     The branch name and destination are not supplied by the model. This helper never
-    force-pushes, never pushes a protected branch, and never publishes dirty worktree
-    state. It returns the pushed local HEAD commit SHA.
+    force-pushes, never pushes a protected branch, and never publishes dirty or empty
+    engineering state. It returns the pushed local HEAD commit SHA.
     """
 
     root = Path(worktree).expanduser().resolve()
@@ -309,6 +310,8 @@ def push_engineering_branch(
         capture_output=True,
         check=True,
     ).stdout.strip()
+    if not baseline_commit.strip() or head == baseline_commit.strip():
+        raise RuntimeError("engineering branch has no committed project change to push")
 
     environment = {
         str(key): str(value)
