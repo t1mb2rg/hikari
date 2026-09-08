@@ -231,7 +231,7 @@ Hikari Worker commits engineering branch
 terminal result → DeliveryOutbox → user
 ```
 
-因此，普通仓库读取、项目文件修改、项目测试以及隔离 engineering branch commit 已经属于 Hikari 可直接完成的维护工作，不需要用户为每个文件、命令或测试逐步审批。Conversation 模型本身仍然没有直接 shell 或文件系统感知，实际执行由 Engineering Runtime 完成。
+因此，普通仓库读取、项目文件修改、项目内命令执行、项目测试以及隔离 engineering branch commit 已经属于 Hikari 可直接完成的维护工作，不需要用户为每个文件、命令或测试逐步审批。Conversation 模型本身仍然没有直接 shell 或文件系统感知，实际执行由 Engineering Runtime 完成。
 
 Engineering backend 使用独立于 Conversation 的 Hikari-owned 配置。`HIKARI_ENGINEERING_MODEL` 默认显式传给 Claude Code（默认 `sonnet`），不会再把 `HIKARI_MODEL_NAME` 或环境中无关的 `ANTHROPIC_MODEL` 当成自己的模型。单次 backend turn 还受 `HIKARI_ENGINEERING_BACKEND_TIMEOUT_SECONDS` deadline 约束，避免 Worker heartbeat 健康但底层 Claude 子进程无限卡住。
 
@@ -239,7 +239,7 @@ Engineering 任务状态查询是 deterministic control path。用户询问当�
 
 历史 EngineeringSession 的 terminal result 仍会为了崩溃恢复而补发，但消息必须标注“补发旧工程任务结果”并带原始任务，因此旧失败不能再冒充当前任务的结果。
 
-当前项目 mandate 还委托了后续可增长的结果，例如 non-protected engineering branch push 与 Draft PR 维护，但这些能力尚未实现时会被明确表示为 capability gap，而不是假装可用或要求用户逐动作授权。
+项目 mandate 委托的 non-protected engineering branch push 也已实现：只有单独的 narrow push turn 会把当前 EngineeringSession 的 engineering branch 推送到配置的 origin，branch/refspec 由 durable state 决定，不允许 force push、merge、protected branch、dirty worktree 或没有 committed delta 的空分支，普通维护 turn 仍然不获得 network/publish 权限。Draft PR 维护则仍是 capability gap——结果已被 mandate 委托，但实现尚未落地，因此仍会明确表示为 capability gap，而不是假装可用或要求用户逐动作授权。
 
 以下影响边界仍然默认升级给用户：protected branch merge、force push shared history、secret 修改或暴露、生产/外部部署、破坏性数据迁移、权限边界扩张、项目北极星改变以及显著外部成本。护栏放在影响边界上，而不是铺满普通维护流程。
 
