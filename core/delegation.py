@@ -228,10 +228,9 @@ def hikari_engineering_capabilities(engineering_enabled: bool) -> dict[str, Capa
         ),
         "engineering.git.open_or_update_draft_pr": CapabilityState(
             "engineering.git.open_or_update_draft_pr",
-            available=False,
+            available=engineering_enabled,
             delegated=engineering_enabled,
-            scope="engineering_branch",
-            gap="github_publish_execution_not_implemented_yet",
+            scope="engineering_branch_to_draft_pull_request",
         ),
         "engineering.git.merge_protected": CapabilityState(
             "engineering.git.merge_protected",
