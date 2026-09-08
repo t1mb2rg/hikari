@@ -111,6 +111,39 @@ def project_maintainer_authority() -> EngineeringAuthority:
     )
 
 
+def project_push_authority() -> EngineeringAuthority:
+    """Narrow authority for publishing only the current Hikari engineering branch."""
+
+    return EngineeringAuthority(
+        repository_read=True,
+        repository_write=False,
+        run_commands=False,
+        run_tests=False,
+        network=True,
+        publish=True,
+        outside_repo=False,
+    )
+
+
+def project_session_authority_ceiling() -> EngineeringAuthority:
+    """Standing session ceiling for delegated maintenance plus non-protected branch push.
+
+    Individual turns still receive a strict subset. Ordinary edit/test turns therefore
+    remain offline even though the same durable session may later receive a dedicated
+    push turn.
+    """
+
+    return EngineeringAuthority(
+        repository_read=True,
+        repository_write=True,
+        run_commands=True,
+        run_tests=True,
+        network=True,
+        publish=True,
+        outside_repo=False,
+    )
+
+
 def is_read_only_authority(authority: EngineeringAuthority) -> bool:
     return (
         authority.repository_read
@@ -130,6 +163,18 @@ def is_maintainer_authority(authority: EngineeringAuthority) -> bool:
         and authority.run_tests
         and not authority.network
         and not authority.publish
+        and not authority.outside_repo
+    )
+
+
+def is_push_authority(authority: EngineeringAuthority) -> bool:
+    return (
+        authority.repository_read
+        and not authority.repository_write
+        and not authority.run_commands
+        and not authority.run_tests
+        and authority.network
+        and authority.publish
         and not authority.outside_repo
     )
 
@@ -214,3 +259,84 @@ def commit_project_changes(worktree: str | Path, intent: str) -> str | None:
         capture_output=True,
         check=True,
     ).stdout.strip()
+
+
+def push_engineering_branch(
+    worktree: str | Path,
+    branch: str,
+    *,
+    timeout_seconds: float = 120.0,
+) -> str:
+    """Push exactly one clean Hikari engineering branch to the configured ``origin``.
+
+    The branch name and destination are not supplied by the model. This helper never
+    force-pushes, never pushes a protected branch, and never publishes dirty worktree
+    state. It returns the pushed local HEAD commit SHA.
+    """
+
+    root = Path(worktree).expanduser().resolve()
+    normalized_branch = branch.strip()
+    if not normalized_branch.startswith("hikari/engineering/"):
+        raise RuntimeError("refusing to push a non-engineering branch")
+
+    current_branch = subprocess.run(
+        ["git", "-C", str(root), "branch", "--show-current"],
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        capture_output=True,
+        check=True,
+    ).stdout.strip()
+    if current_branch != normalized_branch:
+        raise RuntimeError("engineering worktree branch does not match durable session state")
+
+    dirty = subprocess.run(
+        ["git", "-C", str(root), "status", "--porcelain"],
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        capture_output=True,
+        check=True,
+    ).stdout.strip()
+    if dirty:
+        raise RuntimeError("refusing to push an engineering branch with uncommitted changes")
+
+    head = subprocess.run(
+        ["git", "-C", str(root), "rev-parse", "HEAD"],
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        capture_output=True,
+        check=True,
+    ).stdout.strip()
+
+    environment = {
+        str(key): str(value)
+        for key, value in os.environ.items()
+        if not str(key).upper().startswith("HIKARI_")
+    }
+    environment["GIT_TERMINAL_PROMPT"] = "0"
+    proc = subprocess.run(
+        [
+            "git",
+            "-C",
+            str(root),
+            "push",
+            "--set-upstream",
+            "origin",
+            f"refs/heads/{normalized_branch}:refs/heads/{normalized_branch}",
+        ],
+        env=environment,
+        stdin=subprocess.DEVNULL,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        capture_output=True,
+        timeout=max(1.0, float(timeout_seconds)),
+    )
+    if proc.returncode != 0:
+        detail = (proc.stderr or proc.stdout).strip()
+        if len(detail) > 1600:
+            detail = detail[-1600:]
+        raise RuntimeError(detail or "git push failed")
+    return head
