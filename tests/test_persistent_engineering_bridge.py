@@ -8,6 +8,7 @@ from conversation.models import UserTurn
 from conversation.persistent_engineering_bridge import PersistentConversationEngineeringBridge
 from engineering.bindings import EngineeringConversationBindingStore
 from engineering.goal import EngineeringGoalStore
+from engineering.maintainer_loop import PersistentMaintainerLoop
 from engineering.session import EngineeringSessionStore
 from memory.store import MemoryStore
 
@@ -86,9 +87,19 @@ def test_multi_effect_request_becomes_one_durable_ordered_goal(tmp_path: Path) -
         "open_or_update_draft_pr",
     ]
     assert goal.current_step_index == 0
+    assert goal.current_step.status == "pending"
+    assert goal.current_step.turn_id is None
+
+    # Conversation only persists the goal. Resident owns work selection/enqueue.
+    state = sessions.load(goal.session_id)
+    assert state.status == "idle"
+    assert state.current_turn_id is None
+
+    outcome = PersistentMaintainerLoop(goals, sessions).advance_all()
+    assert len(outcome) == 1
+    goal = goals.load(goal.goal_id)
     assert goal.current_step.status == "queued"
     assert goal.current_step.turn_id is not None
-
     state = sessions.load(goal.session_id)
     assert state.status == "pending"
     assert state.current_turn_id == goal.current_step.turn_id
@@ -119,7 +130,7 @@ def test_status_query_reports_persistent_goal_step_not_only_raw_session(tmp_path
     assert "持久 Engineering 目标" in reply.text
     assert "第 1/3 步" in reply.text
     assert "maintain_project" in reply.text
-    assert "queued" in reply.text
+    assert "pending" in reply.text
 
 
 def test_second_multi_effect_goal_is_not_interleaved_with_active_goal(tmp_path: Path) -> None:
