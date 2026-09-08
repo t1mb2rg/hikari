@@ -247,6 +247,8 @@ Engineering 的任务状态以持久化运行结果为准，不由对话模型�
 
 依赖升级必须先在锁定的候选环境中完成验证，不能直接修改正在运行的环境。
 
+Jarvis Engineering Voice Boundary 当前已经实现并进入物理验收：Engineering terminal path 只向 Jarvis 投影 durable terminal facts，由 Resident 持有的 voice renderer 生成自然回复并写入 DeliveryOutbox；accepted、capability gap 与 escalation 均由确定性能力/授权判断先行决定，模型只负责表达，不参与权限决定。
+
 ## Operations doctor
 
 在 Windows Resident / QQ / NapCat 链路异常时，先运行只读诊断：
