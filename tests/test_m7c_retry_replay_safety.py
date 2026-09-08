@@ -9,7 +9,12 @@ from engineering.bindings import (
     EngineeringConversationBindingStore,
 )
 from engineering.delivery import EngineeringCompletionDelivery, EngineeringCompletionFacts
-from engineering.effects import RESTART_REPLAY_SAFE_EFFECTS, turn_effect
+from engineering.effects import (
+    RESTART_REPLAY_SAFE_EFFECTS,
+    SUPPORTED_ENGINEERING_EFFECTS,
+    authority_for_effect,
+    turn_effect,
+)
 from engineering.goal import EngineeringGoalState, EngineeringGoalStep, EngineeringGoalStore
 from engineering.maintainer import project_maintainer_authority, project_session_authority_ceiling
 from engineering.maintainer_loop import PersistentMaintainerLoop
@@ -20,6 +25,7 @@ from engineering.session import (
     EngineeringSessionStore,
     EngineeringTurn,
 )
+from engineering.worker import _turn_effect as worker_turn_effect
 from engineering.workspace import EngineeringWorkspace
 
 
@@ -43,6 +49,20 @@ def _repo(path: Path) -> Path:
     _git(path, "add", "README.md")
     _git(path, "commit", "-m", "baseline")
     return path
+
+
+def test_recovery_and_worker_effect_parsers_agree_for_all_supported_machine_markers() -> None:
+    for effect in SUPPORTED_ENGINEERING_EFFECTS:
+        turn = EngineeringTurn.create(
+            intent=f"execute {effect}",
+            context=(
+                "Semantic goal may mention Requested effect: inspect_project. earlier. "
+                f"Requested effect: {effect}. Machine field wins."
+            ),
+            authority=authority_for_effect(effect),
+        )
+        assert turn_effect(turn) == effect
+        assert worker_turn_effect(turn) == effect
 
 
 def test_legacy_command_authority_stays_non_replayable_without_effect_marker() -> None:
