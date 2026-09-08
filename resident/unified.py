@@ -9,8 +9,13 @@ import subprocess
 import sys
 import time
 
-from core.runtime import ResidentPresenceRuntime
+from conversation.engineering_voice import EngineeringVoiceFacts, EngineeringVoiceRenderer
 from conversation.remote import ConversationWebSocketHost
+from core.delivery import DeliveryOutbox
+from core.runtime import ResidentPresenceRuntime
+from engineering.bindings import EngineeringConversationBindingStore
+from engineering.delivery import EngineeringCompletionDelivery, EngineeringCompletionFacts
+from engineering.session import EngineeringSessionStore
 from websockets.asyncio.server import serve
 
 from .napcat_login_guard import NapCatLoginGuard
@@ -327,6 +332,45 @@ class EngineeringWorkerSupervisor:
             await asyncio.to_thread(process.wait)
 
 
+def _build_engineering_delivery_pump(
+    conversation_host: ConversationWebSocketHost,
+    engineering_supervisor: EngineeringWorkerSupervisor,
+) -> EngineeringDeliveryPump:
+    """Keep terminal fact projection in Resident, outside the Engineering Worker."""
+
+    state_dir = engineering_supervisor.config.state_dir
+    sessions = EngineeringSessionStore(state_dir / "engineering")
+    bindings = EngineeringConversationBindingStore(state_dir / "engineering_bindings.json")
+    voice = EngineeringVoiceRenderer(conversation_host.processor.engine)
+
+    def render(
+        facts: EngineeringCompletionFacts,
+        channel: str,
+        conversation_id: str,
+    ) -> str:
+        return voice.render(
+            EngineeringVoiceFacts(
+                kind=facts.status,
+                goal=facts.goal,
+                status=facts.status,
+                summary=facts.summary,
+                changed_files=facts.changed_files,
+                branch=facts.branch,
+                historical=facts.historical,
+            ),
+            channel=channel,
+            conversation_id=conversation_id,
+        )
+
+    delivery = EngineeringCompletionDelivery(
+        sessions,
+        bindings,
+        DeliveryOutbox(state_dir / "proactive_delivery.db"),
+        renderer=render,
+    )
+    return delivery.pump
+
+
 class UnifiedResidentService:
     """Own Presence, Conversation, voice projection, and Hikari-owned child capabilities."""
 
@@ -352,6 +396,12 @@ class UnifiedResidentService:
             raise ValueError("bind_port must be between 0 and 65535")
         if engineering_delivery_pump is not None and not callable(engineering_delivery_pump):
             raise TypeError("engineering_delivery_pump must be callable or None")
+
+        if engineering_delivery_pump is None and engineering_supervisor is not None:
+            engineering_delivery_pump = _build_engineering_delivery_pump(
+                conversation_host,
+                engineering_supervisor,
+            )
 
         self.presence = presence
         self.conversation_host = conversation_host
