@@ -62,12 +62,29 @@ def authority_for_effect(effect: str) -> EngineeringAuthority:
     raise EngineeringProtocolError(f"unsupported engineering effect: {normalized!r}")
 
 
+def _is_command_authority(authority: EngineeringAuthority) -> bool:
+    return (
+        authority.repository_read
+        and not authority.repository_write
+        and authority.run_commands
+        and not authority.run_tests
+        and not authority.network
+        and not authority.publish
+        and not authority.outside_repo
+    )
+
+
 def turn_effect(turn: EngineeringTurn) -> str:
     """Read the deterministic effect from one Bridge-authored EngineeringTurn.
 
     The last marker wins because user/semantic text may mention the same literal phrase
     earlier in the context. Legacy turns without the marker are mapped from their narrow
     authority profile so restart recovery can retain the pre-M7-C behavior safely.
+
+    Command authority is checked before generic read-only authority. The historical
+    ``is_read_only_authority`` predicate intentionally allows ``run_commands`` for the
+    Worker read-only execution path, so reversing this order would make an old command
+    turn look replay-safe after a crash.
     """
 
     if not isinstance(turn, EngineeringTurn):
@@ -87,16 +104,8 @@ def turn_effect(turn: EngineeringTurn) -> str:
         # Before Draft PR support, blank publish turns meant push. Preserve that legacy
         # interpretation rather than guessing a newer effect during crash recovery.
         return "push_engineering_branch"
+    if _is_command_authority(authority):
+        return "run_project_command"
     if is_read_only_authority(authority):
         return "inspect_project"
-    if (
-        authority.repository_read
-        and not authority.repository_write
-        and authority.run_commands
-        and not authority.run_tests
-        and not authority.network
-        and not authority.publish
-        and not authority.outside_repo
-    ):
-        return "run_project_command"
     return ""
