@@ -74,12 +74,20 @@ class EngineeringWorkerHeartbeatStore:
 
     def write(self, heartbeat: EngineeringWorkerHeartbeat) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = self.path.with_suffix(f"{self.path.suffix}.tmp")
-        temporary.write_text(
-            json.dumps(heartbeat.to_mapping(), ensure_ascii=False, sort_keys=True),
-            encoding="utf-8",
+        temporary = self.path.with_name(
+            f".{self.path.name}.{os.getpid()}.{threading.get_ident()}.{time.time_ns()}.tmp"
         )
-        os.replace(temporary, self.path)
+        try:
+            temporary.write_text(
+                json.dumps(heartbeat.to_mapping(), ensure_ascii=False, sort_keys=True),
+                encoding="utf-8",
+            )
+            os.replace(temporary, self.path)
+        finally:
+            try:
+                temporary.unlink()
+            except FileNotFoundError:
+                pass
 
     def load(self) -> EngineeringWorkerHeartbeat | None:
         try:
@@ -269,6 +277,7 @@ class EngineeringWorkerHeartbeatEmitter:
     def start(self) -> None:
         if self._thread is not None:
             return
+        # The first heartbeat is part of startup truth and must succeed.
         self._write()
         self._thread = threading.Thread(
             target=self._run,
@@ -279,7 +288,12 @@ class EngineeringWorkerHeartbeatEmitter:
 
     def _run(self) -> None:
         while not self._stop.wait(self.interval_seconds):
-            self._write()
+            try:
+                self._write()
+            except OSError:
+                # A transient Windows file-sharing race must not permanently kill
+                # the heartbeat thread. The next interval retries the durable write.
+                continue
 
     def stop(self) -> None:
         self._stop.set()
