@@ -311,7 +311,7 @@ class EngineeringCompletionDelivery:
             facts = EngineeringCompletionFacts(
                 status=goal.status,
                 goal=goal.goal,
-                summary=goal.final_summary or goal.current_step.result_message,
+                summary=self._goal_summary(goal),
                 changed_files=self._goal_changed_files(goal),
                 branch=state.workspace_branch,
             )
@@ -324,6 +324,27 @@ class EngineeringCompletionDelivery:
             ):
                 ensured += 1
         return ensured
+
+    def _goal_summary(self, goal: EngineeringGoalState) -> str:
+        """Aggregate durable step results in execution order for whole-goal delivery facts."""
+
+        messages: list[str] = []
+        seen: set[str] = set()
+        for step in goal.steps:
+            message = step.result_message.strip()
+            if not message and step.turn_id:
+                try:
+                    result = self.sessions.load_result(goal.session_id, step.turn_id)
+                except EngineeringProtocolError:
+                    result = None
+                if result is not None:
+                    message = result.message.strip()
+            if message and message not in seen:
+                seen.add(message)
+                messages.append(message)
+        if messages:
+            return "\n".join(messages)
+        return goal.final_summary or goal.current_step.result_message
 
     def _goal_changed_files(self, goal: EngineeringGoalState) -> tuple[str, ...]:
         seen: set[str] = set()
