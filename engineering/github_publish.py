@@ -90,8 +90,8 @@ def _git(
     )
 
 
-def _require_gh() -> None:
-    if shutil.which("gh") is None:
+def _require_gh(environment: Mapping[str, str]) -> None:
+    if shutil.which("gh", path=environment.get("PATH")) is None:
         raise RuntimeError(
             "GitHub CLI `gh` is not available; Draft PR publication cannot run non-interactively"
         )
@@ -106,16 +106,6 @@ def _source_base_branch(
     baseline = baseline_commit.strip()
     if not baseline:
         raise RuntimeError("engineering session has no trusted baseline commit")
-    source_head = _git(
-        source_repo,
-        "rev-parse",
-        "HEAD",
-        environment=environment,
-    ).stdout.strip()
-    if source_head != baseline:
-        raise RuntimeError(
-            "source repository HEAD no longer matches the engineering session baseline; refusing to guess a Draft PR base"
-        )
     branch = _git(
         source_repo,
         "branch",
@@ -126,6 +116,20 @@ def _source_base_branch(
         raise RuntimeError("source repository is detached; Draft PR base branch is ambiguous")
     if branch.startswith("hikari/engineering/"):
         raise RuntimeError("refusing to use an engineering branch as the Draft PR base")
+
+    ancestor = _git(
+        source_repo,
+        "merge-base",
+        "--is-ancestor",
+        baseline,
+        "HEAD",
+        environment=environment,
+        check=False,
+    )
+    if ancestor.returncode != 0:
+        raise RuntimeError(
+            "current source branch no longer descends from the engineering session baseline; refusing to guess a Draft PR base"
+        )
     return branch
 
 
@@ -169,6 +173,7 @@ def _engineering_head(
 def _require_remote_head(
     worktree: Path,
     branch: str,
+    expected_head: str,
     *,
     environment: Mapping[str, str],
 ) -> None:
@@ -185,6 +190,11 @@ def _require_remote_head(
     if proc.returncode != 0:
         raise RuntimeError(
             "engineering branch is not available on origin; push the non-protected engineering branch before opening its Draft PR"
+        )
+    remote_head = (proc.stdout.strip().split() or [""])[0]
+    if remote_head != expected_head.strip():
+        raise RuntimeError(
+            "origin engineering branch does not match the local committed head; push the latest non-protected engineering branch before opening its Draft PR"
         )
 
 
@@ -313,22 +323,21 @@ def open_or_update_draft_pr(
     worktree: str | Path,
     branch: str,
     baseline_commit: str,
-    timeout_seconds: float = 120.0,
     environment: Mapping[str, str] | None = None,
 ) -> DraftPullRequestResult:
     """Open or refresh Hikari's Draft PR for one already-pushed engineering branch.
 
     The head and base are derived from durable/local engineering state, never from model
-    text. Existing human-authored Draft PR metadata is preserved unless the PR contains
-    Hikari's ownership marker. A ready-for-review PR is never silently converted back to
-    draft state.
+    text. The current source branch may advance after the engineering session began, but
+    it must still descend from the durable baseline. Existing human-authored Draft PR
+    metadata is preserved unless the PR contains Hikari's ownership marker. A
+    ready-for-review PR is never silently converted back to draft state.
     """
 
-    del timeout_seconds  # kept as part of the public execution contract for future tuning
-    _require_gh()
     source = Path(source_repo).expanduser().resolve()
     root = Path(worktree).expanduser().resolve()
     env = _publish_environment(environment)
+    _require_gh(env)
     normalized_branch = branch.strip()
     base = _source_base_branch(source, baseline_commit, environment=env)
     head_commit = _engineering_head(
@@ -337,7 +346,12 @@ def open_or_update_draft_pr(
         baseline_commit,
         environment=env,
     )
-    _require_remote_head(root, normalized_branch, environment=env)
+    _require_remote_head(
+        root,
+        normalized_branch,
+        head_commit,
+        environment=env,
+    )
     title, body = _draft_metadata(
         root,
         normalized_branch,
