@@ -122,6 +122,8 @@ def describe_self_state(
             "resident_maintainer_loop_enabled": engineering_enabled,
             "deterministic_work_selection_enabled": engineering_enabled,
             "bounded_retry_enabled": engineering_enabled,
+            "worker_restart_reconciliation_enabled": engineering_enabled,
+            "interrupted_maintainer_cleanup_enabled": engineering_enabled,
             "goal_level_terminal_delivery_enabled": engineering_enabled,
             "execution_model": (
                 "durable_engineering_goal_plus_session_plus_resident_maintainer_loop_plus_separate_worker"
@@ -141,6 +143,14 @@ def describe_self_state(
             "retry_policy": (
                 "one_bounded_retry_for_safe_inspect_maintain_push_or_draft_pr_effects; "
                 "blocked_work_and_project_commands_are_not_replayed_automatically"
+            ),
+            "restart_replay_policy": (
+                "worker_lease_owner_may_replay_only_inspect_maintain_push_or_draft_pr; "
+                "uncertain_project_commands_become_blocked_terminal_truth"
+            ),
+            "restart_workspace_policy": (
+                "automatic_maintainer_replay_discards_only_uncommitted_changes_in_the_isolated_"
+                "engineering_worktree_and_preserves_prior_durable_commits"
             ),
             "direct_filesystem_perception": False,
             "continuous_filesystem_perception": False,
@@ -180,6 +190,8 @@ def describe_self_state(
             ),
             "intermediate_goal_step_is_user_terminal": False,
             "conversation_model_consumption": "not_required_for_terminal_engineering_delivery",
+            "uncertain_transport_send_auto_retried": False,
+            "uncertain_transport_send_state": "quarantined_until_explicit_retry",
             "identity_rule": (
                 "Direct delivery of grounded engineering facts is still Hikari system behavior; "
                 "authorship is not defined by whether the Conversation model rewrites them."
