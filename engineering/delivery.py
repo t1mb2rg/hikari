@@ -6,7 +6,7 @@ import time
 
 from core.delivery import DeliveryOutbox, DeliveryRequest, DeliveryRouter
 
-from .bindings import EngineeringConversationBindingStore
+from .bindings import EngineeringConversationBinding, EngineeringConversationBindingStore
 from .effects import RESTART_REPLAY_SAFE_EFFECTS, turn_effect
 from .goal import EngineeringGoalState, EngineeringGoalStore
 from .maintainer_loop import PersistentMaintainerLoop
@@ -235,6 +235,10 @@ class EngineeringCompletionDelivery:
                     managed.add(step.turn_id)
         return managed
 
+    def _is_historical_binding(self, binding: EngineeringConversationBinding) -> bool:
+        current = self.bindings.for_conversation(binding.channel, binding.conversation_id)
+        return current is not None and current.session_id != binding.session_id
+
     def _ensure_delivery(
         self,
         *,
@@ -263,8 +267,6 @@ class EngineeringCompletionDelivery:
         return True
 
     def _pump_single_turns(self, managed_turn_ids: set[str]) -> int:
-        if self.renderer is None:
-            return 0
         ensured = 0
         for state in self.sessions.list_states():
             if state.status not in {"completed", "failed", "blocked"}:
@@ -286,20 +288,19 @@ class EngineeringCompletionDelivery:
                 summary=result.message,
                 changed_files=result.changed_files,
                 branch=state.workspace_branch,
+                historical=self._is_historical_binding(binding),
             )
             if self._ensure_delivery(
                 delivery_id=f"engineering:{state.session_id}:{turn_id}",
                 channel=binding.channel,
                 conversation_id=binding.conversation_id,
                 facts=facts,
-                source="engineering_terminal",
+                source="engineering",
             ):
                 ensured += 1
         return ensured
 
     def _pump_terminal_goals(self) -> int:
-        if self.renderer is None:
-            return 0
         ensured = 0
         for goal in self.goals.list_states():
             if goal.status not in {"completed", "failed", "blocked"}:
@@ -314,6 +315,7 @@ class EngineeringCompletionDelivery:
                 summary=self._goal_summary(goal),
                 changed_files=self._goal_changed_files(goal),
                 branch=state.workspace_branch,
+                historical=self._is_historical_binding(binding),
             )
             if self._ensure_delivery(
                 delivery_id=f"engineering-goal:{goal.goal_id}",
