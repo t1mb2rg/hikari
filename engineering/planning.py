@@ -35,7 +35,10 @@ class EngineeringGoalPlan:
 
 def _step_instruction(effect: str, goal: str, original_request: str) -> str:
     if effect == "maintain_project":
+        # Keep the human goal first. Worker commit metadata is derived from the turn
+        # intent, while scope enforcement still sees the full original request below.
         return (
+            f"{goal}\n"
             "完成这个持久工程目标需要的仓库修改、必要验证和提交。"
             "只完成维护步骤，不进行 push、PR、merge 或 force push。"
             f"\n持久目标：{goal}\n原始请求：{original_request}"
