@@ -14,12 +14,7 @@ from engineering.bindings import (
     EngineeringConversationBindingStore,
 )
 from engineering.effects import authority_for_effect
-from engineering.goal import (
-    EngineeringGoalCoordinator,
-    EngineeringGoalState,
-    EngineeringGoalStep,
-    EngineeringGoalStore,
-)
+from engineering.goal import EngineeringGoalState, EngineeringGoalStep, EngineeringGoalStore
 from engineering.goal_index import active_goal_for_session, latest_goal_for_session
 from engineering.maintainer import project_session_authority_ceiling
 from engineering.planning import EngineeringGoalPlan, build_engineering_goal_plan
@@ -225,7 +220,12 @@ def _resolution_from_fallback(text: str) -> EngineeringIntentResolution | None:
 
 
 class ConversationEngineeringBridge:
-    """Route engineering intent into single turns or durable persistent goals."""
+    """Route engineering intent into single turns or durable persistent goals.
+
+    Single-effect requests keep the proven M7-A turn path. Genuine multi-effect requests
+    are persisted as an EngineeringGoal only; Conversation does not enqueue the first
+    step. Resident owns deterministic work selection and continuation.
+    """
 
     def __init__(
         self,
@@ -248,7 +248,6 @@ class ConversationEngineeringBridge:
         self.repository = repository_path
         self.intent_resolver = intent_resolver
         self.goals = goals or EngineeringGoalStore(store.root.parent / "engineering_goals")
-        self.goal_coordinator = EngineeringGoalCoordinator(self.goals, self.store)
 
     def _bound_state(
         self,
@@ -275,14 +274,14 @@ class ConversationEngineeringBridge:
                 if goal.status == "active":
                     progress = describe_engineering_progress(state)
                     text = (
-                        f"当前持久 Engineering Goal 是 `active`，步骤 {position}/{len(goal.steps)}。\n"
+                        f"当前持久 Engineering 目标是 `active`，第 {position}/{len(goal.steps)} 步。\n"
                         f"目标：{goal.goal}\n"
                         f"当前步骤：`{step.effect}` / `{step.status}`，工程阶段 `{progress.phase}`。\n"
                         f"最后一次持久进度：{state.latest_summary or '暂无更细的阶段信息'}。"
                     )
                 else:
                     text = (
-                        f"当前持久 Engineering Goal 状态是 `{goal.status}`。\n"
+                        f"当前持久 Engineering 目标状态是 `{goal.status}`。\n"
                         f"目标：{goal.goal}\n"
                         f"实际结果：{goal.final_summary or step.result_message or '没有可读取的 terminal summary'}"
                     )
@@ -506,18 +505,6 @@ class ConversationEngineeringBridge:
             source_conversation_id=turn.conversation_id,
         )
         self.goals.create(goal_state)
-        outcome = self.goal_coordinator.advance_once(goal_state.goal_id)
-        if outcome.status == "blocked":
-            return _voice_reply(
-                engine,
-                turn,
-                EngineeringVoiceFacts(
-                    kind="blocked",
-                    goal=plan.goal,
-                    status="blocked",
-                    summary=outcome.message,
-                ),
-            )
         return _voice_reply(
             engine,
             turn,
@@ -526,7 +513,7 @@ class ConversationEngineeringBridge:
                 goal=plan.goal,
                 status="accepted",
                 details=(
-                    "这个目标已经进入持久 maintainer loop；后续已授权步骤会根据 durable result 自动推进，不需要逐步确认。",
+                    "这个目标已经持久化；Resident 会从 durable state 选择并推进已授权步骤，不需要逐步确认。",
                 ),
             ),
         )
