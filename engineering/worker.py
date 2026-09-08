@@ -245,7 +245,11 @@ class EngineeringWorker:
                 message="engineering 分支仍有未提交变更，Worker 拒绝 push。",
             )
         try:
-            commit_sha = push_engineering_branch(workspace.path, workspace.branch)
+            commit_sha = push_engineering_branch(
+                workspace.path,
+                workspace.branch,
+                workspace.baseline_commit,
+            )
         except (OSError, subprocess.SubprocessError, RuntimeError) as exc:
             detail = str(exc).strip()
             if len(detail) > 1200:
