@@ -26,6 +26,11 @@ def test_engineering_self_state_denies_direct_filesystem_perception_but_exposes_
 
     assert engineering["conversation_read_only_enabled"] is True
     assert engineering["conversation_maintainer_session_enabled"] is True
+    assert engineering["persistent_goal_enabled"] is True
+    assert engineering["resident_maintainer_loop_enabled"] is True
+    assert engineering["deterministic_work_selection_enabled"] is True
+    assert engineering["bounded_retry_enabled"] is True
+    assert engineering["goal_level_terminal_delivery_enabled"] is True
     assert engineering["relationship"] == "internal_hikari_capability"
     assert engineering["direct_filesystem_perception"] is False
     assert engineering["continuous_filesystem_perception"] is False
@@ -34,6 +39,7 @@ def test_engineering_self_state_denies_direct_filesystem_perception_but_exposes_
     assert engineering["engineering_branch_commit_enabled"] is True
     assert engineering["non_protected_push_enabled"] is True
     assert engineering["draft_pr_publish_enabled"] is True
+    assert engineering["work_selection_policy"] == "oldest_unfinished_goal_per_project"
     assert engineering["worker_liveness"] == "not_asserted_by_self_state"
 
 
@@ -85,6 +91,7 @@ def test_engineering_terminal_delivery_does_not_require_conversation_rewrite() -
         state["delivery_semantics"]["conversation_model_consumption"]
         == "not_required_for_terminal_engineering_delivery"
     )
+    assert state["delivery_semantics"]["intermediate_goal_step_is_user_terminal"] is False
     result_model = state["engineering"]["result_model"]
     assert "conversation" not in result_model.lower()
 
@@ -121,4 +128,6 @@ def test_chat_does_not_claim_engineering_authority_when_runtime_disabled() -> No
     assert capabilities["current_chat_authority"]["engineering_read_session"] is False
     assert capabilities["current_chat_authority"]["engineering_write_session"] is False
     assert capabilities["self_state"]["engineering"]["conversation_read_only_enabled"] is False
+    assert capabilities["self_state"]["engineering"]["persistent_goal_enabled"] is False
+    assert capabilities["self_state"]["engineering"]["resident_maintainer_loop_enabled"] is False
     assert capabilities["operational_state"]["overall"] == "unknown"
