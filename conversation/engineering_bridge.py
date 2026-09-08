@@ -252,6 +252,7 @@ _COMMAND_RUN_MARKERS = (
 
 
 _READ_REQUIREMENTS = ("engineering.repository.read",)
+_COMMAND_REQUIREMENTS = ("engineering.commands.run",)
 _MAINTAIN_REQUIREMENTS = (
     "engineering.repository.read",
     "engineering.repository.write",
@@ -359,7 +360,7 @@ def engineering_requirements_for_intent(text: str) -> tuple[str, ...] | None:
     if not project_context:
         return None
     if _contains_any(normalized, _COMMAND_RUN_MARKERS):
-        return ("engineering.commands.run",)
+        return _COMMAND_REQUIREMENTS
     if any(verb in normalized for verb in _WRITE_VERBS):
         return _MAINTAIN_REQUIREMENTS
     if any(verb in normalized for verb in _INSPECTION_VERBS):
@@ -543,11 +544,15 @@ class ConversationEngineeringBridge:
             _remember_control_exchange(engine, turn, reply)
             return reply
 
-        turn_authority = (
-            EngineeringAuthority.read_only()
-            if requirements == _READ_REQUIREMENTS
-            else project_maintainer_authority()
-        )
+        if requirements == _READ_REQUIREMENTS:
+            turn_authority = EngineeringAuthority.read_only()
+        elif requirements == _COMMAND_REQUIREMENTS:
+            turn_authority = EngineeringAuthority(
+                repository_read=True,
+                run_commands=True,
+            )
+        else:
+            turn_authority = project_maintainer_authority()
         session_ceiling = project_maintainer_authority()
 
         state = self._bound_state(turn.channel, turn.conversation_id)
@@ -613,6 +618,11 @@ class ConversationEngineeringBridge:
 
         if requirements == _READ_REQUIREMENTS:
             text = "我去看。已经开始一个只读工程会话，完成后我会把实际检查结果发回来。"
+        elif requirements == _COMMAND_REQUIREMENTS:
+            text = (
+                "我来跑。已经开始一个项目内命令工程会话；命令会在隔离 worktree 中执行，"
+                "不会获得仓库写入、网络或发布权限，完成后我会把实际结果发回来。"
+            )
         else:
             text = (
                 "我来处理。这个任务在我的项目维护职责内，我已经交给 Engineering Runtime。"
