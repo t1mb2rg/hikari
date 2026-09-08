@@ -13,7 +13,11 @@ from engineering.bindings import (
     EngineeringConversationBinding,
     EngineeringConversationBindingStore,
 )
-from engineering.maintainer import project_maintainer_authority
+from engineering.maintainer import (
+    project_maintainer_authority,
+    project_push_authority,
+    project_session_authority_ceiling,
+)
 from engineering.progress import describe_engineering_progress
 from engineering.session import (
     EngineeringAuthority,
@@ -253,6 +257,7 @@ _COMMAND_RUN_MARKERS = (
 
 _READ_REQUIREMENTS = ("engineering.repository.read",)
 _COMMAND_REQUIREMENTS = ("engineering.commands.run",)
+_PUSH_REQUIREMENTS = ("engineering.git.push_non_protected",)
 _MAINTAIN_REQUIREMENTS = (
     "engineering.repository.read",
     "engineering.repository.write",
@@ -328,18 +333,18 @@ def _boundary_requirements_for_intent(text: str) -> tuple[str, ...] | None:
     return None
 
 
-def _delegated_gap_requirements_for_intent(text: str) -> tuple[str, ...] | None:
-    """Recognize delegated outcomes whose execution path is not implemented yet."""
+def _delegated_remote_requirements_for_intent(text: str) -> tuple[str, ...] | None:
+    """Recognize explicitly delegated remote engineering outcomes."""
 
     if _contains_any(text, _DRAFT_PR_MARKERS):
         return ("engineering.git.open_or_update_draft_pr",)
     if _contains_any(text, _PUSH_MARKERS):
-        return ("engineering.git.push_non_protected",)
+        return _PUSH_REQUIREMENTS
     return None
 
 
 def engineering_requirements_for_intent(text: str) -> tuple[str, ...] | None:
-    """Narrow task-to-capability mapper for the first delegated maintainer slice.
+    """Narrow task-to-capability mapper for delegated Hikari project maintenance.
 
     Explicit impact boundaries are classified before ordinary mutation verbs. This keeps
     wording such as "修改 Hikari 项目的 secret 配置" or "实现生产部署" from being mistaken
@@ -352,9 +357,9 @@ def engineering_requirements_for_intent(text: str) -> tuple[str, ...] | None:
     if boundary_requirements is not None:
         return boundary_requirements
 
-    delegated_gap_requirements = _delegated_gap_requirements_for_intent(normalized)
-    if delegated_gap_requirements is not None:
-        return delegated_gap_requirements
+    remote_requirements = _delegated_remote_requirements_for_intent(normalized)
+    if remote_requirements is not None:
+        return remote_requirements
 
     project_context = any(noun in normalized for noun in _PROJECT_NOUNS)
     if not project_context:
@@ -551,9 +556,11 @@ class ConversationEngineeringBridge:
                 repository_read=True,
                 run_commands=True,
             )
+        elif requirements == _PUSH_REQUIREMENTS:
+            turn_authority = project_push_authority()
         else:
             turn_authority = project_maintainer_authority()
-        session_ceiling = project_maintainer_authority()
+        session_ceiling = project_session_authority_ceiling()
 
         state = self._bound_state(turn.channel, turn.conversation_id)
         if state is not None and state.status in {"pending", "running"}:
@@ -570,41 +577,69 @@ class ConversationEngineeringBridge:
             _remember_control_exchange(engine, turn, reply)
             return reply
 
-        if state is not None and not turn_authority.is_subset_of(state.authority_ceiling):
-            state = None
-
-        if state is not None and state.baseline_commit:
-            try:
-                repository_head = EngineeringWorkspace.source_head(self.repository)
-            except EngineeringWorkspaceError:
+        if requirements == _PUSH_REQUIREMENTS:
+            if state is None or not (
+                state.workspace_path and state.workspace_branch and state.baseline_commit
+            ):
                 reply = AssistantReply(
                     channel=turn.channel,
                     conversation_id=turn.conversation_id,
                     text=(
-                        "我现在没法为这个仓库建立可信的工程版本快照。"
-                        "如果源码仓库存在未提交改动，我不会拿旧 worktree 冒充最新状态。"
+                        "这个会话当前没有已经提交的 Engineering 分支可以推送。"
+                        "我不会为了满足 push 请求临时创建一个空远端分支。"
                     ),
                 )
                 _remember_control_exchange(engine, turn, reply)
                 return reply
-            if not engineering_session_matches_repository_head(state, repository_head):
-                state = None
-
-        if state is None:
-            state = EngineeringSessionState.create(
-                project_id="hikari",
-                repository=self.repository,
-                authority_ceiling=session_ceiling,
-            )
-            self.store.create(state)
-            self.bindings.bind(
-                EngineeringConversationBinding(
-                    session_id=state.session_id,
+            if not turn_authority.is_subset_of(state.authority_ceiling):
+                reply = AssistantReply(
                     channel=turn.channel,
                     conversation_id=turn.conversation_id,
+                    text=(
+                        "当前绑定的 EngineeringSession 建立时还没有远端发布 ceiling。"
+                        "我不会临时扩大一个旧会话的权限；新的 maintainer 会话会直接具备"
+                        "非保护 engineering 分支 push 的 standing ceiling。"
+                    ),
                 )
-            )
+                _remember_control_exchange(engine, turn, reply)
+                return reply
+        else:
+            if state is not None and not turn_authority.is_subset_of(state.authority_ceiling):
+                state = None
 
+            if state is not None and state.baseline_commit:
+                try:
+                    repository_head = EngineeringWorkspace.source_head(self.repository)
+                except EngineeringWorkspaceError:
+                    reply = AssistantReply(
+                        channel=turn.channel,
+                        conversation_id=turn.conversation_id,
+                        text=(
+                            "我现在没法为这个仓库建立可信的工程版本快照。"
+                            "如果源码仓库存在未提交改动，我不会拿旧 worktree 冒充最新状态。"
+                        ),
+                    )
+                    _remember_control_exchange(engine, turn, reply)
+                    return reply
+                if not engineering_session_matches_repository_head(state, repository_head):
+                    state = None
+
+            if state is None:
+                state = EngineeringSessionState.create(
+                    project_id="hikari",
+                    repository=self.repository,
+                    authority_ceiling=session_ceiling,
+                )
+                self.store.create(state)
+                self.bindings.bind(
+                    EngineeringConversationBinding(
+                        session_id=state.session_id,
+                        channel=turn.channel,
+                        conversation_id=turn.conversation_id,
+                    )
+                )
+
+        assert state is not None
         engineering_turn = EngineeringTurn.create(
             intent=turn.text,
             context=(
@@ -622,6 +657,12 @@ class ConversationEngineeringBridge:
             text = (
                 "我来跑。已经开始一个项目内命令工程会话；命令会在隔离 worktree 中执行，"
                 "不会获得仓库写入、网络或发布权限，完成后我会把实际结果发回来。"
+            )
+        elif requirements == _PUSH_REQUIREMENTS:
+            text = (
+                f"我来推。已把当前非保护工程分支 `{state.workspace_branch}` 交给 Engineering Worker；"
+                "只会推送这个 Hikari engineering 分支到 `origin`，不会 force push 或 merge，"
+                "完成后我会把实际远端结果发回来。"
             )
         else:
             text = (
