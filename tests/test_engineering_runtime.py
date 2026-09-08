@@ -9,6 +9,8 @@ from engineering.backend import EngineeringAgentResult
 from engineering.maintainer import (
     ProjectTestResult,
     project_maintainer_authority,
+    project_push_authority,
+    project_session_authority_ceiling,
     project_test_environment,
     run_project_tests,
 )
@@ -88,7 +90,7 @@ def _pending_maintainer_session(
     state = EngineeringSessionState.create(
         project_id="hikari",
         repository=_repo_with_validation(tmp_path),
-        authority_ceiling=project_maintainer_authority(),
+        authority_ceiling=project_session_authority_ceiling(),
         session_id="maintainer-session",
     )
     store.create(state)
@@ -227,6 +229,55 @@ def test_maintainer_worker_edits_tests_and_commits_without_human_step(tmp_path: 
     assert "验证：项目测试通过" in outcome.message
     result = store.load_result(state.session_id, turn.turn_id)
     assert result.changed_files == ("README.md",)
+
+
+def test_worker_pushes_committed_engineering_branch_to_origin(tmp_path: Path):
+    store, state, _ = _pending_maintainer_session(tmp_path)
+    source = Path(state.repository)
+    remote = tmp_path / "remote.git"
+    subprocess.run(
+        ["git", "init", "--bare", str(remote)],
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        capture_output=True,
+        check=True,
+    )
+    _git(source, "remote", "add", "origin", str(remote))
+
+    class Backend:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def run(self, worktree: Path, prompt: str) -> EngineeringAgentResult:
+            self.calls += 1
+            (Path(worktree) / "README.md").write_text(
+                "# Hikari\n\nMaintained by Hikari.\n",
+                encoding="utf-8",
+            )
+            return EngineeringAgentResult(0, "{}", "", "maintained", "push-session")
+
+    backend = Backend()
+    worker = EngineeringWorker(store, backend_factory=lambda _state, _turn: backend)
+    assert worker.run_once().status == "completed"
+    saved = store.load(state.session_id)
+    workspace = Path(saved.workspace_path or "")
+    branch = saved.workspace_branch or ""
+    local_head = _git(workspace, "rev-parse", "HEAD")
+
+    push = EngineeringTurn.create(
+        intent="Push this engineering branch to origin.",
+        authority=project_push_authority(),
+    )
+    store.enqueue_turn(state.session_id, push)
+    outcome = worker.run_once()
+
+    assert outcome is not None
+    assert outcome.status == "completed"
+    assert backend.calls == 1
+    assert "推送到 `origin`" in outcome.message
+    assert branch.startswith("hikari/engineering/")
+    assert _git(remote, "rev-parse", f"refs/heads/{branch}") == local_head
 
 
 def test_maintainer_worker_repairs_failed_tests_before_commit(tmp_path: Path):
