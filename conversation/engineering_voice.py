@@ -113,8 +113,8 @@ class EngineeringVoiceFacts:
         if self.kind == "escalation":
             boundary = ", ".join(self.capabilities)
             if boundary:
-                return f"这一步会越过当前项目授权边界，需要你决定是否放开：{boundary}。"
-            return "这一步会越过当前项目授权边界，需要你决定是否放开。"
+                return f"这一步触及当前项目 mandate 之外的影响边界，需要你决定是否扩展这次授权：{boundary}。"
+            return "这一步触及当前项目 mandate 之外的影响边界，需要你决定是否扩展这次授权。"
         raise AssertionError(self.kind)
 
 
