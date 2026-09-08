@@ -8,6 +8,8 @@ Hikari is developed as a persistent personal AI system rather than a collection 
 
 The long-term direction is Jarvis-style assistance: continuous presence, durable user understanding, proactive judgement, bounded execution, and the ability to improve useful capabilities safely.
 
+The roadmap describes long-term milestones, not the exact current implementation slice. The active project focus lives in `CURRENT.md`.
+
 The roadmap does **not** target simulated human consciousness, invented senses, or autonomous life goals. Personality and natural expression support long-term interaction continuity; system facts remain grounded in actual runtime state.
 
 ---
@@ -26,23 +28,7 @@ Core capabilities:
 - First sensor
 - First proactive feedback
 
-Flow:
-
-```
-Event
-  ↓
-Memory
-  ↓
-Attention
-  ↓
-Reasoning
-  ↓
-Feedback
-```
-
-Completion criteria:
-
-Hikari can discover a meaningful change without a user starting a conversation.
+Completion criterion: Hikari can discover a meaningful change without a user starting a conversation.
 
 ---
 
@@ -90,11 +76,11 @@ Goal:
 Capabilities:
 
 - User preference learning
-- Stable personality traits
+- Stable conversational persona
 - Communication adaptation
 - Relational continuity
 
-Personality should become more situated through experience rather than fixed roleplay. It is an interaction layer, not a claim of human-like consciousness or hidden inner experience.
+Personality is an interaction layer, not a claim of human-like consciousness or hidden inner experience.
 
 ---
 
@@ -128,9 +114,7 @@ Capabilities:
 - Project assistance
 - Bounded engineering execution
 
-Relationship:
-
-```
+```text
 Hikari
   ↓
 Decision / authority
@@ -160,22 +144,22 @@ Devices are not Hikari. They are how Hikari reaches the user and digital environ
 
 ---
 
-# M7: Evolution
+# M7: Capability Growth
 
 Goal:
 
-> Hikari can identify useful capability gaps and improve safely.
+> Hikari can identify useful capability gaps and improve bounded system capability without losing grounding or authority boundaries.
 
-M7 is operational self-improvement, not autonomous life-goal formation.
+M7 is operational capability growth, not autonomous life-goal formation.
 
-Process:
-
-```
-Observe limitation
+```text
+Real user goal or maintenance need
       ↓
-Understand user impact
+Capability / authority assessment
       ↓
-Growth proposal
+Existing capability ───────→ execute inside mandate
+      ↓ missing
+Capability gap
       ↓
 Engineering Runtime
       ↓
@@ -189,8 +173,26 @@ Required foundations:
 - grounded system self-state
 - accurate capability and authority awareness
 - observable runtime/component health
-- durable engineering sessions
-- explicit validation and permission boundaries
+- durable EngineeringSession state
+- explicit validation and impact boundaries
+
+Legacy Forge is not a separate active runtime component in this architecture. Engineering work belongs to Hikari's internal Engineering Runtime.
+
+---
+
+# Pre-release Cleanup Gate
+
+Before a release is considered ready, architecture compatibility surfaces must make the production path unambiguous.
+
+Required Conversation cleanup:
+
+- `NaturalConversationEngine` remains the clearly named production conversation implementation.
+- `ConversationEngine` must no longer ambiguously combine shared lifecycle ownership with a legacy grounded generation path under a production-looking name.
+- The historical heavy JSON grounded path must be explicitly named or isolated as compatibility-only.
+- Rollback, diagnostic, and bake-off profiles may remain available, but they must not blur the default production architecture.
+- Tests and documentation must distinguish production behavior from compatibility behavior.
+
+This is a release blocker, not a blocker for the current Architecture Cleanup or Awareness Integration work.
 
 ---
 
@@ -198,4 +200,4 @@ Required foundations:
 
 Build the smallest loop that proves real user value.
 
-Do not chase completeness before continuity, and do not simulate capabilities that do not exist.
+Prefer simple, observable implementations and proportional validation. Add complexity when a real failure mode or capability need demonstrates that it is necessary.

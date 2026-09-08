@@ -9,38 +9,21 @@ $EnvFile = Join-Path $RepoRoot ".env"
 
 Write-Host "Hikari environment bootstrap: $RepoRoot"
 
-if (-not (Test-Path $Python)) {
-    Write-Host "Creating repo-local .venv ..."
-
-    if (Get-Command py -ErrorAction SilentlyContinue) {
-        & py -3 -m venv $VenvRoot
-    }
-    elseif (Get-Command python -ErrorAction SilentlyContinue) {
-        & python -m venv $VenvRoot
-    }
-    else {
-        throw "Python 3 launcher was not found on PATH."
-    }
-
-    if ($LASTEXITCODE -ne 0) {
-        throw "Failed to create Hikari .venv."
-    }
-}
-
-if (-not (Test-Path $Python)) {
-    throw "Hikari .venv does not contain python.exe: $Python"
+$UvCommand = Get-Command uv -ErrorAction SilentlyContinue
+if (-not $UvCommand) {
+    throw "uv was not found on PATH. Install uv before bootstrapping Hikari."
 }
 
 Push-Location $RepoRoot
+$PreviousProjectEnvironment = $env:UV_PROJECT_ENVIRONMENT
 try {
-    & $Python -m pip install --upgrade pip
+    $env:UV_PROJECT_ENVIRONMENT = $VenvRoot
+    & $UvCommand.Source sync --locked --extra dev --extra windows-notify
     if ($LASTEXITCODE -ne 0) {
-        throw "Failed to upgrade pip in Hikari .venv."
+        throw "Failed to synchronize Hikari .venv from uv.lock."
     }
-
-    & $Python -m pip install -e ".[dev,windows-notify]"
-    if ($LASTEXITCODE -ne 0) {
-        throw "Failed to install Hikari into repo-local .venv."
+    if (-not (Test-Path $Python)) {
+        throw "Hikari .venv does not contain python.exe after uv sync: $Python"
     }
 
     if ((-not (Test-Path $EnvFile)) -and (Test-Path $EnvExample)) {
@@ -49,6 +32,7 @@ try {
     }
 }
 finally {
+    $env:UV_PROJECT_ENVIRONMENT = $PreviousProjectEnvironment
     Pop-Location
 }
 

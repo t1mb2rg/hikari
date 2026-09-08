@@ -190,7 +190,9 @@ def test_restart_retrieves_persistent_active_fact_into_future_prompt(tmp_path: P
             "statement": "用户目前想尝试更张扬的香水风格。",
         }
     ]
-    assert "latest revised current truth" in restarted_provider.calls[0][0].content
+    system_prompt = restarted_provider.calls[0][0].content
+    assert "`known_user` 是当前有效的用户事实" in system_prompt
+    assert "更新后的当前事实" in system_prompt
     assert "not a simultaneous current preference" in grounding[
         "memory_provenance"
     ]["known_user"]["conflict_policy"]

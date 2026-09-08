@@ -151,6 +151,22 @@ def _select_background_python(
     return str(executable)
 
 
+def _select_runtime_child_python(python_executable: str) -> str:
+    """Keep supervised children inside the selected virtual environment.
+
+    The Windows background interpreter is normally ``pythonw.exe``. Children
+    should use its sibling ``python.exe`` explicitly instead of rediscovering
+    an interpreter through ``sys.executable`` after a Windows launcher hop.
+    """
+
+    executable = Path(python_executable)
+    if executable.name.lower() == "pythonw.exe":
+        python = executable.with_name("python.exe")
+        if python.is_file():
+            return str(python)
+    return str(executable)
+
+
 def _default_launcher(
     argv: list[str],
     cwd: Path,
@@ -308,6 +324,9 @@ class WindowsResidentHost:
         runtime_environment = load_runtime_environment(
             env_file=self.config.env_file,
             environment=self.environment,
+        )
+        runtime_environment.values["HIKARI_RUNTIME_PYTHON"] = (
+            _select_runtime_child_python(self.python_executable)
         )
         build_reasoner(
             self.config.reasoner,

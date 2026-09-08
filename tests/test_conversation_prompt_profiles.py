@@ -44,8 +44,8 @@ def test_thin_prompt_keeps_grounding_without_full_voice_profile(tmp_path: Path):
     call = provider.calls[0]
     assert call[0].role == "system"
     assert call[0].content == THIN_HIKARI_SYSTEM_INSTRUCTIONS
-    assert "Memory provenance is strict" in call[0].content
-    assert "Direct conversation alone does not grant" in call[0].content
+    assert "只有当前会话历史或实际提供的持久记忆支持时" in call[0].content
+    assert "直接聊天本身不会自动授予 shell" in call[0].content
 
     grounding = json.loads(call[1].content)
     assert grounding["identity"]["name"] == "Hikari"

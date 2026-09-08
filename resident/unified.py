@@ -9,8 +9,13 @@ import subprocess
 import sys
 import time
 
-from core.runtime import ResidentPresenceRuntime
+from conversation.engineering_voice import EngineeringVoiceFacts, EngineeringVoiceRenderer
 from conversation.remote import ConversationWebSocketHost
+from core.delivery import DeliveryOutbox
+from core.runtime import ResidentPresenceRuntime
+from engineering.bindings import EngineeringConversationBindingStore
+from engineering.delivery import EngineeringCompletionDelivery, EngineeringCompletionFacts
+from engineering.session import EngineeringSessionStore
 from websockets.asyncio.server import serve
 
 from .napcat_login_guard import NapCatLoginGuard
@@ -18,6 +23,7 @@ from .napcat_login_guard import NapCatLoginGuard
 
 ProcessFactory = Callable[..., subprocess.Popen[bytes]]
 Clock = Callable[[], float]
+EngineeringDeliveryPump = Callable[[], int]
 
 
 def runtime_bool(
@@ -326,8 +332,47 @@ class EngineeringWorkerSupervisor:
             await asyncio.to_thread(process.wait)
 
 
+def _build_engineering_delivery_pump(
+    conversation_host: ConversationWebSocketHost,
+    engineering_supervisor: EngineeringWorkerSupervisor,
+) -> EngineeringDeliveryPump:
+    """Keep terminal fact projection in Resident, outside the Engineering Worker."""
+
+    state_dir = engineering_supervisor.config.state_dir
+    sessions = EngineeringSessionStore(state_dir / "engineering")
+    bindings = EngineeringConversationBindingStore(state_dir / "engineering_bindings.json")
+    voice = EngineeringVoiceRenderer(conversation_host.processor.engine)
+
+    def render(
+        facts: EngineeringCompletionFacts,
+        channel: str,
+        conversation_id: str,
+    ) -> str:
+        return voice.render(
+            EngineeringVoiceFacts(
+                kind=facts.status,
+                goal=facts.goal,
+                status=facts.status,
+                summary=facts.summary,
+                changed_files=facts.changed_files,
+                branch=facts.branch,
+                historical=facts.historical,
+            ),
+            channel=channel,
+            conversation_id=conversation_id,
+        )
+
+    delivery = EngineeringCompletionDelivery(
+        sessions,
+        bindings,
+        DeliveryOutbox(state_dir / "proactive_delivery.db"),
+        renderer=render,
+    )
+    return delivery.pump
+
+
 class UnifiedResidentService:
-    """Own Presence, Conversation, and Hikari-owned child capabilities."""
+    """Own Presence, Conversation, voice projection, and Hikari-owned child capabilities."""
 
     def __init__(
         self,
@@ -338,6 +383,7 @@ class UnifiedResidentService:
         bind_port: int,
         qq_supervisor: QQBridgeSupervisor | None = None,
         engineering_supervisor: EngineeringWorkerSupervisor | None = None,
+        engineering_delivery_pump: EngineeringDeliveryPump | None = None,
         napcat_login_guard: NapCatLoginGuard | None = None,
     ) -> None:
         if not isinstance(presence, ResidentPresenceRuntime):
@@ -348,6 +394,14 @@ class UnifiedResidentService:
             raise ValueError("bind_host must not be empty")
         if not 0 <= int(bind_port) <= 65535:
             raise ValueError("bind_port must be between 0 and 65535")
+        if engineering_delivery_pump is not None and not callable(engineering_delivery_pump):
+            raise TypeError("engineering_delivery_pump must be callable or None")
+
+        if engineering_delivery_pump is None and engineering_supervisor is not None:
+            engineering_delivery_pump = _build_engineering_delivery_pump(
+                conversation_host,
+                engineering_supervisor,
+            )
 
         self.presence = presence
         self.conversation_host = conversation_host
@@ -355,6 +409,7 @@ class UnifiedResidentService:
         self.bind_port = int(bind_port)
         self.qq_supervisor = qq_supervisor
         self.engineering_supervisor = engineering_supervisor
+        self.engineering_delivery_pump = engineering_delivery_pump
         self.napcat_login_guard = napcat_login_guard
         self.stop_event = asyncio.Event()
         self.started_event = asyncio.Event()
@@ -373,6 +428,25 @@ class UnifiedResidentService:
                     self.stop_event.wait(),
                     timeout=self.presence.poll_interval,
                 )
+            except TimeoutError:
+                pass
+
+    async def _engineering_delivery_loop(self) -> None:
+        pump = self.engineering_delivery_pump
+        if pump is None:
+            return
+        while not self.stop_event.is_set():
+            try:
+                await asyncio.to_thread(pump)
+            except Exception as exc:
+                print(
+                    f"[engineering-delivery] degraded: {type(exc).__name__}: {exc}",
+                    flush=True,
+                )
+            if self.stop_event.is_set():
+                return
+            try:
+                await asyncio.wait_for(self.stop_event.wait(), timeout=1.0)
             except TimeoutError:
                 pass
 
@@ -395,6 +469,13 @@ class UnifiedResidentService:
                 self.started_event.set()
 
                 tasks.append(asyncio.create_task(self._presence_loop()))
+                if self.engineering_delivery_pump is not None:
+                    tasks.append(
+                        asyncio.create_task(
+                            self._engineering_delivery_loop(),
+                            name="hikari-engineering-delivery",
+                        )
+                    )
                 if self.qq_supervisor is not None:
                     tasks.append(
                         asyncio.create_task(self.qq_supervisor.run(self.stop_event))

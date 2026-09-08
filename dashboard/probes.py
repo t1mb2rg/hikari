@@ -15,6 +15,8 @@ from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
+from engineering.progress import describe_engineering_progress
+from engineering.session import EngineeringSessionStore
 from resident.napcat_login_guard import (
     DEFAULT_NAPCAT_ROOT,
     DEFAULT_NAPCAT_TASK_NAME,
@@ -35,7 +37,6 @@ class DashboardProbeConfig:
     napcat_task_name: str = DEFAULT_NAPCAT_TASK_NAME
     onebot_host: str = "127.0.0.1"
     onebot_port: int = 8081
-    forge_stale_seconds: float = 180.0
 
     def __post_init__(self) -> None:
         repository = Path(self.repository).expanduser().resolve()
@@ -47,21 +48,15 @@ class DashboardProbeConfig:
             raise ValueError("napcat_task_name must not be empty")
         if not 1 <= int(self.onebot_port) <= 65535:
             raise ValueError("onebot_port must be between 1 and 65535")
-        if float(self.forge_stale_seconds) <= 0:
-            raise ValueError("forge_stale_seconds must be > 0")
         object.__setattr__(self, "repository", repository)
         object.__setattr__(self, "state_dir", state_dir)
         object.__setattr__(self, "napcat_root", napcat_root)
         object.__setattr__(self, "napcat_task_name", str(self.napcat_task_name).strip())
         object.__setattr__(self, "onebot_port", int(self.onebot_port))
-        object.__setattr__(self, "forge_stale_seconds", float(self.forge_stale_seconds))
 
     @classmethod
     def local_default(cls, repository: str | Path = ".") -> "DashboardProbeConfig":
-        return cls(
-            repository=Path(repository),
-            state_dir=default_state_dir(),
-        )
+        return cls(repository=Path(repository), state_dir=default_state_dir())
 
 
 @dataclass(frozen=True)
@@ -140,9 +135,6 @@ class _NapCatDashboardClient:
                 credential=self._active_credential(),
             )
         except NapCatLoginError:
-            # NapCat may invalidate the short-lived WebUI credential after
-            # login-state changes. Status probing is read-only, so one bounded
-            # re-authentication retry is safe.
             self._credential = None
             self._credential_expires_at = 0.0
             data = self._post(
@@ -233,8 +225,23 @@ def _sanitize_line(line: str) -> str:
     return _SECRET_PATTERN.sub(lambda match: f"{match.group(1)}<redacted>", line)
 
 
+_PHASE_LABELS = {
+    "queued": "排队中",
+    "preparing": "准备中",
+    "inspecting": "理解项目",
+    "editing": "修改中",
+    "testing": "测试中",
+    "repairing": "修复中",
+    "committing": "提交中",
+    "working": "执行中",
+    "completed": "已完成",
+    "failed": "执行失败",
+    "blocked": "已阻塞",
+}
+
+
 class DashboardProbeService:
-    """Read-only probes plus a tiny fixed NapCat control surface for the local dashboard."""
+    """Read-only Hikari runtime probes plus a tiny fixed NapCat control surface."""
 
     def __init__(self, config: DashboardProbeConfig) -> None:
         if not isinstance(config, DashboardProbeConfig):
@@ -242,10 +249,6 @@ class DashboardProbeService:
         self.config = config
         self._napcat_client: _NapCatDashboardClient | None = None
         self._napcat_client_config: NapCatWebUIConfig | None = None
-
-    @property
-    def forge_run_root(self) -> Path:
-        return self.config.repository.parent / ".forge-runs"
 
     def _get_napcat_client(self) -> _NapCatDashboardClient:
         config = NapCatWebUIConfig.from_root(self.config.napcat_root)
@@ -376,121 +379,69 @@ class DashboardProbeService:
             details=details,
         )
 
-    def _latest_forge_run(self) -> Path | None:
-        root = self.forge_run_root
-        if not root.is_dir():
-            return None
-        try:
-            runs = [path for path in root.iterdir() if path.is_dir()]
-        except OSError:
-            return None
-        if not runs:
-            return None
-        try:
-            return max(runs, key=lambda path: path.stat().st_mtime)
-        except OSError:
-            return None
-
-    def probe_forge(self) -> ComponentSnapshot:
-        run_dir = self._latest_forge_run()
-        if run_dir is None:
+    def probe_engineering(self) -> ComponentSnapshot:
+        states = EngineeringSessionStore(
+            self.config.state_dir / "engineering"
+        ).list_states()
+        if not states:
             return ComponentSnapshot(
-                component_id="forge",
-                label="Forge",
+                component_id="engineering",
+                label="Engineering Runtime",
                 status=ComponentStatus.IDLE,
                 phase="空闲",
-                message="当前没有 Forge 运行记录",
+                message="当前没有 EngineeringSession 任务",
             )
 
-        report = _safe_json(run_dir / "report.json")
-        state = _safe_json(run_dir / "control" / "state.json")
-        if state is None and report is None:
-            return ComponentSnapshot(
-                component_id="forge",
-                label="Forge",
-                status=ComponentStatus.WARNING,
-                phase="状态未知",
-                message="发现 Forge 运行目录，但没有可读取的状态",
-                updated_at=_mtime_iso(run_dir),
-                details={"run": run_dir.name},
-            )
-
-        if state is None:
-            state = {}
-        phase = str(state.get("phase") or "").upper()
-        outcome = state.get("outcome")
-        if outcome is None and report is not None:
-            outcome = report.get("outcome") or report.get("status")
-        updated_epoch = state.get("updated_at")
-        updated_at = _iso_from_epoch(updated_epoch) or _mtime_iso(run_dir)
+        state = max(states, key=lambda item: item.updated_at)
+        progress = describe_engineering_progress(state)
+        phase = _PHASE_LABELS.get(progress.phase, progress.phase)
         details = {
-            "run": run_dir.name,
-            "attempt": state.get("attempt"),
-            "max_attempts": state.get("max_attempts"),
-            "branch": state.get("branch"),
-            "worktree": state.get("worktree"),
+            "session_id": state.session_id,
+            "project_id": state.project_id,
+            "session_status": state.status,
+            "progress_phase": progress.phase,
+            "workspace_branch": state.workspace_branch,
         }
+        updated_at = _iso_from_epoch(state.updated_at)
 
-        if outcome is not None:
-            normalized = str(outcome).casefold()
-            successful = "complete" in normalized or "success" in normalized or normalized == "passed"
+        if state.status in {"pending", "running"}:
             return ComponentSnapshot(
-                component_id="forge",
-                label="Forge",
-                status=ComponentStatus.HEALTHY if successful else ComponentStatus.ERROR,
-                phase="已完成" if successful else "执行失败",
-                message=(
-                    "最近一次 Forge 任务已完成"
-                    if successful
-                    else "最近一次 Forge 任务没有通过"
-                ),
+                component_id="engineering",
+                label="Engineering Runtime",
+                status=ComponentStatus.RUNNING,
+                phase=phase,
+                message=state.latest_summary.strip() or "Engineering 任务正在执行",
                 updated_at=updated_at,
-                last_error=None if successful else str(outcome),
                 details=details,
             )
-
-        phase_map: dict[str, tuple[str, str, str | None]] = {
-            "PLANNING": ("规划中", "正在准备工程任务", "任务规划"),
-            "WORKING": ("执行中", "Forge 正在修改代码", "工程执行器"),
-            "IMPLEMENTING": ("执行中", "Forge 正在修改代码", "工程执行器"),
-            "REVIEWING": ("审查中", "正在审查工程结果", "语义审查"),
-            "VERIFYING": ("验证中", "正在验证代码变更", "项目测试"),
-            "DELIVERING": ("交付中", "正在整理本地工程结果", "本地交付"),
-        }
-        localized_phase, message, blocking_on = phase_map.get(
-            phase,
-            (phase or "运行中", "Forge 任务正在运行", None),
-        )
-
-        stale = False
-        try:
-            stale = updated_epoch is not None and time.time() - float(updated_epoch) > self.config.forge_stale_seconds
-        except (TypeError, ValueError):
-            stale = False
-        if stale:
+        if state.status == "failed":
             return ComponentSnapshot(
-                component_id="forge",
-                label="Forge",
-                status=ComponentStatus.IDLE,
-                phase="上次任务未收尾",
-                message=(
-                    f"最近一次 Forge 记录停在{localized_phase}，但已长时间没有更新；"
-                    "当前不视为活动任务"
-                ),
+                component_id="engineering",
+                label="Engineering Runtime",
+                status=ComponentStatus.ERROR,
+                phase=phase,
+                message=state.latest_summary.strip() or "最近一次 Engineering 任务失败",
                 updated_at=updated_at,
-                blocking_on=None,
-                last_error="历史运行状态未收尾",
-                details={**details, "stale_phase": phase or None},
+                last_error=state.latest_summary.strip() or "engineering task failed",
+                details=details,
             )
-
+        if state.status == "blocked":
+            return ComponentSnapshot(
+                component_id="engineering",
+                label="Engineering Runtime",
+                status=ComponentStatus.WARNING,
+                phase=phase,
+                message=state.latest_summary.strip() or "最近一次 Engineering 任务被阻塞",
+                updated_at=updated_at,
+                details=details,
+            )
         return ComponentSnapshot(
-            component_id="forge",
-            label="Forge",
-            status=ComponentStatus.RUNNING,
-            phase=localized_phase,
-            message=message,
+            component_id="engineering",
+            label="Engineering Runtime",
+            status=ComponentStatus.IDLE,
+            phase=phase,
+            message=state.latest_summary.strip() or "最近一次 Engineering 任务已结束",
             updated_at=updated_at,
-            blocking_on=blocking_on,
             details=details,
         )
 
@@ -505,14 +456,13 @@ class DashboardProbeService:
         for source, path in sources:
             for line in _tail_lines(path, per_source):
                 stripped = line.strip()
-                if not stripped:
-                    continue
-                events.append(
-                    {
-                        "source": source,
-                        "summary": _sanitize_line(stripped)[:1000],
-                    }
-                )
+                if stripped:
+                    events.append(
+                        {
+                            "source": source,
+                            "summary": _sanitize_line(stripped)[:1000],
+                        }
+                    )
         return events[-limit:][::-1]
 
     def recent_errors(self, *, limit: int = 8) -> list[dict[str, str]]:
@@ -528,7 +478,7 @@ class DashboardProbeService:
         components = [
             self.probe_resident(),
             self.probe_napcat(),
-            self.probe_forge(),
+            self.probe_engineering(),
         ]
         severe = [
             component

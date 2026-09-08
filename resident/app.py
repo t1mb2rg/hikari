@@ -19,13 +19,11 @@ from awareness import (
 )
 from brain import ModelReasoner, Reasoner, SimpleReasoner
 from brain.providers import OpenAICompatibleProvider
-from conversation.action_bridge import (
-    ConversationForgeBridge,
-    build_conversation_forge_bridge,
-)
 from conversation.cli import build_chat_provider, default_context_collector
 from conversation.engine import ConversationEngine, INTERACTIVE_SYSTEM_INSTRUCTIONS
 from conversation.engineering_bridge import ConversationEngineeringBridge
+from conversation.jarvis_openjarvis import JARVIS_PRODUCTION_SYSTEM_INSTRUCTIONS
+from conversation.natural_context import build_resident_natural_context
 from conversation.receipts import ConversationReceiptStore
 from conversation.remote import (
     DEFAULT_CONVERSATION_HOST,
@@ -34,6 +32,10 @@ from conversation.remote import (
     ConversationRequestProcessor,
     ConversationWebSocketHost,
     _is_loopback_host,
+)
+from conversation.whiteboard import (
+    WHITEBOARD_HIKARI_SYSTEM_INSTRUCTIONS,
+    WhiteboardConversationEngine,
 )
 from core.delivery import DeliveryOutbox, DeliveryRouter
 from core.presence import (
@@ -273,6 +275,44 @@ def _conversation_port(values: Mapping[str, str]) -> int:
     return port
 
 
+def _conversation_context_profile(values: Mapping[str, str]) -> str:
+    profile = _runtime_value(
+        values,
+        "HIKARI_CONVERSATION_CONTEXT_PROFILE",
+        "jarvis",
+    ).casefold()
+    if profile not in {"grounded", "whiteboard", "jarvis"}:
+        raise ValueError(
+            "HIKARI_CONVERSATION_CONTEXT_PROFILE must be grounded, whiteboard, or jarvis"
+        )
+    return profile
+
+
+def _conversation_engine_configuration(
+    profile: str,
+) -> tuple[type[ConversationEngine], bool, str, Mapping[str, object] | None]:
+    if profile == "jarvis":
+        return (
+            WhiteboardConversationEngine,
+            True,
+            JARVIS_PRODUCTION_SYSTEM_INSTRUCTIONS,
+            None,
+        )
+    if profile == "whiteboard":
+        return (
+            WhiteboardConversationEngine,
+            True,
+            WHITEBOARD_HIKARI_SYSTEM_INSTRUCTIONS,
+            PRIMARY_REMOTE_RELATIONSHIP_CONTEXT,
+        )
+    return (
+        ConversationEngine,
+        False,
+        INTERACTIVE_SYSTEM_INSTRUCTIONS,
+        PRIMARY_REMOTE_RELATIONSHIP_CONTEXT,
+    )
+
+
 def _quiet_hours_description(config: PresencePolicyConfig) -> str:
     if not config.quiet_hours_enabled:
         return "关闭"
@@ -290,6 +330,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     try:
         runtime_environment = load_runtime_environment(env_file=args.env_file)
         values = runtime_environment.values
+        child_python = values.get("HIKARI_RUNTIME_PYTHON", "").strip() or sys.executable
         reasoner = build_reasoner(
             args.reasoner,
             environment=values,
@@ -358,6 +399,13 @@ def main(argv: Sequence[str] | None = None) -> None:
 
     try:
         provider = build_chat_provider(values)
+        conversation_context_profile = _conversation_context_profile(values)
+        (
+            engine_type,
+            minimal_context,
+            system_instructions,
+            relationship_context,
+        ) = _conversation_engine_configuration(conversation_context_profile)
         bind_host = _runtime_value(
             values,
             "HIKARI_CONVERSATION_HOST",
@@ -377,38 +425,50 @@ def main(argv: Sequence[str] | None = None) -> None:
             provider,
             user_model_path,
         )
+        engineering_enabled = runtime_bool(
+            values,
+            "HIKARI_ENGINEERING_ENABLED",
+            default=False,
+        )
 
-        engine = ConversationEngine(
+        whiteboard_kwargs: dict[str, object] = {}
+        if conversation_context_profile == "jarvis":
+            whiteboard_kwargs = {
+                "relevant_context_provider": lambda: build_resident_natural_context(
+                    state_dir=state_dir,
+                    qq_enabled=qq_enabled,
+                    engineering_enabled=engineering_enabled,
+                ),
+                "relevant_context_placement": "current_turn",
+            }
+
+        engine = engine_type(
             provider,
             memory,
-            context_collector=default_context_collector(include_desktop_activity=False),
+            context_collector=(
+                None
+                if minimal_context
+                else default_context_collector(include_desktop_activity=False)
+            ),
             personality_profile=None,
             voice_profile=None,
-            relationship_context=PRIMARY_REMOTE_RELATIONSHIP_CONTEXT,
+            relationship_context=relationship_context,
             history_limit=12,
             user_model_service=user_model_service,
             user_fact_extractor=user_fact_extractor,
-            system_instructions=INTERACTIVE_SYSTEM_INSTRUCTIONS,
+            system_instructions=system_instructions,
+            **whiteboard_kwargs,
         )
-        forge_bridge: ConversationForgeBridge | None = None
-        if runtime_bool(values, "HIKARI_FORGE_ENABLED", default=False):
-            forge_bridge = build_conversation_forge_bridge(
-                values,
-                provider,
-                repository=repository,
-                state_dir=state_dir,
-            )
 
         engineering_bridge: ConversationEngineeringBridge | None = None
         engineering_supervisor: EngineeringWorkerSupervisor | None = None
-        if runtime_bool(values, "HIKARI_ENGINEERING_ENABLED", default=False):
+        if engineering_enabled:
             engineering_bridge = ConversationEngineeringBridge(
                 EngineeringSessionStore(state_dir / "engineering"),
                 EngineeringConversationBindingStore(
                     state_dir / "engineering_bindings.json"
                 ),
                 repository=repository,
-                fallback=forge_bridge,
             )
             engineering_supervisor = EngineeringWorkerSupervisor(
                 EngineeringWorkerProcessConfig(
@@ -416,15 +476,14 @@ def main(argv: Sequence[str] | None = None) -> None:
                     state_dir=state_dir,
                     log_path=state_dir / "engineering_worker.log",
                     environment=dict(values),
-                    python_executable=sys.executable,
+                    python_executable=child_python,
                 )
             )
-        action_bridge = engineering_bridge or forge_bridge
         conversation_host = ConversationWebSocketHost(
             ConversationRequestProcessor(
                 engine,
                 ConversationReceiptStore(receipt_path),
-                action_bridge=action_bridge,
+                action_bridge=engineering_bridge,
             ),
             shared_secret=shared_secret,
         )
@@ -443,7 +502,7 @@ def main(argv: Sequence[str] | None = None) -> None:
                     log_path=state_dir / "qq_bridge.log",
                     environment=child_environment,
                     env_file=runtime_environment.env_file,
-                    python_executable=sys.executable,
+                    python_executable=child_python,
                 )
             )
             guard_enabled = runtime_bool(
@@ -470,6 +529,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     )
     print(f"Hikari Conversation Host：ws://{bind_host}:{bind_port}", flush=True)
     print(f"Hikari 对话模型：{getattr(provider, 'model', type(provider).__name__)}", flush=True)
+    print(f"Hikari Conversation Context：{conversation_context_profile}", flush=True)
     print(
         f"Hikari Engineering Runtime：{'启用' if engineering_bridge is not None else '关闭'}",
         flush=True,
@@ -477,10 +537,6 @@ def main(argv: Sequence[str] | None = None) -> None:
     print(
         "Hikari Engineering Worker："
         f"{'resident 托管' if engineering_supervisor is not None else '关闭'}",
-        flush=True,
-    )
-    print(
-        f"Hikari legacy Forge bridge：{'启用' if forge_bridge is not None else '关闭'}",
         flush=True,
     )
     print(f"Hikari QQ Bridge：{'resident 托管' if qq_enabled else '关闭'}", flush=True)

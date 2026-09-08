@@ -9,7 +9,9 @@ from websockets.asyncio.server import serve
 
 from brain.model_reasoner import ChatMessage
 from conversation.engine import ConversationEngine
-from conversation.models import UserTurn
+from conversation.jarvis_openjarvis import JARVIS_PRODUCTION_SYSTEM_INSTRUCTIONS
+from conversation.models import AssistantReply, UserTurn
+from conversation.natural import NaturalConversationEngine
 from conversation.protocol import (
     decode_envelope,
     encode_envelope,
@@ -17,7 +19,11 @@ from conversation.protocol import (
     turn_envelope,
 )
 from conversation.receipts import ConversationReceiptStore
-from conversation.remote import ConversationRequestProcessor, ConversationWebSocketHost
+from conversation.remote import (
+    ConversationRequestProcessor,
+    ConversationWebSocketHost,
+    build_remote_conversation_engine,
+)
 from integrations.qq_bridge.core_client import ConversationCoreClient
 from memory.store import MemoryStore
 
@@ -40,6 +46,24 @@ def _processor(tmp_path: Path, provider: FakeProvider) -> ConversationRequestPro
     )
 
 
+def test_standalone_host_builds_natural_jarvis_engine(tmp_path: Path):
+    provider = FakeProvider(["<reaction>ok</reaction><reply>ok</reply>"])
+    engine = build_remote_conversation_engine(
+        provider,
+        MemoryStore(tmp_path / "memory.db"),
+        state_dir=tmp_path,
+        history_limit=12,
+        user_model_service=None,
+        user_fact_extractor=None,
+        qq_enabled=False,
+        engineering_enabled=False,
+    )
+
+    assert isinstance(engine, NaturalConversationEngine)
+    assert engine.system_instructions == JARVIS_PRODUCTION_SYSTEM_INSTRUCTIONS
+    assert engine.relevant_context_placement == "current_turn"
+
+
 def test_request_processor_deduplicates_same_request(tmp_path: Path):
     provider = FakeProvider(["第一次回复"])
     processor = _processor(tmp_path, provider)
@@ -54,6 +78,35 @@ def test_request_processor_deduplicates_same_request(tmp_path: Path):
     assert len(provider.calls) == 1
     events = MemoryStore(tmp_path / "memory.db").recent_events(10)
     assert len(events) == 2
+
+
+def test_request_processor_accepts_generic_conversation_bridge(tmp_path: Path):
+    class FakeBridge:
+        def respond(
+            self,
+            engine: ConversationEngine,
+            turn: UserTurn,
+            *,
+            source_ref: str | None = None,
+        ) -> AssistantReply:
+            return AssistantReply(turn.channel, turn.conversation_id, "bridge ok")
+
+    provider = FakeProvider(["unused"])
+    engine = ConversationEngine(provider, MemoryStore(tmp_path / "memory.db"))
+    processor = ConversationRequestProcessor(
+        engine,
+        ConversationReceiptStore(tmp_path / "receipts.db"),
+        action_bridge=FakeBridge(),
+    )
+
+    reply, duplicate = processor.process(
+        "qq:bridge:1",
+        UserTurn("qq", "private:7", "route me"),
+    )
+
+    assert reply.text == "bridge ok"
+    assert duplicate is False
+    assert provider.calls == []
 
 
 def test_request_id_cannot_be_reused_for_different_turn(tmp_path: Path):

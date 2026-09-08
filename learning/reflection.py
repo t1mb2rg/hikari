@@ -11,18 +11,17 @@ from memory.models import parse_memory_kind
 
 
 LEARNING_CONTEXT_KEY = "_hikari_learning"
-ALLOWED_LEARNING_KINDS = frozenset({MemoryKind.USER_MODEL, MemoryKind.SEMANTIC})
+ALLOWED_LEARNING_KINDS = frozenset({MemoryKind.SEMANTIC})
 
 REFLECTION_INSTRUCTIONS = """You are Hikari's bounded reflection layer.
-Your task is to inspect durable memories and propose at most one conservative, reusable learning.
-A learning is not a summary of everything. It should be a stable inference that could improve future understanding.
-Use `user_model` only for a durable understanding about the user, and cite at least two distinct memory IDs.
-Use `semantic` for a reusable fact or relationship supported by the supplied memories.
+Your task is to inspect durable memories and propose at most one conservative, reusable semantic learning.
+A learning is not a summary of everything. It should be a stable fact, relationship, or reusable operational insight supported by the supplied memories.
+User facts and preferences are owned by Hikari's separate User Model and must not be proposed here.
 Do not infer sensitive personal traits from indirect evidence. Do not invent evidence.
-If evidence is weak, contradictory, or merely a one-off preference, return decision `none`.
+If evidence is weak, contradictory, or only describes a one-off personal preference, return decision `none`.
 Return JSON only, with exactly one of these shapes:
 {"decision":"none","reason":"..."}
-{"decision":"propose","kind":"user_model|semantic","content":"...","confidence":0.0,"evidence_memory_ids":[1,2],"reason":"..."}
+{"decision":"propose","kind":"semantic","content":"...","confidence":0.0,"evidence_memory_ids":[1,2],"reason":"..."}
 Confidence must be between 0 and 1. Evidence IDs must come from the supplied memories."""
 
 
@@ -31,7 +30,7 @@ class LearningReflectionError(RuntimeError):
 
 
 class LearningReflector:
-    """Model-backed reflection that can only propose reviewable memory.
+    """Model-backed reflection that can only propose reviewable semantic memory.
 
     Reflection never writes to MemoryStore. Accepted candidates continue through
     the existing MemoryReview path so one model response cannot silently rewrite
@@ -89,9 +88,7 @@ class LearningReflector:
         except (TypeError, ValueError) as exc:
             raise LearningReflectionError("invalid reflective learning kind") from exc
         if kind not in ALLOWED_LEARNING_KINDS:
-            raise LearningReflectionError(
-                "reflective learning kind must be user_model or semantic"
-            )
+            raise LearningReflectionError("reflective learning kind must be semantic")
 
         content = response.get("content")
         reason = response.get("reason")
@@ -118,10 +115,6 @@ class LearningReflector:
         if unknown_ids:
             raise LearningReflectionError(
                 f"learning cited unknown memory IDs: {', '.join(map(str, sorted(unknown_ids)))}"
-            )
-        if kind is MemoryKind.USER_MODEL and len(evidence_ids) < 2:
-            raise LearningReflectionError(
-                "user_model learning requires at least two distinct evidence memories"
             )
 
         return MemoryCandidate(

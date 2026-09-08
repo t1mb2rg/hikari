@@ -6,17 +6,21 @@ from collections.abc import Mapping, Sequence
 import hmac
 import ipaddress
 from pathlib import Path
+from typing import Protocol, runtime_checkable
 
+from brain.model_reasoner import ChatProvider
 from memory.store import MemoryStore
 from resident.environment import load_runtime_environment
 from resident.paths import default_state_dir
-from user_model import build_user_model_runtime
+from user_model import UserModelService, ModelUserFactExtractor, build_user_model_runtime
 from websockets.asyncio.server import ServerConnection, serve
 
-from .action_bridge import ConversationForgeBridge
-from .cli import build_chat_provider, default_context_collector
-from .engine import ConversationEngine, INTERACTIVE_SYSTEM_INSTRUCTIONS
+from .cli import build_chat_provider
+from .engine import ConversationEngine
+from .jarvis_openjarvis import JARVIS_PRODUCTION_SYSTEM_INSTRUCTIONS
 from .models import AssistantReply, UserTurn
+from .natural import NaturalConversationEngine
+from .natural_context import build_resident_natural_context
 from .protocol import (
     ConversationProtocolError,
     decode_envelope,
@@ -46,6 +50,20 @@ PRIMARY_REMOTE_RELATIONSHIP_CONTEXT = {
 }
 
 
+@runtime_checkable
+class ConversationActionBridge(Protocol):
+    """Optional control-path router layered in front of normal Conversation generation."""
+
+    def respond(
+        self,
+        engine: ConversationEngine,
+        turn: UserTurn,
+        *,
+        source_ref: str | None = None,
+    ) -> AssistantReply:
+        ...
+
+
 def _is_loopback_host(host: str) -> bool:
     value = host.strip().lower()
     if value in {"localhost", "::1"}:
@@ -56,6 +74,51 @@ def _is_loopback_host(host: str) -> bool:
         return False
 
 
+def _runtime_bool(values: Mapping[str, str], name: str, *, default: bool = False) -> bool:
+    raw = values.get(name)
+    if raw is None or not raw.strip():
+        return default
+    normalized = raw.strip().casefold()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    raise ValueError(f"{name} must be true or false")
+
+
+def build_remote_conversation_engine(
+    provider: ChatProvider,
+    memory: MemoryStore,
+    *,
+    state_dir: Path,
+    history_limit: int,
+    user_model_service: UserModelService | None,
+    user_fact_extractor: ModelUserFactExtractor | None,
+    qq_enabled: bool,
+    engineering_enabled: bool,
+) -> NaturalConversationEngine:
+    """Build the standalone host with the same natural Jarvis conversation path as Resident."""
+
+    return NaturalConversationEngine(
+        provider,
+        memory,
+        context_collector=None,
+        personality_profile=None,
+        voice_profile=None,
+        relationship_context=None,
+        history_limit=history_limit,
+        user_model_service=user_model_service,
+        user_fact_extractor=user_fact_extractor,
+        system_instructions=JARVIS_PRODUCTION_SYSTEM_INSTRUCTIONS,
+        relevant_context_provider=lambda: build_resident_natural_context(
+            state_dir=state_dir,
+            qq_enabled=qq_enabled,
+            engineering_enabled=engineering_enabled,
+        ),
+        relevant_context_placement="current_turn",
+    )
+
+
 class ConversationRequestProcessor:
     """Idempotently route remote explicit chat turns through ConversationEngine."""
 
@@ -64,14 +127,16 @@ class ConversationRequestProcessor:
         engine: ConversationEngine,
         receipts: ConversationReceiptStore,
         *,
-        action_bridge: ConversationForgeBridge | None = None,
+        action_bridge: ConversationActionBridge | None = None,
     ) -> None:
         if not isinstance(engine, ConversationEngine):
             raise TypeError("ConversationRequestProcessor requires ConversationEngine")
         if not isinstance(receipts, ConversationReceiptStore):
             raise TypeError("ConversationRequestProcessor requires ConversationReceiptStore")
-        if action_bridge is not None and not isinstance(action_bridge, ConversationForgeBridge):
-            raise TypeError("ConversationRequestProcessor action_bridge must be ConversationForgeBridge or None")
+        if action_bridge is not None and not isinstance(action_bridge, ConversationActionBridge):
+            raise TypeError(
+                "ConversationRequestProcessor action_bridge must implement the conversation bridge contract or be None"
+            )
         self.engine = engine
         self.receipts = receipts
         self.action_bridge = action_bridge
@@ -197,11 +262,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--host", default=None)
     parser.add_argument("--port", type=int, default=None)
     parser.add_argument("--history-limit", type=int, default=12)
-    parser.add_argument(
-        "--desktop-context",
-        action="store_true",
-        help="显式允许远程聊天读取当前前台窗口和输入活跃度。默认关闭。",
-    )
     return parser
 
 
@@ -278,19 +338,19 @@ def main(argv: Sequence[str] | None = None) -> int:
             provider,
             memory_path.parent / "user_model.db",
         )
-        engine = ConversationEngine(
+        engine = build_remote_conversation_engine(
             provider,
             MemoryStore(memory_path),
-            context_collector=default_context_collector(
-                include_desktop_activity=args.desktop_context,
-            ),
-            personality_profile=None,
-            voice_profile=None,
-            relationship_context=PRIMARY_REMOTE_RELATIONSHIP_CONTEXT,
+            state_dir=memory_path.parent,
             history_limit=args.history_limit,
             user_model_service=user_model_service,
             user_fact_extractor=user_fact_extractor,
-            system_instructions=INTERACTIVE_SYSTEM_INSTRUCTIONS,
+            qq_enabled=_runtime_bool(values, "HIKARI_QQ_ENABLED", default=False),
+            engineering_enabled=_runtime_bool(
+                values,
+                "HIKARI_ENGINEERING_ENABLED",
+                default=False,
+            ),
         )
         processor = ConversationRequestProcessor(
             engine,
@@ -306,6 +366,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     print(f"Hikari Conversation Host：ws://{bind_host}:{bind_port}")
     print(f"模型：{getattr(provider, 'model', type(provider).__name__)}")
+    print("Conversation：Natural / Jarvis production")
     print(f"对话记忆：{memory_path}")
     print(f"请求回执：{receipt_path}")
     try:

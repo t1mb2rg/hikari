@@ -6,18 +6,16 @@ from memory import DurableMemory, MemoryKind, MemoryStore
 
 
 LEARNED_CONTEXT_KEY = "_hikari_learned"
-DEFAULT_ASSIMILATION_KINDS = (
-    MemoryKind.USER_MODEL,
-    MemoryKind.SEMANTIC,
-)
+DEFAULT_ASSIMILATION_KINDS = (MemoryKind.SEMANTIC,)
+_ALLOWED_ASSIMILATION_KINDS = frozenset(DEFAULT_ASSIMILATION_KINDS)
 
 
 class LearningAssimilationPolicy:
-    """Bounded recall of accepted learned memory into future cognition.
+    """Bounded recall of accepted semantic learning into future cognition.
 
-    Only durable memories are eligible here. Reflection candidates and review
-    decisions never enter this path until they have been explicitly accepted and
-    written to MemoryStore.
+    User facts are owned by ``user_model/``. Learning assimilation only exposes
+    reviewed semantic memory from ``MemoryStore`` so the two systems cannot both
+    claim ownership of the user's current stable state.
     """
 
     def __init__(
@@ -34,6 +32,8 @@ class LearningAssimilationPolicy:
             raise ValueError("limit must be positive")
         if not eligible_kinds:
             raise ValueError("eligible_kinds must not be empty")
+        if any(kind not in _ALLOWED_ASSIMILATION_KINDS for kind in eligible_kinds):
+            raise ValueError("learning assimilation only accepts semantic memory")
 
         self.min_confidence = confidence
         self.limit = int(limit)
@@ -56,7 +56,7 @@ class LearningAssimilationPolicy:
 def learned_memories_as_context(
     memories: Iterable[DurableMemory],
 ) -> list[dict[str, object]]:
-    """Serialize accepted learned memory for Reasoner-only context."""
+    """Serialize accepted semantic learning for Reasoner-only context."""
 
     return [
         {

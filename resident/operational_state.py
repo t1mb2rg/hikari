@@ -6,10 +6,12 @@ import json
 import os
 from pathlib import Path
 import socket
+import sqlite3
 import time
-from typing import Any, Callable
+from typing import Any, Callable, TYPE_CHECKING
 
 from engineering.heartbeat import EngineeringWorkerHeartbeatStore
+from engineering.progress import describe_engineering_progress
 from engineering.session import EngineeringSessionState, EngineeringSessionStore
 from resident.napcat_login_guard import (
     DEFAULT_NAPCAT_ROOT,
@@ -17,6 +19,9 @@ from resident.napcat_login_guard import (
     NapCatLoginProbe,
 )
 from resident.paths import default_state_dir
+
+if TYPE_CHECKING:
+    from core.delivery import DeliveryOutbox
 
 
 @dataclass(frozen=True)
@@ -127,11 +132,7 @@ def _component(
 
 
 class OperationalStateService:
-    """Read-only point-in-time status for Hikari's own runtime.
-
-    The snapshot is intentionally small and secret-safe. An unavailable probe
-    becomes ``unknown`` instead of being inferred as healthy or running.
-    """
+    """Read-only point-in-time status for Resident-owned runtime components."""
 
     def __init__(
         self,
@@ -142,6 +143,7 @@ class OperationalStateService:
         napcat_probe: Callable[[], object] | None = None,
         engineering_store: EngineeringSessionStore | None = None,
         heartbeat_store: EngineeringWorkerHeartbeatStore | None = None,
+        delivery_outbox: DeliveryOutbox | None = None,
         clock: Callable[[], float] = time.monotonic,
         wall_clock: Callable[[], float] = time.time,
     ) -> None:
@@ -155,6 +157,8 @@ class OperationalStateService:
         self._heartbeat_store = heartbeat_store or EngineeringWorkerHeartbeatStore(
             config.state_dir / "engineering_worker.json"
         )
+        self._delivery_outbox = delivery_outbox
+        self._delivery_outbox_path = config.state_dir / "proactive_delivery.db"
         self._clock = clock
         self._wall_clock = wall_clock
         self._cached_at = float("-inf")
@@ -218,10 +222,7 @@ class OperationalStateService:
                 if alive
                 else "Resident host state remains, but the recorded process is not running."
             ),
-            details={
-                "pid": pid,
-                "started_at": payload.get("started_at"),
-            },
+            details={"pid": pid, "started_at": payload.get("started_at")},
         )
 
     def _probe_qq(self) -> dict[str, object]:
@@ -253,25 +254,35 @@ class OperationalStateService:
         is_offline = getattr(login, "is_offline", None)
         qrcode_available = getattr(login, "qrcode_available", None)
         if is_login is True and onebot_open:
-            status = "healthy"
-            phase = "logged_in"
-            message = "QQ is logged in and the OneBot endpoint is reachable."
+            status, phase, message = (
+                "healthy",
+                "logged_in",
+                "QQ is logged in and the OneBot endpoint is reachable.",
+            )
         elif is_login is True:
-            status = "warning"
-            phase = "logged_in_onebot_unreachable"
-            message = "QQ is logged in, but the OneBot endpoint is not reachable."
+            status, phase, message = (
+                "warning",
+                "logged_in_onebot_unreachable",
+                "QQ is logged in, but the OneBot endpoint is not reachable.",
+            )
         elif qrcode_available is True:
-            status = "waiting"
-            phase = "login_required"
-            message = "NapCat is waiting for QQ login confirmation."
+            status, phase, message = (
+                "waiting",
+                "login_required",
+                "NapCat is waiting for QQ login confirmation.",
+            )
         elif is_offline is True:
-            status = "warning"
-            phase = "login_invalid"
-            message = "NapCat reports the QQ session as offline or invalid."
+            status, phase, message = (
+                "warning",
+                "login_invalid",
+                "NapCat reports the QQ session as offline or invalid.",
+            )
         else:
-            status = "waiting"
-            phase = "not_logged_in"
-            message = "QQ is not currently observed as logged in."
+            status, phase, message = (
+                "waiting",
+                "not_logged_in",
+                "QQ is not currently observed as logged in.",
+            )
         return _component(
             status,
             observed=True,
@@ -323,6 +334,37 @@ class OperationalStateService:
             **details,
         }
 
+    def _read_delivery_state(self, delivery_id: str) -> str:
+        if self._delivery_outbox is not None:
+            try:
+                record = self._delivery_outbox.get(delivery_id)
+            except Exception:
+                return "unknown"
+            return "not_enqueued" if record is None else record.state
+
+        path = self._delivery_outbox_path
+        if not path.is_file():
+            return "not_enqueued"
+        try:
+            uri = f"{path.resolve().as_uri()}?mode=ro"
+            with sqlite3.connect(uri, uri=True, timeout=1.0) as connection:
+                row = connection.execute(
+                    "SELECT state FROM proactive_delivery_outbox WHERE delivery_id = ?",
+                    (delivery_id,),
+                ).fetchone()
+        except sqlite3.Error:
+            return "unknown"
+        if row is None:
+            return "not_enqueued"
+        state = str(row[0])
+        return state if state in {"pending", "sending", "sent", "uncertain"} else "unknown"
+
+    def _delivery_state_for(self, state: EngineeringSessionState) -> str | None:
+        if state.status not in {"completed", "failed", "blocked"} or not state.current_turn_id:
+            return None
+        delivery_id = f"engineering:{state.session_id}:{state.current_turn_id}"
+        return self._read_delivery_state(delivery_id)
+
     def _probe_engineering(self) -> dict[str, object]:
         worker = self._probe_engineering_worker()
         try:
@@ -342,27 +384,34 @@ class OperationalStateService:
         active = [state for state in states if state.status in {"pending", "running"}]
         if active:
             current = max(active, key=lambda state: state.updated_at)
+            progress = describe_engineering_progress(current)
             status = "running" if current.status == "running" else "waiting"
-            phase = current.status
+            phase = progress.phase
             message = (
-                "An EngineeringSession is currently running."
+                f"An EngineeringSession is currently running in phase {progress.phase}."
                 if current.status == "running"
                 else "An EngineeringSession is pending worker execution."
             )
         elif latest is None:
-            status = "idle"
-            phase = "no_sessions"
-            message = "Engineering has no current session work."
+            status, phase, message = (
+                "idle",
+                "no_sessions",
+                "Engineering has no current session work.",
+            )
         else:
-            status = "idle"
-            phase = "idle"
-            message = "Engineering has no active session work."
+            status, phase, message = (
+                "idle",
+                "idle",
+                "Engineering has no active session work.",
+            )
 
         worker_status = str(worker.get("status", "unknown"))
         if worker_status in {"offline", "warning"}:
-            status = "warning"
-            phase = "worker_unhealthy"
-            message = "Engineering session state is readable, but the Engineering Worker is not healthy."
+            status, phase, message = (
+                "warning",
+                "worker_unhealthy",
+                "Engineering session state is readable, but the Engineering Worker is not healthy.",
+            )
 
         details: dict[str, object] = {
             "active_session_count": len(active),
@@ -370,13 +419,29 @@ class OperationalStateService:
             "worker": worker,
             "worker_liveness": worker_status,
         }
+        if active:
+            current = max(active, key=lambda state: state.updated_at)
+            current_progress = describe_engineering_progress(current)
+            details.update(
+                {
+                    "current_session_id": current.session_id,
+                    "current_session_phase": current_progress.phase,
+                    "current_progress_at": _iso_from_epoch(current_progress.updated_at),
+                }
+            )
         if latest is not None:
+            latest_progress = describe_engineering_progress(latest)
             details.update(
                 {
                     "latest_session_status": latest.status,
+                    "latest_session_phase": latest_progress.phase,
                     "latest_session_updated_at": _iso_from_epoch(latest.updated_at),
+                    "latest_progress_at": _iso_from_epoch(latest_progress.updated_at),
                 }
             )
+            delivery_state = self._delivery_state_for(latest)
+            if delivery_state is not None:
+                details["latest_delivery_state"] = delivery_state
         return _component(
             status,
             observed=True,
@@ -403,7 +468,7 @@ _DEFAULT_SERVICE: OperationalStateService | None = None
 
 
 def capture_operational_state(*, force: bool = False) -> dict[str, object]:
-    """Capture Hikari's local operational state for Conversation grounding."""
+    """Capture local Resident-owned operational state for capability grounding."""
 
     global _DEFAULT_SERVICE
     if _DEFAULT_SERVICE is None:

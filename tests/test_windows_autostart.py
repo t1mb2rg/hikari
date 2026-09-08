@@ -10,6 +10,7 @@ from resident.windows_autostart import (
     RUN_KEY_PATH,
     RUN_VALUE_NAME,
     WindowsLoginAutostart,
+    _launch_config,
 )
 
 
@@ -300,6 +301,44 @@ def test_run_now_uses_saved_config_without_shell(tmp_path: Path):
     assert len(launched) == 1
     assert launched[0].repository == repository.resolve()
     assert launched[0].reasoner == "simple"
+
+
+def test_default_launch_uses_promoted_verified_environment(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    repository = _repo(tmp_path)
+    promoted_python = tmp_path / "candidate" / "Scripts" / "python.exe"
+    selected: list[str] = []
+
+    class FakeEnvironmentManager:
+        def __init__(self, repo, state_dir):
+            assert Path(repo) == repository.resolve()
+
+        def current_python(self, fallback):
+            return promoted_python
+
+    class FakeHost:
+        def __init__(self, config, *, python_executable):
+            selected.append(python_executable)
+
+        def start(self):
+            return None
+
+    monkeypatch.setattr(
+        "resident.windows_autostart.EnvironmentManager", FakeEnvironmentManager
+    )
+    monkeypatch.setattr("resident.windows_autostart.WindowsResidentHost", FakeHost)
+    config = AutostartConfig(
+        repository=repository,
+        state_dir=tmp_path / "state",
+        reasoner="simple",
+        python_executable=str(tmp_path / "bootstrap" / "python.exe"),
+    )
+
+    _launch_config(config)
+
+    assert selected == [str(promoted_python)]
 
 
 def test_run_now_rejects_stale_registration(tmp_path: Path):

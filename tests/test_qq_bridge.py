@@ -301,7 +301,11 @@ def test_live_and_recovery_paths_serialize_same_turn(tmp_path: Path):
 
 def test_standalone_cli_check_assembles_nonebot_runtime(tmp_path: Path):
     repository = Path(__file__).resolve().parents[1]
-    environment = os.environ.copy()
+    environment = {
+        key: value
+        for key, value in os.environ.items()
+        if not key.upper().startswith("HIKARI_")
+    }
     environment["HIKARI_ONEBOT_ALLOWED_USER_IDS"] = "7"
     environment["HIKARI_ONEBOT_HOST"] = "127.0.0.1"
     environment["HIKARI_ONEBOT_PORT"] = "18081"

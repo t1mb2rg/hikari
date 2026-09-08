@@ -18,8 +18,8 @@ class FakeReflector:
 
 def _candidate() -> MemoryCandidate:
     return MemoryCandidate(
-        kind=MemoryKind.USER_MODEL,
-        content="The user prefers rapid milestone loops.",
+        kind=MemoryKind.SEMANTIC,
+        content="Decisive green validation is sufficient to close a bounded gate.",
         context={"_hikari_learning": {"evidence_memory_ids": [1, 2, 3]}},
         confidence=0.9,
         salience=0.9,
@@ -86,11 +86,11 @@ def test_none_result_still_advances_watermark(tmp_path):
     assert reflector.calls == 1
 
 
-def test_derived_learning_memories_do_not_trigger_reflection_by_default(tmp_path):
+def test_derived_learning_and_user_model_memories_do_not_trigger_reflection_by_default(tmp_path):
     store = MemoryStore(tmp_path / "memory.db")
     for index in range(4):
         kind = MemoryKind.USER_MODEL if index % 2 == 0 else MemoryKind.SEMANTIC
-        store.remember_memory(kind, f"derived learning {index}")
+        store.remember_memory(kind, f"derived memory {index}")
 
     reflector = FakeReflector(_candidate())
     session = LearningSession(store=store, reflector=reflector)

@@ -142,7 +142,7 @@ def test_prompt_attaches_identity_relationship_capabilities_personality_voice_an
     assert metadata["relationship"]["kind"] == "primary_local_user"
     assert metadata["relationship"]["basis"] == "trusted_runtime_binding"
     assert metadata["capabilities"]["memory"]["available"] is True
-    assert metadata["capabilities"]["current_chat_authority"]["filesystem"] is False
+    assert metadata["capabilities"]["current_chat_authority"]["direct_filesystem"] is False
     assert metadata["ambient_context"]["providers"]["test_context"] == {
         "foreground": "editor",
         "idle": False,
@@ -155,14 +155,13 @@ def test_prompt_attaches_identity_relationship_capabilities_personality_voice_an
     assert provenance["current_user_turn"]["recalled"] is False
     assert provenance["relationship"]["source"] == "trusted_runtime_binding"
     assert provenance["relationship"]["recalled"] is False
-    assert "You are Hikari (ひかり)" in system
-    assert "familiar participant" in system
-    assert "Memory provenance is strict" in system
-    assert "pasted transcripts" in system
-    assert "not independently recalled memory" in system
-    assert "Never invent autobiographical history" in system
-    assert "Direct conversation alone does not grant shell" in system
-    assert "Preserve uncertainty" in system
+    assert "你是 Hikari（光 / ひかり）" in system
+    assert "聊天首先是聊天，不是答题" in system
+    assert "当前用户消息里的粘贴记录" in system
+    assert "不等于你自己记得" in system
+    assert "没有真实记忆支持的事情不要伪装成回忆" in system
+    assert "直接聊天本身不会自动授予 shell" in system
+    assert "保留必要的不确定性" in system
     assert "customer-service chatbot" not in system
     assert "therapist, life coach" not in system
 
