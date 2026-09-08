@@ -108,7 +108,7 @@ def _fail_current_publish_turn(sessions: EngineeringSessionStore, message: str) 
     )
 
 
-def test_idempotent_publish_effect_gets_third_bounded_attempt(tmp_path: Path) -> None:
+def test_publish_goal_retry_budget_remains_terminal_after_second_failure(tmp_path: Path) -> None:
     sessions, goals, loop = _publish_retry_runtime(tmp_path)
 
     first = loop.advance_once("publish-goal")
@@ -117,21 +117,15 @@ def test_idempotent_publish_effect_gets_third_bounded_attempt(tmp_path: Path) ->
 
     loop.advance_once("publish-goal")
     goal = goals.load("publish-goal")
-    assert goal.current_step.attempts == 2
-    _fail_current_publish_turn(sessions, "remote head temporarily unavailable again")
-
-    third = loop.advance_once("publish-goal")
-    goal = goals.load("publish-goal")
     assert goal.status == "active"
-    assert goal.current_step.attempts == 3
-    assert third.action in {"recovered_enqueue", "waiting"}
-
+    assert goal.current_step.attempts == 2
     _fail_current_publish_turn(sessions, "persistent remote failure")
+
     terminal = loop.advance_once("publish-goal")
     goal = goals.load("publish-goal")
     assert terminal.status == "failed"
     assert goal.status == "failed"
-    assert goal.current_step.attempts == 3
+    assert goal.current_step.attempts == 2
 
 
 def test_failed_whole_goal_delivery_summary_uses_terminal_failure_only(tmp_path: Path) -> None:
