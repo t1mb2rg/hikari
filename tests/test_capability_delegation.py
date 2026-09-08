@@ -41,6 +41,22 @@ def test_implemented_maintainer_edit_test_commit_is_executable() -> None:
     assert capabilities["engineering.repository.write"].available is True
 
 
+def test_implemented_project_command_execution_is_executable() -> None:
+    capabilities = hikari_engineering_capabilities(True)
+
+    assessment = assess_task_capabilities(
+        ["engineering.commands.run"],
+        capabilities,
+    )
+
+    assert assessment.status == ASSESSMENT_EXECUTABLE
+    assert assessment.available == ("engineering.commands.run",)
+    assert assessment.missing == ()
+    assert capabilities["engineering.commands.run"].delegated is True
+    assert capabilities["engineering.commands.run"].available is True
+    assert capabilities["engineering.commands.run"].scope == "isolated_project_worktree_non_mutating"
+
+
 def test_delegated_but_unimplemented_push_is_capability_gap_not_permission_request() -> None:
     capabilities = hikari_engineering_capabilities(True)
 
