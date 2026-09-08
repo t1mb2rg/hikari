@@ -74,7 +74,7 @@ def test_implemented_non_protected_push_is_executable() -> None:
     assert capabilities["engineering.git.push_non_protected"].scope == "isolated_engineering_branch_to_origin"
 
 
-def test_draft_pr_remains_a_delegated_capability_gap() -> None:
+def test_implemented_draft_pr_publication_is_executable() -> None:
     capabilities = hikari_engineering_capabilities(True)
 
     assessment = assess_task_capabilities(
@@ -82,9 +82,14 @@ def test_draft_pr_remains_a_delegated_capability_gap() -> None:
         capabilities,
     )
 
-    assert assessment.status == ASSESSMENT_CAPABILITY_GAP
-    assert assessment.missing == ("engineering.git.open_or_update_draft_pr",)
+    capability = capabilities["engineering.git.open_or_update_draft_pr"]
+    assert assessment.status == ASSESSMENT_EXECUTABLE
+    assert assessment.available == ("engineering.git.open_or_update_draft_pr",)
+    assert assessment.missing == ()
     assert assessment.escalation == ()
+    assert capability.delegated is True
+    assert capability.available is True
+    assert capability.scope == "engineering_branch_to_draft_pull_request"
 
 
 def test_protected_merge_is_authority_escalation_not_capability_gap() -> None:
