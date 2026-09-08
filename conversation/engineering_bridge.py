@@ -29,6 +29,11 @@ from engineering.session import (
 from engineering.workspace import EngineeringWorkspace, EngineeringWorkspaceError
 
 from .engine import ASSISTANT_EVENT_TYPE, USER_EVENT_TYPE, ConversationEngine
+from .engineering_intent import (
+    EngineeringIntentResolution,
+    EngineeringIntentResolutionError,
+    EngineeringIntentResolver,
+)
 from .models import AssistantReply, UserTurn
 
 
@@ -69,6 +74,7 @@ _INSPECTION_VERBS = (
 )
 _WRITE_VERBS = (
     "修改",
+    "更新",
     "修复",
     "实现",
     "添加",
@@ -131,6 +137,50 @@ _PROTECTED_MERGE_MARKERS = (
     "合并保护分支",
     "合并到保护分支",
 )
+_PRODUCTION_DEPLOY_MARKERS = (
+    "生产部署",
+    "部署到生产",
+    "部署进生产",
+    "部署上线",
+    "上线生产",
+    "production deploy",
+    "deploy production",
+    "deploy to production",
+)
+_DESTRUCTIVE_MIGRATION_MARKERS = (
+    "破坏性数据迁移",
+    "破坏性迁移",
+    "destructive data migration",
+    "destructive migration",
+)
+_PERMISSION_NOUN_MARKERS = (
+    "权限边界",
+    "permission boundary",
+)
+_PERMISSION_EXPANSION_ACTION_MARKERS = (
+    "扩展",
+    "扩大",
+    "提升",
+    "增加",
+    "expand",
+    "widen",
+    "elevate",
+    "increase",
+)
+_NORTH_STAR_CHANGE_MARKERS = (
+    "改变项目北极星",
+    "修改项目北极星",
+    "调整项目北极星",
+    "project north star change",
+    "change project north star",
+    "change the project north star",
+)
+_MATERIAL_COST_MARKERS = (
+    "显著外部成本",
+    "重大外部成本",
+    "material external cost",
+    "material paid resource cost",
+)
 _SECRET_NOUN_MARKERS = (
     "secret",
     "secrets",
@@ -164,52 +214,6 @@ _SECRET_ACTION_MARKERS = (
     "print",
     "send me",
 )
-_PRODUCTION_DEPLOY_MARKERS = (
-    "生产部署",
-    "部署到生产",
-    "部署进生产",
-    "部署上线",
-    "上线生产",
-    "production deploy",
-    "deploy production",
-    "deploy to production",
-)
-_DESTRUCTIVE_MIGRATION_MARKERS = (
-    "破坏性数据迁移",
-    "破坏性迁移",
-    "destructive data migration",
-    "destructive migration",
-)
-_PERMISSION_NOUN_MARKERS = (
-    "权限边界",
-    "权限",
-    "permission boundary",
-    "permissions",
-)
-_PERMISSION_EXPANSION_ACTION_MARKERS = (
-    "扩展",
-    "扩大",
-    "提升",
-    "增加",
-    "expand",
-    "widen",
-    "elevate",
-    "increase",
-)
-_NORTH_STAR_CHANGE_MARKERS = (
-    "改变项目北极星",
-    "修改项目北极星",
-    "调整项目北极星",
-    "project north star change",
-    "change project north star",
-    "change the project north star",
-)
-_MATERIAL_COST_MARKERS = (
-    "显著外部成本",
-    "重大外部成本",
-    "material external cost",
-    "material paid resource cost",
-)
 _PUSH_MARKERS = (
     "git push",
     "push 分支",
@@ -228,11 +232,15 @@ _PUSH_MARKERS = (
     "推到 github",
     "推送到 github",
 )
-_DRAFT_PR_MARKERS = (
-    "draft pr",
-    "draft pull request",
-    "草稿 pr",
-    "草稿 pull request",
+_DRAFT_PR_ACTION_MARKERS = (
+    "开 draft pr",
+    "创建 draft pr",
+    "新建 draft pr",
+    "更新 draft pr",
+    "开草稿 pr",
+    "创建草稿 pr",
+    "新建草稿 pr",
+    "更新草稿 pr",
     "开 pr",
     "创建 pr",
     "新建 pr",
@@ -254,7 +262,6 @@ _COMMAND_RUN_MARKERS = (
     "execute command",
 )
 
-
 _READ_REQUIREMENTS = ("engineering.repository.read",)
 _COMMAND_REQUIREMENTS = ("engineering.commands.run",)
 _PUSH_REQUIREMENTS = ("engineering.git.push_non_protected",)
@@ -271,8 +278,6 @@ def _remember_control_exchange(
     turn: UserTurn,
     reply: AssistantReply,
 ) -> None:
-    """Keep deterministic Engineering control turns in ordinary conversation history."""
-
     try:
         engine.memory.remember_event(
             USER_EVENT_TYPE,
@@ -306,17 +311,16 @@ def _contains_any(text: str, markers: tuple[str, ...]) -> bool:
 
 
 def _boundary_requirements_for_intent(text: str) -> tuple[str, ...] | None:
-    """Recognize explicit high-impact engineering effects before routine write intent."""
+    """Compatibility fallback for explicit high-impact wording.
+
+    Production routing first uses EngineeringIntentResolver. This helper exists only as
+    a degraded fallback if semantic resolution is unavailable.
+    """
 
     if _contains_any(text, _FORCE_PUSH_MARKERS):
         return ("engineering.git.force_push",)
     if _contains_any(text, _PROTECTED_MERGE_MARKERS):
         return ("engineering.git.merge_protected",)
-    if _contains_any(text, _SECRET_NOUN_MARKERS) and _contains_any(
-        text,
-        _SECRET_ACTION_MARKERS,
-    ):
-        return ("engineering.secrets.modify",)
     if _contains_any(text, _PRODUCTION_DEPLOY_MARKERS):
         return ("engineering.production.deploy",)
     if _contains_any(text, _DESTRUCTIVE_MIGRATION_MARKERS):
@@ -330,46 +334,39 @@ def _boundary_requirements_for_intent(text: str) -> tuple[str, ...] | None:
         return ("engineering.project.change_north_star",)
     if _contains_any(text, _MATERIAL_COST_MARKERS):
         return ("engineering.external_cost.material",)
-    return None
-
-
-def _delegated_remote_requirements_for_intent(text: str) -> tuple[str, ...] | None:
-    """Recognize explicitly delegated remote engineering outcomes."""
-
-    if _contains_any(text, _DRAFT_PR_MARKERS):
-        return ("engineering.git.open_or_update_draft_pr",)
-    if _contains_any(text, _PUSH_MARKERS):
-        return _PUSH_REQUIREMENTS
+    if _contains_any(text, _SECRET_NOUN_MARKERS) and _contains_any(
+        text,
+        _SECRET_ACTION_MARKERS,
+    ):
+        return ("engineering.secrets.modify",)
     return None
 
 
 def engineering_requirements_for_intent(text: str) -> tuple[str, ...] | None:
-    """Narrow task-to-capability mapper for delegated Hikari project maintenance.
+    """Conservative deterministic fallback, not the production semantic resolver.
 
-    Explicit impact boundaries are classified before ordinary mutation verbs. This keeps
-    wording such as "修改 Hikari 项目的 secret 配置" or "实现生产部署" from being mistaken
-    for a routine repository edit and bypassing exception escalation.
+    Routine project mutation wins before remote-action words so documentation such as
+    "update README to say Draft PR is still unavailable" remains a documentation task.
     """
 
     normalized = text.casefold()
-
-    boundary_requirements = _boundary_requirements_for_intent(normalized)
-    if boundary_requirements is not None:
-        return boundary_requirements
-
-    remote_requirements = _delegated_remote_requirements_for_intent(normalized)
-    if remote_requirements is not None:
-        return remote_requirements
+    boundary = _boundary_requirements_for_intent(normalized)
+    if boundary is not None:
+        return boundary
 
     project_context = any(noun in normalized for noun in _PROJECT_NOUNS)
-    if not project_context:
-        return None
-    if _contains_any(normalized, _COMMAND_RUN_MARKERS):
-        return _COMMAND_REQUIREMENTS
-    if any(verb in normalized for verb in _WRITE_VERBS):
-        return _MAINTAIN_REQUIREMENTS
-    if any(verb in normalized for verb in _INSPECTION_VERBS):
-        return _READ_REQUIREMENTS
+    if project_context:
+        if _contains_any(normalized, _COMMAND_RUN_MARKERS):
+            return _COMMAND_REQUIREMENTS
+        if any(verb in normalized for verb in _WRITE_VERBS):
+            return _MAINTAIN_REQUIREMENTS
+        if any(verb in normalized for verb in _INSPECTION_VERBS):
+            return _READ_REQUIREMENTS
+
+    if _contains_any(normalized, _DRAFT_PR_ACTION_MARKERS):
+        return ("engineering.git.open_or_update_draft_pr",)
+    if _contains_any(normalized, _PUSH_MARKERS):
+        return _PUSH_REQUIREMENTS
     return None
 
 
@@ -378,13 +375,6 @@ def looks_like_read_only_engineering_intent(text: str) -> bool:
 
 
 def looks_like_engineering_status_query(text: str) -> bool:
-    """Recognize explicit status checks that must bypass generative completion.
-
-    Mutation wording takes precedence because maintenance requests can quote a
-    sentence containing phrases such as ``Engineering 现在状态``. Quoted content
-    must never hijack a real write task into the status-query path.
-    """
-
     normalized = text.casefold()
     if any(verb in normalized for verb in _WRITE_VERBS):
         return False
@@ -397,8 +387,6 @@ def engineering_session_matches_repository_head(
     state: EngineeringSessionState,
     repository_head: str,
 ) -> bool:
-    """Return whether a terminal session still represents the current source revision."""
-
     baseline = (state.baseline_commit or "").strip()
     if not baseline:
         return True
@@ -414,13 +402,32 @@ def _task_label(turn: EngineeringTurn | None) -> str:
     return text or "当前绑定的工程任务"
 
 
-class ConversationEngineeringBridge:
-    """Route delegated project work into Hikari EngineeringSession.
+def _resolution_from_fallback(text: str) -> EngineeringIntentResolution | None:
+    requirements = engineering_requirements_for_intent(text)
+    if requirements is None:
+        return None
+    if requirements == _READ_REQUIREMENTS:
+        effects = ("inspect_project",)
+    elif requirements == _COMMAND_REQUIREMENTS:
+        effects = ("run_project_command",)
+    elif requirements == _PUSH_REQUIREMENTS:
+        effects = ("push_engineering_branch",)
+    elif requirements == _MAINTAIN_REQUIREMENTS:
+        effects = ("maintain_project",)
+    elif requirements == ("engineering.git.open_or_update_draft_pr",):
+        effects = ("open_or_update_draft_pr",)
+    else:
+        effects = ("high_impact_engineering_action",)
+    return EngineeringIntentResolution(
+        engineering=True,
+        goal="deterministic fallback",
+        requested_effects=effects,
+        required_capabilities=requirements,
+    )
 
-    Explicit Engineering status questions are answered directly from durable
-    session/result state. They do not ask the Conversation model to infer whether
-    a task succeeded.
-    """
+
+class ConversationEngineeringBridge:
+    """Route semantic engineering intent into durable Hikari EngineeringSession state."""
 
     def __init__(
         self,
@@ -428,6 +435,7 @@ class ConversationEngineeringBridge:
         bindings: EngineeringConversationBindingStore,
         *,
         repository: str | Path,
+        intent_resolver: object | None = None,
     ) -> None:
         if not isinstance(store, EngineeringSessionStore):
             raise TypeError("ConversationEngineeringBridge requires EngineeringSessionStore")
@@ -439,6 +447,7 @@ class ConversationEngineeringBridge:
         self.store = store
         self.bindings = bindings
         self.repository = repository_path
+        self.intent_resolver = intent_resolver
 
     def _bound_state(
         self,
@@ -505,6 +514,29 @@ class ConversationEngineeringBridge:
             text=text,
         )
 
+    def _resolve_intent(
+        self,
+        engine: ConversationEngine,
+        turn: UserTurn,
+        state: EngineeringSessionState | None,
+        capabilities,
+    ) -> EngineeringIntentResolution | None:
+        resolver = self.intent_resolver or EngineeringIntentResolver(engine.provider)
+        if not resolver.is_candidate(turn.text, bound_session=state is not None):
+            return None
+        try:
+            return resolver.resolve(
+                turn.text,
+                capabilities=capabilities,
+                state=state,
+            )
+        except (EngineeringIntentResolutionError, Exception) as exc:
+            logger.warning(
+                "Hikari Engineering semantic intent resolution degraded: %s",
+                type(exc).__name__,
+            )
+            return _resolution_from_fallback(turn.text)
+
     def respond(
         self,
         engine: ConversationEngine,
@@ -517,11 +549,13 @@ class ConversationEngineeringBridge:
             _remember_control_exchange(engine, turn, reply)
             return reply
 
-        requirements = engineering_requirements_for_intent(turn.text)
-        if requirements is None:
+        state = self._bound_state(turn.channel, turn.conversation_id)
+        capabilities = hikari_engineering_capabilities(True)
+        resolution = self._resolve_intent(engine, turn, state, capabilities)
+        if resolution is None or not resolution.engineering:
             return engine.respond(turn, source_ref=source_ref)
 
-        capabilities = hikari_engineering_capabilities(True)
+        requirements = resolution.required_capabilities
         assessment = assess_task_capabilities(requirements, capabilities)
         if assessment.status == ASSESSMENT_CAPABILITY_GAP:
             missing = ", ".join(assessment.missing)
@@ -549,20 +583,41 @@ class ConversationEngineeringBridge:
             _remember_control_exchange(engine, turn, reply)
             return reply
 
-        if requirements == _READ_REQUIREMENTS:
+        effects = resolution.requested_effects
+        if len(effects) != 1:
+            reply = AssistantReply(
+                channel=turn.channel,
+                conversation_id=turn.conversation_id,
+                text=(
+                    "我已经理解到这次请求包含多个工程效果，但当前 Engineering bridge 还没有"
+                    "把多个 effect 串成一个持久计划。我不会把它们粗暴合并成一个权限 turn。"
+                ),
+            )
+            _remember_control_exchange(engine, turn, reply)
+            return reply
+
+        effect = effects[0]
+        if effect == "inspect_project":
             turn_authority = EngineeringAuthority.read_only()
-        elif requirements == _COMMAND_REQUIREMENTS:
+        elif effect == "run_project_command":
             turn_authority = EngineeringAuthority(
                 repository_read=True,
                 run_commands=True,
             )
-        elif requirements == _PUSH_REQUIREMENTS:
+        elif effect == "push_engineering_branch":
             turn_authority = project_push_authority()
-        else:
+        elif effect == "maintain_project":
             turn_authority = project_maintainer_authority()
-        session_ceiling = project_session_authority_ceiling()
+        else:
+            reply = AssistantReply(
+                channel=turn.channel,
+                conversation_id=turn.conversation_id,
+                text="这个工程效果目前没有可执行的 Worker turn 类型，我不会假装已经执行。",
+            )
+            _remember_control_exchange(engine, turn, reply)
+            return reply
 
-        state = self._bound_state(turn.channel, turn.conversation_id)
+        session_ceiling = project_session_authority_ceiling()
         if state is not None and state.status in {"pending", "running"}:
             progress = describe_engineering_progress(state)
             reply = AssistantReply(
@@ -577,7 +632,7 @@ class ConversationEngineeringBridge:
             _remember_control_exchange(engine, turn, reply)
             return reply
 
-        if requirements == _PUSH_REQUIREMENTS:
+        if effect == "push_engineering_branch":
             if state is None or not (
                 state.workspace_path and state.workspace_branch and state.baseline_commit
             ):
@@ -644,6 +699,8 @@ class ConversationEngineeringBridge:
             intent=turn.text,
             context=(
                 "This request came from Hikari's explicit conversation channel. "
+                f"Semantic engineering goal: {resolution.goal or turn.text}. "
+                f"Requested effect: {effect}. "
                 "The Hikari repository has a standing maintainer mandate. Complete routine project "
                 "work autonomously inside that mandate and return the grounded result."
             ),
@@ -651,14 +708,14 @@ class ConversationEngineeringBridge:
         )
         self.store.enqueue_turn(state.session_id, engineering_turn)
 
-        if requirements == _READ_REQUIREMENTS:
+        if effect == "inspect_project":
             text = "我去看。已经开始一个只读工程会话，完成后我会把实际检查结果发回来。"
-        elif requirements == _COMMAND_REQUIREMENTS:
+        elif effect == "run_project_command":
             text = (
                 "我来跑。已经开始一个项目内命令工程会话；命令会在隔离 worktree 中执行，"
                 "不会获得仓库写入、网络或发布权限，完成后我会把实际结果发回来。"
             )
-        elif requirements == _PUSH_REQUIREMENTS:
+        elif effect == "push_engineering_branch":
             text = (
                 f"我来推。已把当前非保护工程分支 `{state.workspace_branch}` 交给 Engineering Worker；"
                 "只会推送这个 Hikari engineering 分支到 `origin`，不会 force push 或 merge，"
