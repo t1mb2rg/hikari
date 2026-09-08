@@ -222,10 +222,9 @@ def hikari_engineering_capabilities(engineering_enabled: bool) -> dict[str, Capa
         ),
         "engineering.git.push_non_protected": CapabilityState(
             "engineering.git.push_non_protected",
-            available=False,
+            available=engineering_enabled,
             delegated=engineering_enabled,
-            scope="engineering_branch",
-            gap="push_execution_not_implemented_yet",
+            scope="isolated_engineering_branch_to_origin",
         ),
         "engineering.git.open_or_update_draft_pr": CapabilityState(
             "engineering.git.open_or_update_draft_pr",
