@@ -122,6 +122,55 @@ def test_bound_engineering_branch_routes_to_narrow_publish_turn(tmp_path: Path) 
     assert saved.status == "pending"
     assert saved.current_turn_id is not None
     turn = sessions.load_turn(saved.session_id, saved.current_turn_id)
+    assert "Requested effect: push_engineering_branch." in turn.context
+    assert turn.authority.repository_read is True
+    assert turn.authority.repository_write is False
+    assert turn.authority.run_commands is False
+    assert turn.authority.run_tests is False
+    assert turn.authority.network is True
+    assert turn.authority.publish is True
+    assert turn.authority.outside_repo is False
+
+
+def test_bound_engineering_branch_routes_draft_pr_to_same_narrow_publish_authority(
+    tmp_path: Path,
+) -> None:
+    bridge, engine, bindings = _bridge(tmp_path)
+    sessions = EngineeringSessionStore(tmp_path / "engineering")
+    workspace = tmp_path / "engineering-worktree"
+    workspace.mkdir()
+    state = EngineeringSessionState.create(
+        project_id="hikari",
+        repository=tmp_path / "repo",
+        authority_ceiling=project_session_authority_ceiling(),
+        session_id="draft-pr-session",
+    )
+    state = replace(
+        state,
+        status="completed",
+        workspace_path=str(workspace),
+        workspace_branch="hikari/engineering/draft-pr-session",
+        baseline_commit="baseline-sha",
+    )
+    sessions.create(state)
+    bindings.bind(
+        EngineeringConversationBinding(
+            session_id=state.session_id,
+            channel="qq",
+            conversation_id="private:42",
+        )
+    )
+
+    bridge.respond(
+        engine,
+        UserTurn("qq", "private:42", "给这个 engineering 分支开一个 Draft PR"),
+    )
+
+    saved = sessions.load(state.session_id)
+    assert saved.status == "pending"
+    assert saved.current_turn_id is not None
+    turn = sessions.load_turn(saved.session_id, saved.current_turn_id)
+    assert "Requested effect: open_or_update_draft_pr." in turn.context
     assert turn.authority.repository_read is True
     assert turn.authority.repository_write is False
     assert turn.authority.run_commands is False
