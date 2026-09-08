@@ -22,7 +22,9 @@ from .maintainer import (
     ValidationEnvironmentError,
     commit_project_changes,
     is_maintainer_authority,
+    is_push_authority,
     is_read_only_authority,
+    push_engineering_branch,
     run_project_tests,
 )
 from .validation_policy import change_policy_violations
@@ -192,14 +194,15 @@ class EngineeringWorker:
 
         read_only = is_read_only_authority(turn.authority)
         maintainer = is_maintainer_authority(turn.authority)
-        if not read_only and not maintainer:
+        push = is_push_authority(turn.authority)
+        if not read_only and not maintainer and not push:
             return self._finish(
                 state,
                 turn,
                 status="blocked",
                 message=(
                     "这个工程 turn 超出了当前项目 mandate 的已实现执行配置。"
-                    "外部网络、发布、部署或仓库外操作不会被普通 maintainer turn 自动获得。"
+                    "外部部署、保护分支修改或仓库外操作不会被普通 maintainer turn 自动获得。"
                 ),
             )
 
@@ -221,9 +224,50 @@ class EngineeringWorker:
             )
 
         state = self.store.load(state.session_id)
+        if push:
+            return self._run_push(state, turn, workspace)
         if read_only:
             return self._run_read_only(state, turn, workspace)
         return self._run_maintainer(state, turn, workspace)
+
+    def _run_push(
+        self,
+        state: EngineeringSessionState,
+        turn: EngineeringTurn,
+        workspace: EngineeringWorkspace,
+    ) -> WorkerOutcome:
+        self._event(state.session_id, turn.turn_id, "progress", "正在推送非保护 engineering 分支")
+        if workspace.uncommitted_files():
+            return self._finish(
+                state,
+                turn,
+                status="blocked",
+                message="engineering 分支仍有未提交变更，Worker 拒绝 push。",
+            )
+        try:
+            commit_sha = push_engineering_branch(workspace.path, workspace.branch)
+        except (OSError, subprocess.SubprocessError, RuntimeError) as exc:
+            detail = str(exc).strip()
+            if len(detail) > 1200:
+                detail = detail[-1200:]
+            message = "engineering 分支 push 失败"
+            if detail:
+                message += f"：{detail}"
+            return self._finish(
+                state,
+                turn,
+                status="failed",
+                message=message,
+            )
+        return self._finish(
+            state,
+            turn,
+            status="completed",
+            message=(
+                f"已将非保护工程分支 `{workspace.branch}` 推送到 `origin`。\n"
+                f"提交：`{commit_sha[:12]}`。"
+            ),
+        )
 
     def _run_backend(
         self,
