@@ -1,13 +1,23 @@
 from __future__ import annotations
 
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 import json
 import os
 import shutil
 import subprocess
+import threading
 
 from .config import EngineeringBackendConfig
+
+
+@dataclass(frozen=True, slots=True)
+class EngineeringAgentEvent:
+    """One compact, grounded activity item observed from Claude Code's stream."""
+
+    kind: str
+    summary: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -17,21 +27,21 @@ class EngineeringAgentResult:
     stderr: str
     final_message: str
     session_id: str
+    events: tuple[EngineeringAgentEvent, ...] = ()
+
+
+EventSink = Callable[[EngineeringAgentEvent], None]
 
 
 class ClaudeEngineeringBackend:
-    """Hikari-owned Claude Code backend for one engineering session.
+    """Thin Hikari harness around one Claude Code engineering session.
 
-    The backend session id is preserved by Hikari EngineeringSession state so a
-    later turn can resume the same coding-agent context. Read-only turns run in
-    Claude Code's plan mode. Maintainer turns may use ``acceptEdits`` to modify
-    the isolated worktree, while Hikari's Worker retains ownership of testing,
-    Git commit, publication, and external side effects.
+    Claude Code owns repository inspection, editing, task-appropriate validation,
+    and repair inside its own agent loop. Hikari owns the outer authority boundary,
+    durable session state, scope checks, Git history/publication, and delivery.
 
-    Executable, model and deadline are owned by Hikari's engineering
-    configuration. Backend startup/runtime failures are returned as structured
-    agent failures so the durable EngineeringResult can preserve the actual
-    reason instead of collapsing it to an exception class name.
+    The backend consumes Claude Code's ``stream-json`` output so Hikari can retain
+    grounded activity evidence instead of waiting on one opaque final JSON blob.
     """
 
     def __init__(
@@ -43,6 +53,7 @@ class ClaudeEngineeringBackend:
         session_id: str | None = None,
         model: str | None = None,
         timeout_seconds: float | None = None,
+        event_sink: EventSink | None = None,
     ) -> None:
         owned = EngineeringBackendConfig.from_mapping(os.environ)
         resolved_executable = (
@@ -66,12 +77,15 @@ class ClaudeEngineeringBackend:
         self.session_id = session_id.strip() if isinstance(session_id, str) and session_id.strip() else None
         self.model = resolved_model
         self.timeout_seconds = resolved_timeout
+        self._event_sink = event_sink
+
+    def set_event_sink(self, sink: EventSink | None) -> None:
+        self._event_sink = sink
 
     @staticmethod
     def _settings_json() -> str:
-        # Claude may inspect and, in maintainer mode, edit the isolated worktree.
-        # Hikari's Worker owns Git history/publication and obvious external-impact
-        # operations so those actions remain system-governed rather than backend-governed.
+        # Claude may inspect/edit and run ordinary project-local validation.
+        # Hikari retains Git history/publication and obvious external-impact actions.
         deny = [
             "Bash(git add:*)",
             "Bash(git commit:*)",
@@ -113,14 +127,109 @@ class ClaudeEngineeringBackend:
             }
         )
 
-    def _failure(self, returncode: int, detail: str) -> EngineeringAgentResult:
+    def _failure(
+        self,
+        returncode: int,
+        detail: str,
+        *,
+        stdout: str = "",
+        session_id: str = "",
+        events: tuple[EngineeringAgentEvent, ...] = (),
+    ) -> EngineeringAgentResult:
         return EngineeringAgentResult(
             returncode=returncode,
-            stdout="",
+            stdout=stdout,
             stderr=detail,
             final_message="",
-            session_id=self.session_id or "",
+            session_id=session_id or self.session_id or "",
+            events=events,
         )
+
+    @staticmethod
+    def _tool_detail(payload: Mapping[str, object]) -> str:
+        for key in ("command", "file_path", "path", "pattern", "query", "description"):
+            value = payload.get(key)
+            if isinstance(value, str) and value.strip():
+                text = " ".join(value.strip().split())
+                return text[:360]
+        return ""
+
+    @staticmethod
+    def _tool_result_detail(content: object) -> str:
+        if isinstance(content, str):
+            return " ".join(content.strip().split())[:360]
+        if isinstance(content, list):
+            parts: list[str] = []
+            for item in content:
+                if isinstance(item, Mapping):
+                    text = item.get("text")
+                    if isinstance(text, str) and text.strip():
+                        parts.append(text.strip())
+            return " ".join(" ".join(parts).split())[:360]
+        return ""
+
+    @classmethod
+    def _events_from_payload(
+        cls,
+        payload: Mapping[str, object],
+        tool_names: dict[str, str],
+    ) -> tuple[EngineeringAgentEvent, ...]:
+        event_type = str(payload.get("type", "")).strip()
+        events: list[EngineeringAgentEvent] = []
+
+        if event_type == "system" and payload.get("subtype") == "init":
+            model = str(payload.get("model", "")).strip()
+            mode = str(payload.get("permissionMode", "")).strip()
+            detail = ", ".join(part for part in (model, mode) if part)
+            events.append(
+                EngineeringAgentEvent(
+                    "system",
+                    "Claude Code session started" + (f" ({detail})" if detail else ""),
+                )
+            )
+            return tuple(events)
+
+        message = payload.get("message")
+        content = message.get("content") if isinstance(message, Mapping) else None
+        if not isinstance(content, list):
+            content = []
+
+        if event_type == "assistant":
+            for block in content:
+                if not isinstance(block, Mapping) or block.get("type") != "tool_use":
+                    continue
+                name = str(block.get("name", "tool")).strip() or "tool"
+                tool_id = str(block.get("id", "")).strip()
+                if tool_id:
+                    tool_names[tool_id] = name
+                tool_input = block.get("input")
+                detail = cls._tool_detail(tool_input) if isinstance(tool_input, Mapping) else ""
+                events.append(
+                    EngineeringAgentEvent(
+                        "tool",
+                        f"{name}: {detail}" if detail else name,
+                    )
+                )
+            return tuple(events)
+
+        if event_type == "user":
+            for block in content:
+                if not isinstance(block, Mapping) or block.get("type") != "tool_result":
+                    continue
+                tool_id = str(block.get("tool_use_id", "")).strip()
+                name = tool_names.get(tool_id, "tool")
+                failed = bool(block.get("is_error", False))
+                detail = cls._tool_result_detail(block.get("content")) if failed else ""
+                summary = f"{name} {'failed' if failed else 'completed'}"
+                if detail:
+                    summary += f": {detail}"
+                events.append(EngineeringAgentEvent("tool_result", summary))
+            return tuple(events)
+
+        if event_type == "result":
+            subtype = str(payload.get("subtype", "")).strip() or "unknown"
+            events.append(EngineeringAgentEvent("result", f"Claude Code result: {subtype}"))
+        return tuple(events)
 
     def run(self, worktree: str | Path, prompt: str) -> EngineeringAgentResult:
         executable = shutil.which(self.executable)
@@ -140,7 +249,8 @@ class ClaudeEngineeringBackend:
             executable,
             "-p",
             "--output-format",
-            "json",
+            "stream-json",
+            "--verbose",
             "--permission-mode",
             self.permission_mode,
             "--max-turns",
@@ -154,20 +264,16 @@ class ClaudeEngineeringBackend:
             argv.extend(["--resume", self.session_id])
 
         try:
-            proc = subprocess.run(
+            proc = subprocess.Popen(
                 argv,
                 cwd=root,
-                input=prompt,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 text=True,
                 encoding="utf-8",
                 errors="replace",
-                capture_output=True,
-                timeout=self.timeout_seconds,
-            )
-        except subprocess.TimeoutExpired:
-            return self._failure(
-                124,
-                f"[claude-code:timeout] Claude Code backend exceeded {self.timeout_seconds:g}s deadline",
+                bufsize=1,
             )
         except OSError as exc:
             return self._failure(
@@ -175,23 +281,116 @@ class ClaudeEngineeringBackend:
                 f"[claude-code:spawn_failed] {type(exc).__name__}: {exc}",
             )
 
-        stdout = proc.stdout or ""
-        stderr = proc.stderr or ""
-        payload: dict[str, object] = {}
+        stdout_lines: list[str] = []
+        stderr_lines: list[str] = []
+        payloads: list[dict[str, object]] = []
+        events: list[EngineeringAgentEvent] = []
+        tool_names: dict[str, str] = {}
+
+        def read_stdout() -> None:
+            if proc.stdout is None:
+                return
+            for line in proc.stdout:
+                stdout_lines.append(line)
+                try:
+                    parsed = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(parsed, dict):
+                    continue
+                payloads.append(parsed)
+                for event in self._events_from_payload(parsed, tool_names):
+                    events.append(event)
+                    if self._event_sink is not None:
+                        try:
+                            self._event_sink(event)
+                        except Exception:
+                            # Activity streaming is observability, not execution authority.
+                            # The complete event set is still returned to the Worker.
+                            pass
+
+        def read_stderr() -> None:
+            if proc.stderr is None:
+                return
+            for line in proc.stderr:
+                stderr_lines.append(line)
+
+        stdout_thread = threading.Thread(target=read_stdout, name="hikari-claude-stdout", daemon=True)
+        stderr_thread = threading.Thread(target=read_stderr, name="hikari-claude-stderr", daemon=True)
+        stdout_thread.start()
+        stderr_thread.start()
+
         try:
-            parsed = json.loads(stdout)
-            if isinstance(parsed, dict):
-                payload = parsed
-        except json.JSONDecodeError:
-            payload = {}
-        session_id = payload.get("session_id") if isinstance(payload.get("session_id"), str) else ""
-        final_message = payload.get("result") if isinstance(payload.get("result"), str) else ""
+            if proc.stdin is not None:
+                proc.stdin.write(prompt)
+                if not prompt.endswith("\n"):
+                    proc.stdin.write("\n")
+                proc.stdin.close()
+        except (BrokenPipeError, OSError):
+            pass
+
+        timed_out = False
+        try:
+            returncode = proc.wait(timeout=self.timeout_seconds)
+        except subprocess.TimeoutExpired:
+            timed_out = True
+            proc.kill()
+            try:
+                returncode = proc.wait(timeout=5.0)
+            except subprocess.TimeoutExpired:
+                returncode = 124
+
+        stdout_thread.join(timeout=2.0)
+        stderr_thread.join(timeout=2.0)
+
+        stdout = "".join(stdout_lines)
+        stderr = "".join(stderr_lines)
+        session_id = self.session_id or ""
+        final_message = ""
+        result_payload: Mapping[str, object] | None = None
+        for payload in payloads:
+            candidate_session = payload.get("session_id")
+            if isinstance(candidate_session, str) and candidate_session.strip():
+                session_id = candidate_session.strip()
+            if payload.get("type") == "result":
+                result_payload = payload
+                candidate_result = payload.get("result")
+                if isinstance(candidate_result, str):
+                    final_message = candidate_result
+
         if session_id:
             self.session_id = session_id
+
+        event_tuple = tuple(events)
+        if timed_out:
+            detail = f"[claude-code:timeout] Claude Code backend exceeded {self.timeout_seconds:g}s deadline"
+            if stderr.strip():
+                detail += "\n" + stderr.strip()[-800:]
+            return self._failure(
+                124,
+                detail,
+                stdout=stdout,
+                session_id=session_id,
+                events=event_tuple,
+            )
+
+        if result_payload is None and returncode == 0:
+            returncode = 1
+            missing = "[claude-code:missing_result] stream ended without a final result event"
+            stderr = (stderr.rstrip() + "\n" + missing).strip()
+        elif result_payload is not None:
+            subtype = str(result_payload.get("subtype", "")).strip()
+            is_error = bool(result_payload.get("is_error", False))
+            if (is_error or (subtype and subtype != "success")) and returncode == 0:
+                returncode = 1
+                detail = f"[claude-code:{subtype or 'execution_error'}] Claude Code reported an unsuccessful result"
+                stderr = (stderr.rstrip() + "\n" + detail).strip()
+
         return EngineeringAgentResult(
-            returncode=proc.returncode,
+            returncode=returncode,
             stdout=stdout,
             stderr=stderr,
             final_message=final_message,
-            session_id=session_id or (self.session_id or ""),
+            session_id=session_id,
+            events=event_tuple,
         )

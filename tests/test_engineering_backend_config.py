@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from io import StringIO
 from pathlib import Path
+import json
 import subprocess
 
 import pytest
@@ -13,23 +15,64 @@ from engineering.backend import ClaudeEngineeringBackend
 from engineering.config import EngineeringBackendConfig
 
 
+class _FakePopen:
+    def __init__(
+        self,
+        argv,
+        *,
+        stdout_lines: list[str],
+        stderr_text: str = "",
+        returncode: int = 0,
+        wait_timeout: bool = False,
+        **_kwargs,
+    ) -> None:
+        self.argv = list(argv)
+        self.stdin = StringIO()
+        self.stdout = StringIO("".join(stdout_lines))
+        self.stderr = StringIO(stderr_text)
+        self._returncode = returncode
+        self._wait_timeout = wait_timeout
+        self.killed = False
+
+    def wait(self, timeout=None):
+        if self._wait_timeout and not self.killed:
+            raise subprocess.TimeoutExpired(cmd=self.argv, timeout=timeout)
+        return self._returncode if not self.killed else -9
+
+    def kill(self):
+        self.killed = True
+
+
+def _stream(*payloads: dict[str, object]) -> list[str]:
+    return [json.dumps(payload) + "\n" for payload in payloads]
+
+
 def test_engineering_backend_ignores_unrelated_ambient_model(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.delenv("HIKARI_ENGINEERING_MODEL", raising=False)
     monkeypatch.setenv("ANTHROPIC_MODEL", "deepseek-v4-pro[1m]")
     monkeypatch.setattr("engineering.backend.shutil.which", lambda executable: "claude")
     seen: dict[str, object] = {}
 
-    def fake_run(argv, **kwargs):
+    def fake_popen(argv, **kwargs):
         seen["argv"] = list(argv)
-        seen["timeout"] = kwargs.get("timeout")
-        return subprocess.CompletedProcess(
+        proc = _FakePopen(
             argv,
-            0,
-            stdout='{"session_id":"s1","result":"done"}',
-            stderr="",
+            stdout_lines=_stream(
+                {"type": "system", "subtype": "init", "session_id": "s1", "model": "sonnet"},
+                {"type": "result", "subtype": "success", "session_id": "s1", "is_error": False, "result": "done"},
+            ),
+            **kwargs,
         )
+        original_wait = proc.wait
 
-    monkeypatch.setattr("engineering.backend.subprocess.run", fake_run)
+        def wait(timeout=None):
+            seen["timeout"] = timeout
+            return original_wait(timeout)
+
+        proc.wait = wait  # type: ignore[method-assign]
+        return proc
+
+    monkeypatch.setattr("engineering.backend.subprocess.Popen", fake_popen)
     result = ClaudeEngineeringBackend().run(tmp_path, "inspect")
 
     argv = seen["argv"]
@@ -37,8 +80,61 @@ def test_engineering_backend_ignores_unrelated_ambient_model(monkeypatch, tmp_pa
     index = argv.index("--model")
     assert argv[index + 1] == "sonnet"
     assert "deepseek-v4-pro[1m]" not in argv
+    assert argv[argv.index("--output-format") + 1] == "stream-json"
+    assert "--verbose" in argv
     assert seen["timeout"] == 300.0
     assert result.final_message == "done"
+    assert result.session_id == "s1"
+
+
+def test_engineering_backend_streams_grounded_activity(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr("engineering.backend.shutil.which", lambda executable: "claude")
+    observed = []
+
+    stdout = _stream(
+        {"type": "system", "subtype": "init", "session_id": "stream-1", "model": "sonnet", "permissionMode": "acceptEdits"},
+        {
+            "type": "assistant",
+            "session_id": "stream-1",
+            "message": {
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": "tool-1",
+                        "name": "Bash",
+                        "input": {"command": "python -m pytest tests/test_x.py -q"},
+                    }
+                ]
+            },
+        },
+        {
+            "type": "user",
+            "session_id": "stream-1",
+            "message": {
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "tool-1",
+                        "content": "1 passed",
+                    }
+                ]
+            },
+        },
+        {"type": "result", "subtype": "success", "session_id": "stream-1", "is_error": False, "result": "implemented and validated"},
+    )
+
+    monkeypatch.setattr(
+        "engineering.backend.subprocess.Popen",
+        lambda argv, **kwargs: _FakePopen(argv, stdout_lines=stdout, **kwargs),
+    )
+    backend = ClaudeEngineeringBackend(event_sink=observed.append)
+    result = backend.run(tmp_path, "maintain")
+
+    assert result.returncode == 0
+    assert result.final_message == "implemented and validated"
+    assert any(event.kind == "tool" and "pytest" in event.summary for event in result.events)
+    assert any(event.kind == "tool_result" and "completed" in event.summary for event in result.events)
+    assert observed == list(result.events)
 
 
 def test_engineering_backend_config_is_explicit_without_vendor_lock_in() -> None:
@@ -90,13 +186,34 @@ def test_backend_reports_missing_cli_as_grounded_agent_failure(tmp_path: Path, m
     assert "RuntimeError" not in result.stderr
 
 
-def test_backend_reports_deadline_as_grounded_agent_failure(tmp_path: Path, monkeypatch) -> None:
+def test_backend_reports_deadline_with_partial_activity(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr("engineering.backend.shutil.which", lambda executable: "claude")
-
-    def fake_timeout(*args, **kwargs):
-        raise subprocess.TimeoutExpired(cmd="claude", timeout=3)
-
-    monkeypatch.setattr("engineering.backend.subprocess.run", fake_timeout)
+    stdout = _stream(
+        {"type": "system", "subtype": "init", "session_id": "timeout-session", "model": "sonnet"},
+        {
+            "type": "assistant",
+            "session_id": "timeout-session",
+            "message": {
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": "tool-1",
+                        "name": "Read",
+                        "input": {"file_path": "README.md"},
+                    }
+                ]
+            },
+        },
+    )
+    monkeypatch.setattr(
+        "engineering.backend.subprocess.Popen",
+        lambda argv, **kwargs: _FakePopen(
+            argv,
+            stdout_lines=stdout,
+            wait_timeout=True,
+            **kwargs,
+        ),
+    )
     backend = ClaudeEngineeringBackend(
         executable="claude",
         model="owned-model",
@@ -108,6 +225,8 @@ def test_backend_reports_deadline_as_grounded_agent_failure(tmp_path: Path, monk
     assert result.returncode == 124
     assert "[claude-code:timeout]" in result.stderr
     assert "3s deadline" in result.stderr
+    assert result.session_id == "timeout-session"
+    assert any("README.md" in event.summary for event in result.events)
 
 
 def test_status_words_inside_a_write_task_do_not_turn_it_into_status_query() -> None:

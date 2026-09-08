@@ -10,7 +10,7 @@ from typing import Callable, Sequence
 
 from core.delivery import DeliveryOutbox
 
-from .backend import ClaudeEngineeringBackend, EngineeringAgentResult
+from .backend import ClaudeEngineeringBackend, EngineeringAgentEvent, EngineeringAgentResult
 from .bindings import EngineeringConversationBindingStore
 from .delivery import EngineeringCompletionDelivery
 from .heartbeat import (
@@ -19,13 +19,11 @@ from .heartbeat import (
     EngineeringWorkerLease,
 )
 from .maintainer import (
-    ValidationEnvironmentError,
     commit_project_changes,
     is_maintainer_authority,
     is_push_authority,
     is_read_only_authority,
     push_engineering_branch,
-    run_project_tests,
 )
 from .validation_policy import change_policy_violations
 from .session import (
@@ -52,6 +50,25 @@ BackendFactory = Callable[
     [EngineeringSessionState, EngineeringTurn],
     object,
 ]
+
+
+_VALIDATION_COMMAND_MARKERS = (
+    "pytest",
+    "python -m unittest",
+    "python -m doctest",
+    "tox",
+    "nox",
+    "ruff",
+    "mypy",
+    "pyright",
+    "npm test",
+    "npm run test",
+    "pnpm test",
+    "yarn test",
+    "cargo test",
+    "go test",
+    "dotnet test",
+)
 
 
 def _prompt_for_read_only_turn(state: EngineeringSessionState, turn: EngineeringTurn) -> str:
@@ -102,7 +119,10 @@ def _prompt_for_maintainer_turn(state: EngineeringSessionState, turn: Engineerin
         "You may inspect and edit/create/delete project files needed for the task.",
         "Stay inside this repository. Do not use the network or access external secret locations.",
         "Do not stage, commit, push, merge, publish, deploy, or alter Git history; Hikari's Worker owns those steps.",
-        "Hikari's Worker will run the project test suite after your edit, so focus on making a coherent implementation.",
+        "You own task-appropriate validation inside this turn. Choose validation proportionate to the actual change.",
+        "Documentation-only changes do not need a meaningless full project test suite. For code/config/test changes, run the relevant checks needed to support completion.",
+        "If a validation command fails because of your change, continue diagnosing and repairing inside this same agent loop before finishing.",
+        "Do not weaken, skip, or rewrite validation merely to obtain a pass.",
         "",
         "# Intent",
         turn.intent,
@@ -121,30 +141,19 @@ def _prompt_for_maintainer_turn(state: EngineeringSessionState, turn: Engineerin
         [
             "",
             "# Response",
-            "After editing, summarize what you changed and any important design decision. Do not claim tests passed; the Worker validates them separately.",
+            "After editing and any task-appropriate validation, summarize what you changed and what you actually validated. Do not claim commands or tests you did not run.",
         ]
     )
     return "\n".join(lines) + "\n"
 
 
-def _prompt_for_test_repair(turn: EngineeringTurn, test_output: str, attempt: int) -> str:
-    detail = test_output[-3500:] if test_output else "pytest returned a non-zero status without output"
-    return (
-        "# Hikari Engineering Validation Repair\n"
-        "The Hikari Worker ran the project test suite after your implementation and it failed.\n"
-        f"Repair attempt: {attempt}.\n"
-        "Inspect the current worktree, fix the implementation, and do not stage/commit/push/publish.\n"
-        "Keep every repair causally within the original intent. Do not weaken validation by adding "
-        "skip/xfail markers, changing test selection, or relaxing CI/test configuration.\n"
-        "Stay inside the repository and do not use the network.\n\n"
-        f"# Original intent\n{turn.intent}\n\n"
-        f"# Test failure\n{detail}\n\n"
-        "# Response\nApply the necessary repository edits and briefly summarize the repair.\n"
-    )
-
-
 class EngineeringWorker:
-    """Separate fault-domain worker that advances Hikari EngineeringSession state."""
+    """Separate fault-domain worker that advances Hikari EngineeringSession state.
+
+    Claude Code owns the inner engineering agent loop. The Worker owns durable
+    state, deterministic authority/scope checks, Git commit/publication, and
+    delivery boundaries.
+    """
 
     def __init__(
         self,
@@ -159,6 +168,8 @@ class EngineeringWorker:
             raise ValueError("max_repair_attempts must be >= 0")
         self.store = store
         self.backend_factory = backend_factory or self._default_backend
+        # Kept for source compatibility with older callers. Repair now belongs
+        # to Claude Code's own agent loop instead of a second Worker loop.
         self.max_repair_attempts = int(max_repair_attempts)
 
     @staticmethod
@@ -279,11 +290,14 @@ class EngineeringWorker:
         turn: EngineeringTurn,
         workspace: EngineeringWorkspace,
         prompt: str,
-        *,
-        backend: object | None = None,
     ) -> tuple[object, EngineeringAgentResult] | WorkerOutcome:
         try:
-            active_backend = backend or self.backend_factory(state, turn)
+            active_backend = self.backend_factory(state, turn)
+            set_event_sink = getattr(active_backend, "set_event_sink", None)
+            if callable(set_event_sink):
+                set_event_sink(
+                    lambda event: self._backend_event(state.session_id, turn.turn_id, event)
+                )
             result = active_backend.run(workspace.path, prompt)
         except Exception as exc:
             return self._finish(
@@ -295,6 +309,21 @@ class EngineeringWorker:
         if not isinstance(result, EngineeringAgentResult):
             raise TypeError("engineering backend must return EngineeringAgentResult")
         return active_backend, result
+
+    def _backend_event(
+        self,
+        session_id: str,
+        turn_id: str,
+        event: EngineeringAgentEvent,
+    ) -> None:
+        if not isinstance(event, EngineeringAgentEvent) or not event.summary.strip():
+            return
+        self._event(
+            session_id,
+            turn_id,
+            "progress",
+            f"Claude Code: {event.summary.strip()}"[:1000],
+        )
 
     def _run_read_only(
         self,
@@ -357,11 +386,15 @@ class EngineeringWorker:
         )
         if isinstance(backend_result, WorkerOutcome):
             return backend_result
-        backend, result = backend_result
+        _, result = backend_result
         if result.returncode != 0:
-            return self._backend_failure(state, turn, result)
+            return self._backend_failure(
+                state,
+                turn,
+                result,
+                changed_files=workspace.changed_files(),
+            )
 
-        latest_result = result
         changed = workspace.changed_files()
         if not changed:
             message = result.final_message.strip() or "检查完成，当前任务不需要修改仓库。"
@@ -384,112 +417,12 @@ class EngineeringWorker:
                 changed_files=changed,
             )
 
-        self._event(state.session_id, turn.turn_id, "progress", "正在运行项目测试")
-        try:
-            tests = run_project_tests(workspace.path)
-        except ValidationEnvironmentError as exc:
-            return self._validation_environment_failure(
-                state, turn, result.session_id, changed, str(exc)
-            )
-        except (OSError, subprocess.SubprocessError) as exc:
-            return self._finish(
-                state,
-                turn,
-                status="failed",
-                message=f"项目测试没有完成：{type(exc).__name__}",
-                backend_session_id=result.session_id or None,
-                changed_files=changed,
-            )
-
-        if tests.failure_kind != "test":
-            return self._validation_environment_failure(
-                state,
-                turn,
-                result.session_id,
-                changed,
-                tests.output,
-            )
-
-        for attempt in range(1, self.max_repair_attempts + 1):
-            if tests.passed:
-                break
-            self._event(
-                state.session_id,
-                turn.turn_id,
-                "progress",
-                f"测试失败，正在进行自动修复 {attempt}/{self.max_repair_attempts}",
-            )
-            repair_result = self._run_backend(
-                state,
-                turn,
-                workspace,
-                _prompt_for_test_repair(turn, tests.output, attempt),
-                backend=backend,
-            )
-            if isinstance(repair_result, WorkerOutcome):
-                return repair_result
-            backend, latest_result = repair_result
-            if latest_result.returncode != 0:
-                return self._backend_failure(
-                    state,
-                    turn,
-                    latest_result,
-                    changed_files=workspace.changed_files(),
-                )
-            changed_after_repair = workspace.changed_files()
-            violation = self._change_policy_violation(
-                turn, workspace, changed_after_repair
-            )
-            if violation:
-                return self._finish(
-                    state,
-                    turn,
-                    status="blocked",
-                    message=f"自动修复超出任务范围或改变了验证标准：{violation}",
-                    backend_session_id=latest_result.session_id or None,
-                    changed_files=changed_after_repair,
-                )
-            try:
-                tests = run_project_tests(workspace.path)
-            except ValidationEnvironmentError as exc:
-                return self._validation_environment_failure(
-                    state,
-                    turn,
-                    latest_result.session_id,
-                    changed_after_repair,
-                    str(exc),
-                )
-            except (OSError, subprocess.SubprocessError) as exc:
-                return self._finish(
-                    state,
-                    turn,
-                    status="failed",
-                    message=f"自动修复后的项目测试没有完成：{type(exc).__name__}",
-                    backend_session_id=latest_result.session_id or None,
-                    changed_files=workspace.changed_files(),
-                )
-            if tests.failure_kind != "test":
-                return self._validation_environment_failure(
-                    state,
-                    turn,
-                    latest_result.session_id,
-                    workspace.changed_files(),
-                    tests.output,
-                )
-
-        changed = workspace.changed_files()
-        if not tests.passed:
-            detail = tests.output[-1800:] if tests.output else "pytest failed without output"
-            return self._finish(
-                state,
-                turn,
-                status="failed",
-                message=f"自动修复后测试仍未通过：\n{detail}",
-                backend_session_id=latest_result.session_id or None,
-                changed_files=changed,
-            )
-
-        self._event(state.session_id, turn.turn_id, "progress", "测试通过，正在提交工程分支")
+        self._event(
+            state.session_id,
+            turn.turn_id,
+            "progress",
+            "工程执行完成，范围检查通过，正在提交 engineering 分支",
+        )
         try:
             commit_sha = commit_project_changes(workspace.path, turn.intent)
         except (OSError, subprocess.SubprocessError, RuntimeError) as exc:
@@ -497,13 +430,19 @@ class EngineeringWorker:
                 state,
                 turn,
                 status="failed",
-                message=f"测试通过，但工程分支提交失败：{type(exc).__name__}",
-                backend_session_id=latest_result.session_id or None,
+                message=f"工程执行完成，但 engineering 分支提交失败：{type(exc).__name__}",
+                backend_session_id=result.session_id or None,
                 changed_files=changed,
             )
 
         file_summary = "、".join(changed) if changed else "无"
-        summary = f"任务已完成。\n修改：{file_summary}\n验证：项目测试通过。"
+        summary = (
+            f"任务已完成。\n修改：{file_summary}\n"
+            f"验证：{self._validation_summary(result.events)}"
+        )
+        backend_summary = result.final_message.strip()
+        if backend_summary:
+            summary += f"\n工程结论：{backend_summary[:1200]}"
         if commit_sha:
             summary += f"\n提交：`{workspace.branch}` / `{commit_sha[:12]}`。"
         else:
@@ -513,9 +452,26 @@ class EngineeringWorker:
             turn,
             status="completed",
             message=summary,
-            backend_session_id=latest_result.session_id or None,
+            backend_session_id=result.session_id or None,
             changed_files=changed,
         )
+
+    @staticmethod
+    def _validation_summary(events: tuple[EngineeringAgentEvent, ...]) -> str:
+        commands: list[str] = []
+        for event in events:
+            if event.kind != "tool" or not event.summary.startswith("Bash:"):
+                continue
+            command = event.summary.split(":", 1)[1].strip()
+            normalized = command.casefold()
+            if any(marker in normalized for marker in _VALIDATION_COMMAND_MARKERS):
+                commands.append(command)
+        if commands:
+            visible = "；".join(f"`{command[:220]}`" for command in commands[:4])
+            if len(commands) > 4:
+                visible += f"；另有 {len(commands) - 4} 条"
+            return f"Claude Code 已执行任务内验证：{visible}"
+        return "Claude Code 按任务范围自主管理验证；未记录到项目测试命令，Hikari 已完成改动范围检查。"
 
     @staticmethod
     def _change_policy_violation(
@@ -530,29 +486,6 @@ class EngineeringWorker:
         )
         return "; ".join(violations)
 
-    def _validation_environment_failure(
-        self,
-        state: EngineeringSessionState,
-        turn: EngineeringTurn,
-        backend_session_id: str | None,
-        changed_files: tuple[str, ...],
-        detail: str,
-    ) -> WorkerOutcome:
-        concise = detail.strip()
-        if len(concise) > 1800:
-            concise = concise[-1800:]
-        return self._finish(
-            state,
-            turn,
-            status="blocked",
-            message=(
-                "验证环境不可用，Worker 已停止自动修复；仓库测试和验收标准均未被改写。"
-                + (f"\n{concise}" if concise else "")
-            ),
-            backend_session_id=backend_session_id or None,
-            changed_files=changed_files,
-        )
-
     def _backend_failure(
         self,
         state: EngineeringSessionState,
@@ -561,12 +494,15 @@ class EngineeringWorker:
         *,
         changed_files: tuple[str, ...] = (),
     ) -> WorkerOutcome:
-        detail = (result.stderr or result.stdout).strip()
+        detail = (result.stderr or "").strip()
         if len(detail) > 1200:
             detail = detail[-1200:]
         message = "Engineering backend 执行失败"
         if detail:
             message += f"：{detail}"
+        if result.events:
+            recent = " | ".join(event.summary for event in result.events[-4:])
+            message += f"\n最后活动：{recent[:1000]}"
         return self._finish(
             state,
             turn,
