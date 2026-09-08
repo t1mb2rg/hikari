@@ -21,7 +21,7 @@ from brain import ModelReasoner, Reasoner, SimpleReasoner
 from brain.providers import OpenAICompatibleProvider
 from conversation.cli import build_chat_provider, default_context_collector
 from conversation.engine import ConversationEngine, INTERACTIVE_SYSTEM_INSTRUCTIONS
-from conversation.engineering_bridge import ConversationEngineeringBridge
+from conversation.persistent_engineering_bridge import PersistentConversationEngineeringBridge
 from conversation.jarvis_openjarvis import JARVIS_PRODUCTION_SYSTEM_INSTRUCTIONS
 from conversation.natural_context import build_resident_natural_context
 from conversation.receipts import ConversationReceiptStore
@@ -460,10 +460,10 @@ def main(argv: Sequence[str] | None = None) -> None:
             **whiteboard_kwargs,
         )
 
-        engineering_bridge: ConversationEngineeringBridge | None = None
+        engineering_bridge: PersistentConversationEngineeringBridge | None = None
         engineering_supervisor: EngineeringWorkerSupervisor | None = None
         if engineering_enabled:
-            engineering_bridge = ConversationEngineeringBridge(
+            engineering_bridge = PersistentConversationEngineeringBridge(
                 EngineeringSessionStore(state_dir / "engineering"),
                 EngineeringConversationBindingStore(
                     state_dir / "engineering_bindings.json"
