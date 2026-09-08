@@ -13,4 +13,5 @@
 - Awareness 0 已完成物理验收：Natural Conversation 通过统一的 selected-context 入口组合 MC0、MC1 与按当前问题选择的 Awareness；Foreground / Input Activity 只有在当前问题直接相关时才被读取并自然化，普通对话不会读取这些信号。
 - Awareness 0 的真实 Windows Foreground reader、前台 Resident + QQ 链路和 fresh detached Resident + QQ 链路均已成功。最新物理验收中，Jarvis 在 detached Resident 下正确识别了 Edge 前台窗口及其当前标签页标题。
 - Awareness selection 已收敛为 provider-level selection：只问前台窗口只读取 Foreground，只问输入活动只读取 Input Activity；对应 targeted tests 已由用户运行并全绿。
+- Maintainer Capability Closure 已开始：`engineering.commands.run` 已从 capability gap 提升为已实现的项目内非写入命令能力。Conversation 会为显式项目命令建立 `repository_read + run_commands` 的 Engineering turn，复用现有隔离 worktree / Worker 只读路径；该 turn 不获得 repository write、tests、network 或 publish 权限，若命令产生 tracked repository 变更，现有 Worker 会拒绝结果。此切片尚待 targeted tests 与物理命令验收后再判 PASS。
 - 当前方向：Hikari 是系统身份，Jarvis 是默认对话人格；Conversation Context 负责决定这一轮模型有资格知道什么，内部结构化状态不直接进入 prompt；工程动作统一进入 Engineering Runtime。M7 剩余重点是补齐 Maintainer 必要执行能力、Persistent Task Planning / Maintainer Loop 与最终 Long-Run Graduation。
