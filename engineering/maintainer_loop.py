@@ -10,7 +10,7 @@ from .goal import (
     EngineeringGoalState,
     EngineeringGoalStore,
 )
-from .session import EngineeringSessionStore
+from .session import EngineeringSessionStore, EngineeringTurn
 
 
 _RETRYABLE_EFFECTS = frozenset(
@@ -21,6 +21,23 @@ _RETRYABLE_EFFECTS = frozenset(
         "open_or_update_draft_pr",
     }
 )
+
+
+class _WorkerCompatibleGoalCoordinator(EngineeringGoalCoordinator):
+    """Keep persistent turn machine fields compatible with the proven Worker parser.
+
+    M7-A turns terminate ``Requested effect`` with a period. Persistent goal context is
+    multiline, so canonicalize that one machine field before enqueue rather than letting
+    following prose become part of the effect token.
+    """
+
+    def _turn_for_step(self, goal, step) -> EngineeringTurn:
+        turn = super()._turn_for_step(goal, step)
+        marker = f"Requested effect: {step.effect}\n"
+        canonical = f"Requested effect: {step.effect}.\n"
+        if marker not in turn.context:
+            return turn
+        return replace(turn, context=turn.context.replace(marker, canonical, 1))
 
 
 class PersistentMaintainerLoop:
@@ -49,7 +66,7 @@ class PersistentMaintainerLoop:
         self.goals = goals
         self.sessions = sessions
         self.max_attempts = int(max_attempts)
-        self.coordinator = EngineeringGoalCoordinator(goals, sessions)
+        self.coordinator = _WorkerCompatibleGoalCoordinator(goals, sessions)
 
     def advance_once(self, goal_id: str) -> EngineeringGoalAdvanceOutcome:
         goal = self.goals.load(goal_id)
