@@ -209,7 +209,8 @@ def run_project_tests(
 
 
 def _commit_subject(intent: str) -> str:
-    text = re.sub(r"\s+", " ", intent).strip()
+    first_line = next((line.strip() for line in intent.splitlines() if line.strip()), "")
+    text = re.sub(r"\s+", " ", first_line).strip()
     if len(text) > 68:
         text = text[:65].rstrip() + "..."
     return f"hikari: {text or 'maintain project'}"
