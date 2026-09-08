@@ -38,9 +38,10 @@ _CAPABILITY_MANIFEST = {
         "available": True,
         "relationship": "internal_hikari_capability",
         "summary": (
-            "Hikari owns durable EngineeringSession state and a separate Engineering Worker "
-            "fault domain for repository work. This is an internal capability, not an external "
-            "Forge service or callback boundary."
+            "Hikari owns durable EngineeringGoal and EngineeringSession state, a Resident-owned "
+            "maintainer continuation loop, and a separate Engineering Worker fault domain. "
+            "Ordered routine maintenance, bounded recovery, non-protected push, and Draft PR "
+            "publication remain internal Hikari capabilities rather than an external Forge boundary."
         ),
     },
 }
@@ -86,11 +87,14 @@ def describe_capabilities(
         "arbitrary_tools": False,
         "engineering_read_session": engineering_read_enabled,
         "engineering_write_session": engineering_maintainer_enabled,
+        "persistent_engineering_goal": engineering_maintainer_enabled,
         "summary": (
             "The Conversation model itself has no direct shell or filesystem sense. It can route "
             "work into Hikari's Engineering Runtime. Inside the standing Hikari-project maintainer "
-            "mandate, routine read/edit/test/engineering-branch commit work can run without per-action "
-            "approval. Standing delegation and actual implementation remain separate facts."
+            "mandate, routine read/edit/test/commit work can be represented as a durable ordered "
+            "goal; Resident may continue safe steps, push the non-protected engineering branch, "
+            "and maintain a Draft PR without per-action approval. Standing delegation and actual "
+            "implementation remain separate facts."
             if engineering_read_enabled
             else (
                 "This direct chat path currently provides cognition, context, personality, and "
