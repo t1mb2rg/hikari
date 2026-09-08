@@ -60,6 +60,27 @@ def test_worker_lease_rejects_second_live_worker(tmp_path: Path) -> None:
         lease_path,
         heartbeat_store,
         process_probe=lambda pid: pid == 5151,
+        wall_clock=lambda: 1000.0,
+    )
+
+    with pytest.raises(RuntimeError, match="already active"):
+        lease.acquire(pid=6262, owner="manual", started_at=1000.0)
+
+
+def test_worker_lease_rejects_second_worker_during_startup_grace(tmp_path: Path) -> None:
+    heartbeat_store = EngineeringWorkerHeartbeatStore(
+        tmp_path / "engineering_worker.json"
+    )
+    lease_path = tmp_path / "engineering_worker.lock"
+    lease_path.write_text(
+        '{"version":1,"pid":5151,"owner":"resident","started_at":999.0}',
+        encoding="utf-8",
+    )
+    lease = EngineeringWorkerLease(
+        lease_path,
+        heartbeat_store,
+        process_probe=lambda pid: pid == 5151,
+        wall_clock=lambda: 1000.0,
     )
 
     with pytest.raises(RuntimeError, match="already active"):
@@ -84,6 +105,41 @@ def test_worker_lease_recovers_stale_lock(tmp_path: Path) -> None:
         lease_path,
         heartbeat_store,
         process_probe=lambda pid: False,
+        wall_clock=lambda: 1000.0,
+    )
+
+    lease.acquire(pid=6262, owner="resident", started_at=1000.0)
+    assert lease_path.is_file()
+    lease.release()
+    assert not lease_path.exists()
+
+
+def test_worker_lease_recovers_when_process_probe_lies_but_heartbeat_is_stale(
+    tmp_path: Path,
+) -> None:
+    heartbeat_store = EngineeringWorkerHeartbeatStore(
+        tmp_path / "engineering_worker.json"
+    )
+    heartbeat_store.write(
+        EngineeringWorkerHeartbeat(
+            pid=5151,
+            owner="resident",
+            started_at=900.0,
+            updated_at=950.0,
+        )
+    )
+    lease_path = tmp_path / "engineering_worker.lock"
+    lease_path.write_text(
+        '{"version":1,"pid":5151,"owner":"resident","started_at":900.0}',
+        encoding="utf-8",
+    )
+    lease = EngineeringWorkerLease(
+        lease_path,
+        heartbeat_store,
+        process_probe=lambda pid: pid == 5151,
+        wall_clock=lambda: 1000.0,
+        heartbeat_max_age_seconds=5.0,
+        startup_grace_seconds=5.0,
     )
 
     lease.acquire(pid=6262, owner="resident", started_at=1000.0)
@@ -191,7 +247,7 @@ def test_engineering_worker_supervisor_restarts_crashed_child(tmp_path: Path) ->
                 restart_max_seconds=0.02,
                 stable_reset_seconds=0.02,
             ),
-            process_factory=factory,  # type: ignore[arg-type]
+            process_factory=factory,
         )
         stop = asyncio.Event()
         task = asyncio.create_task(supervisor.run(stop))
