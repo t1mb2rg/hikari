@@ -6,7 +6,7 @@ import logging
 from brain.model_reasoner import ChatMessage
 
 from .engine import ConversationEngine
-from .natural import parse_natural_conversation_output
+from .natural import NaturalConversationEngine, parse_natural_conversation_output
 
 
 logger = logging.getLogger(__name__)
@@ -141,6 +141,14 @@ class EngineeringVoiceRenderer:
     ) -> str:
         if not isinstance(facts, EngineeringVoiceFacts):
             raise TypeError("facts must be EngineeringVoiceFacts")
+
+        # Plain ConversationEngine is used by deterministic routing/boundary tests and
+        # legacy compatibility paths. Production Jarvis runs NaturalConversationEngine.
+        # Keeping the base engine model-free makes it explicit that the model phrases an
+        # already-decided boundary; it never participates in the authority decision.
+        if not isinstance(self.engine, NaturalConversationEngine):
+            return facts.fallback_text()
+
         try:
             history = self.engine._recent_history(channel, conversation_id)
             messages = [
