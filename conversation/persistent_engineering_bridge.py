@@ -34,8 +34,23 @@ from .engineering_bridge import (
     engineering_session_matches_repository_head,
     looks_like_engineering_status_query,
 )
+from .engineering_intent import EngineeringIntentResolution
 from .engineering_voice import EngineeringVoiceFacts
 from .models import AssistantReply, UserTurn
+
+
+class _ResolvedIntentResolver:
+    """Replay one already-grounded semantic resolution into the proven M7-A bridge."""
+
+    def __init__(self, resolution: EngineeringIntentResolution) -> None:
+        self.resolution = resolution
+
+    @staticmethod
+    def is_candidate(text: str, *, bound_session: bool = False) -> bool:
+        return True
+
+    def resolve(self, text: str, *, capabilities, state=None) -> EngineeringIntentResolution:
+        return self.resolution
 
 
 class PersistentConversationEngineeringBridge(ConversationEngineeringBridge):
@@ -79,24 +94,38 @@ class PersistentConversationEngineeringBridge(ConversationEngineeringBridge):
         state = self._bound_state(turn.channel, turn.conversation_id)
         capabilities = hikari_engineering_capabilities(True)
         resolution = self._resolve_intent(engine, turn, state, capabilities)
-        if (
-            resolution is None
-            or not resolution.engineering
-            or len(resolution.requested_effects) <= 1
-        ):
-            return super().respond(engine, turn, source_ref=source_ref)
+        if resolution is None or not resolution.engineering:
+            return engine.respond(turn, source_ref=source_ref)
+        if len(resolution.requested_effects) <= 1:
+            return self._respond_with_resolution(
+                engine,
+                turn,
+                resolution,
+                source_ref=source_ref,
+            )
 
         assessment = assess_task_capabilities(
             resolution.required_capabilities,
             capabilities,
         )
         if assessment.status != ASSESSMENT_EXECUTABLE:
-            # Reuse the established capability-gap / escalation voice and memory path.
-            return super().respond(engine, turn, source_ref=source_ref)
+            # Reuse the established capability-gap / escalation voice and memory path
+            # without performing a second semantic model call.
+            return self._respond_with_resolution(
+                engine,
+                turn,
+                resolution,
+                source_ref=source_ref,
+            )
 
         effects = tuple(resolution.requested_effects)
         if any(effect not in SUPPORTED_ENGINEERING_EFFECTS for effect in effects):
-            return super().respond(engine, turn, source_ref=source_ref)
+            return self._respond_with_resolution(
+                engine,
+                turn,
+                resolution,
+                source_ref=source_ref,
+            )
 
         active_goal = self._active_goal_for_conversation(turn.channel, turn.conversation_id)
         if active_goal is not None:
@@ -163,6 +192,22 @@ class PersistentConversationEngineeringBridge(ConversationEngineeringBridge):
         )
         _remember_control_exchange(engine, turn, reply)
         return reply
+
+    def _respond_with_resolution(
+        self,
+        engine: ConversationEngine,
+        turn: UserTurn,
+        resolution: EngineeringIntentResolution,
+        *,
+        source_ref: str | None,
+    ) -> AssistantReply:
+        bridge = ConversationEngineeringBridge(
+            self.store,
+            self.bindings,
+            repository=self.repository,
+            intent_resolver=_ResolvedIntentResolver(resolution),
+        )
+        return bridge.respond(engine, turn, source_ref=source_ref)
 
     def _status_reply(self, turn: UserTurn) -> AssistantReply:
         goal = self._latest_goal_for_conversation(turn.channel, turn.conversation_id)
