@@ -76,17 +76,15 @@ _EFFECT_PREFIX = "Requested effect: "
 def _turn_effect(turn: EngineeringTurn) -> str:
     """Read the deterministic effect written by ConversationEngineeringBridge.
 
-    This deliberately does not interpret the user's natural-language intent. Older
-    publish turns without the field remain compatible with the original push path.
+    This deliberately does not interpret the user's natural-language intent. The bridge
+    writes its machine field after the semantic goal, so the last marker is authoritative.
+    Older publish turns without the field remain compatible with the original push path.
     """
 
-    effect = ""
-    for line in turn.context.splitlines():
-        normalized = line.strip()
-        if not normalized.startswith(_EFFECT_PREFIX):
-            continue
-        effect = normalized[len(_EFFECT_PREFIX) :].strip().rstrip(".")
-    return effect
+    _, marker, tail = turn.context.rpartition(_EFFECT_PREFIX)
+    if not marker:
+        return ""
+    return tail.split(".", 1)[0].strip()
 
 
 def _prompt_for_read_only_turn(state: EngineeringSessionState, turn: EngineeringTurn) -> str:
