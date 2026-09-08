@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 import subprocess
 
@@ -185,13 +186,11 @@ def test_failed_whole_goal_delivery_summary_uses_terminal_failure_only(tmp_path:
         goal_id="failed-goal",
     )
     goals.create(
-        EngineeringGoalState(
-            **{
-                **goal.__dict__,
-                "status": "failed",
-                "current_step_index": 1,
-                "final_summary": "Draft PR 发布失败：remote branch unavailable",
-            }
+        replace(
+            goal,
+            status="failed",
+            current_step_index=1,
+            final_summary="Draft PR 发布失败：remote branch unavailable",
         )
     )
 
