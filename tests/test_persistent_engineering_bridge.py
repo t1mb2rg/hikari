@@ -44,7 +44,31 @@ class _MultiEffectResolver:
         )
 
 
-def _runtime(tmp_path: Path):
+class _ImplicitPushResolver:
+    @staticmethod
+    def is_candidate(text: str, *, bound_session: bool = False) -> bool:
+        return True
+
+    @staticmethod
+    def resolve(text: str, *, capabilities, state=None) -> EngineeringIntentResolution:
+        return EngineeringIntentResolution(
+            engineering=True,
+            goal="update README and publish a Draft PR",
+            requested_effects=(
+                "maintain_project",
+                "open_or_update_draft_pr",
+            ),
+            required_capabilities=(
+                "engineering.repository.read",
+                "engineering.repository.write",
+                "engineering.tests.run",
+                "engineering.git.commit",
+                "engineering.git.open_or_update_draft_pr",
+            ),
+        )
+
+
+def _runtime(tmp_path: Path, resolver=None):
     repository = tmp_path / "repo"
     repository.mkdir()
     sessions = EngineeringSessionStore(tmp_path / "engineering")
@@ -54,7 +78,7 @@ def _runtime(tmp_path: Path):
         sessions,
         bindings,
         repository=repository,
-        intent_resolver=_MultiEffectResolver(),
+        intent_resolver=resolver or _MultiEffectResolver(),
         goals=goals,
     )
     engine = ConversationEngine(_ExplodingProvider(), MemoryStore(tmp_path / "memory.db"))
@@ -111,6 +135,26 @@ def test_multi_effect_request_becomes_one_durable_ordered_goal(tmp_path: Path) -
     assert turn.authority.publish is False
 
 
+def test_draft_pr_goal_adds_push_prerequisite_without_user_babysitting(tmp_path: Path) -> None:
+    bridge, engine, _, _, goals = _runtime(tmp_path, _ImplicitPushResolver())
+
+    bridge.respond(
+        engine,
+        UserTurn(
+            "qq",
+            "private:42",
+            "更新 README，完成后直接开一个 Draft PR。",
+        ),
+    )
+
+    goal = goals.list_states()[0]
+    assert [step.effect for step in goal.steps] == [
+        "maintain_project",
+        "push_engineering_branch",
+        "open_or_update_draft_pr",
+    ]
+
+
 def test_status_query_reports_persistent_goal_step_not_only_raw_session(tmp_path: Path) -> None:
     bridge, engine, _, _, _ = _runtime(tmp_path)
     bridge.respond(
@@ -144,5 +188,5 @@ def test_second_multi_effect_goal_is_not_interleaved_with_active_goal(tmp_path: 
 
     second = bridge.respond(engine, request)
 
-    assert "不会把两个目标交错执行" in second.text
+    assert "不会把第二个工程目标" in second.text
     assert len(goals.list_states()) == 1
