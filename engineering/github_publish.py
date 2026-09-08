@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import time
 from typing import Mapping, Sequence
 
 
@@ -176,26 +177,49 @@ def _require_remote_head(
     expected_head: str,
     *,
     environment: Mapping[str, str],
+    attempts: int = 4,
+    retry_delay_seconds: float = 0.5,
 ) -> None:
-    proc = _git(
-        worktree,
-        "ls-remote",
-        "--exit-code",
-        "--heads",
-        "origin",
-        f"refs/heads/{branch}",
-        environment=environment,
-        check=False,
-    )
-    if proc.returncode != 0:
+    """Confirm the pushed branch becomes visible at the exact expected SHA.
+
+    Git hosting visibility and transient network checks may briefly lag immediately after
+    a successful push. This verification is read-only, so retry a few times locally before
+    escalating the whole Draft-PR turn. Never infer success from a missing/mismatched ref.
+    """
+
+    total_attempts = int(attempts)
+    if total_attempts < 1:
+        raise ValueError("remote-head verification attempts must be >= 1")
+    delay = max(0.0, float(retry_delay_seconds))
+    last_returncode = 1
+    last_remote_head = ""
+
+    for index in range(total_attempts):
+        proc = _git(
+            worktree,
+            "ls-remote",
+            "--exit-code",
+            "--heads",
+            "origin",
+            f"refs/heads/{branch}",
+            environment=environment,
+            check=False,
+        )
+        last_returncode = proc.returncode
+        last_remote_head = (proc.stdout.strip().split() or [""])[0]
+        if proc.returncode == 0 and last_remote_head == expected_head.strip():
+            return
+        if index + 1 < total_attempts and delay > 0:
+            time.sleep(delay)
+            delay *= 2.0
+
+    if last_returncode != 0 or not last_remote_head:
         raise RuntimeError(
             "engineering branch is not available on origin; push the non-protected engineering branch before opening its Draft PR"
         )
-    remote_head = (proc.stdout.strip().split() or [""])[0]
-    if remote_head != expected_head.strip():
-        raise RuntimeError(
-            "origin engineering branch does not match the local committed head; push the latest non-protected engineering branch before opening its Draft PR"
-        )
+    raise RuntimeError(
+        "origin engineering branch does not match the local committed head; push the latest non-protected engineering branch before opening its Draft PR"
+    )
 
 
 def _draft_metadata(
