@@ -84,8 +84,9 @@ def describe_self_state(
                 "role": "engineering_cognition_component",
                 "identity_relation": "part_of_hikari_not_external_service",
                 "summary": (
-                    "Engineering cognition runs through Hikari-owned durable EngineeringSession "
-                    "state and a separate worker/backend fault domain."
+                    "Engineering cognition uses Hikari-owned durable EngineeringGoal and "
+                    "EngineeringSession state, a Resident-owned maintainer loop, and a separate "
+                    "worker/backend fault domain."
                 ),
             },
             "awareness": {
@@ -117,14 +118,30 @@ def describe_self_state(
             "relationship": "internal_hikari_capability",
             "conversation_read_only_enabled": engineering_enabled,
             "conversation_maintainer_session_enabled": engineering_enabled,
-            "execution_model": "durable_engineering_session_plus_separate_worker_process",
-            "result_model": "result_is_persisted_in_hikari_state_then_exposed_through_hikari_delivery",
+            "persistent_goal_enabled": engineering_enabled,
+            "resident_maintainer_loop_enabled": engineering_enabled,
+            "deterministic_work_selection_enabled": engineering_enabled,
+            "bounded_retry_enabled": engineering_enabled,
+            "goal_level_terminal_delivery_enabled": engineering_enabled,
+            "execution_model": (
+                "durable_engineering_goal_plus_session_plus_resident_maintainer_loop_plus_separate_worker"
+            ),
+            "result_model": (
+                "turn_results_are_persisted_in_hikari_state; persistent_goal_completion_is_projected "
+                "only_after_the_whole_goal_reaches_a_grounded_terminal_state"
+            ),
             "repository_write_enabled": engineering_enabled,
             "project_tests_enabled": engineering_enabled,
             "engineering_branch_commit_enabled": engineering_enabled,
             "generic_project_commands_enabled": False,
             "non_protected_push_enabled": engineering_enabled,
             "draft_pr_publish_enabled": engineering_enabled,
+            "work_selection_policy": "oldest_unfinished_goal_per_project",
+            "continuation_source": "durable_goal_and_session_truth",
+            "retry_policy": (
+                "one_bounded_retry_for_safe_inspect_maintain_push_or_draft_pr_effects; "
+                "blocked_work_and_project_commands_are_not_replayed_automatically"
+            ),
             "direct_filesystem_perception": False,
             "continuous_filesystem_perception": False,
             "instantaneous_filesystem_access_claim": False,
@@ -139,9 +156,9 @@ def describe_self_state(
             "implemented_capability_is_separate_from_delegation": True,
             "summary": (
                 "Standing project delegation is separate from implementation capability. Inside "
-                "a project mandate, routine engineering outcomes do not require repeated human "
-                "approval. Missing implementation is a capability gap; crossing the mandate or "
-                "causing high-impact external effects requires escalation."
+                "a project mandate, routine engineering outcomes and ordered persistent-goal steps "
+                "do not require repeated human approval. Missing implementation is a capability "
+                "gap; crossing the mandate or causing high-impact external effects requires escalation."
             ),
         },
         "operational_awareness": {
@@ -149,27 +166,34 @@ def describe_self_state(
             "status_source": "read_only_operational_probes",
             "unknown_is_not_healthy": True,
             "summary": (
-                "Current Resident, QQ, Engineering session state, and Engineering Worker liveness "
-                "come from bounded point-in-time probes. A component with no trustworthy probe "
-                "remains unknown."
+                "Current Resident, QQ, Engineering goal/session state, and Engineering Worker "
+                "liveness come from bounded point-in-time probes. A component with no trustworthy "
+                "probe remains unknown."
             ),
         },
         "delivery_semantics": {
             "engineering_terminal_result": (
-                "A completed EngineeringResult is persisted in Hikari-owned session state and "
-                "may be delivered directly through Hikari's durable DeliveryOutbox. It does not "
-                "need a second Conversation-model interpretation before delivery."
+                "A legacy single EngineeringResult may be delivered when that turn is the whole "
+                "task. For a persistent EngineeringGoal, intermediate terminal turns remain "
+                "internal durable facts and only the grounded whole-goal terminal state is "
+                "projected into Hikari's durable DeliveryOutbox."
             ),
+            "intermediate_goal_step_is_user_terminal": False,
             "conversation_model_consumption": "not_required_for_terminal_engineering_delivery",
             "identity_rule": (
-                "Direct delivery of an engineering result is still Hikari system behavior; "
-                "authorship is not defined by whether the Conversation model rewrites it."
+                "Direct delivery of grounded engineering facts is still Hikari system behavior; "
+                "authorship is not defined by whether the Conversation model rewrites them."
             ),
         },
         "epistemic_boundaries": {
             "engineering_inspection": (
                 "Repository inspection is delegated to Hikari's internal EngineeringSession and "
                 "separate Engineering Worker. Results are persisted in Hikari-owned state."
+            ),
+            "persistent_engineering": (
+                "Resident may discover the next executable maintenance step only from durable "
+                "EngineeringGoal/EngineeringSession truth. It does not invent hidden work, expand "
+                "authority, or treat an intermediate turn result as whole-goal completion."
             ),
             "filesystem": (
                 "Engineering Runtime does not give Hikari continuous or instantaneous direct "
