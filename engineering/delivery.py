@@ -2,13 +2,18 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+import time
 
 from core.delivery import DeliveryOutbox, DeliveryRequest, DeliveryRouter
 
 from .bindings import EngineeringConversationBindingStore
 from .goal import EngineeringGoalState, EngineeringGoalStore
 from .maintainer_loop import PersistentMaintainerLoop
-from .session import EngineeringProtocolError, EngineeringSessionStore
+from .session import (
+    EngineeringEvent,
+    EngineeringProtocolError,
+    EngineeringSessionStore,
+)
 
 
 @dataclass(frozen=True)
@@ -39,8 +44,11 @@ class EngineeringCompletionDelivery:
     whole-goal terminal facts. Intermediate goal steps are deliberately suppressed so a
     completed edit turn cannot masquerade as completion of a still-pending push/PR goal.
 
-    Engineering Worker constructs this class without a renderer. It therefore persists
-    turn truth only and never owns persistent-goal continuation or Jarvis-facing prose.
+    Engineering Worker constructs this class without a renderer. The Worker invokes its
+    pump only after successfully acquiring the single-worker lease. That ownership
+    transition is therefore also the safe place to reconcile a ``running`` session left
+    behind by a killed previous Worker: an existing durable result is finalized, while a
+    result-less in-flight turn is returned to ``pending`` with the exact same turn id.
     Existing DeliveryOutbox rows remain immutable historical facts.
     """
 
@@ -70,7 +78,10 @@ class EngineeringCompletionDelivery:
         )
 
     def pump(self) -> int:
-        """Idempotently advance persistent goals and enqueue terminal delivery facts."""
+        """Idempotently reconcile ownership, advance goals, and enqueue terminal facts."""
+
+        if self.renderer is None:
+            self._recover_worker_owned_running_turns()
 
         if self.maintainer_loop is not None:
             self.maintainer_loop.advance_all()
@@ -79,6 +90,68 @@ class EngineeringCompletionDelivery:
         submitted = self._pump_single_turns(managed_turn_ids)
         submitted += self._pump_terminal_goals()
         return submitted
+
+    def _recover_worker_owned_running_turns(self) -> None:
+        """Reconcile turns orphaned when a previous Worker died while ``running``.
+
+        This method is intentionally reachable only from the renderer-less Worker pump.
+        Worker main calls that pump after acquiring the global Engineering Worker lease,
+        so no second live Worker is allowed to be executing these sessions concurrently.
+        The durable turn id is never replaced here.
+        """
+
+        for state in self.sessions.list_states():
+            if state.status != "running":
+                continue
+            turn_id = state.current_turn_id
+            if not turn_id:
+                self.sessions.update_runtime(
+                    state.session_id,
+                    status="blocked",
+                    latest_summary="Engineering Worker 重启时发现 running session 缺少 current turn",
+                )
+                continue
+
+            try:
+                result = self.sessions.load_result(state.session_id, turn_id)
+            except EngineeringProtocolError as exc:
+                if not str(exc).startswith("unknown engineering result:"):
+                    self.sessions.update_runtime(
+                        state.session_id,
+                        status="blocked",
+                        latest_summary="Engineering Worker 重启时无法读取遗留 turn result",
+                    )
+                    continue
+            else:
+                # Crash window: the result file reached disk but state.json did not.
+                self.sessions.save_result(state.session_id, result)
+                continue
+
+            try:
+                self.sessions.load_turn(state.session_id, turn_id)
+            except EngineeringProtocolError:
+                self.sessions.update_runtime(
+                    state.session_id,
+                    status="blocked",
+                    latest_summary="Engineering Worker 重启时发现遗留 running turn 不可读取",
+                )
+                continue
+
+            recovered = self.sessions.update_runtime(
+                state.session_id,
+                status="pending",
+                latest_summary="Engineering Worker 重启后恢复未完成 turn",
+            )
+            self.sessions.append_event(
+                EngineeringEvent(
+                    session_id=state.session_id,
+                    turn_id=turn_id,
+                    sequence=recovered.next_sequence,
+                    kind="recovered",
+                    summary="Engineering Worker ownership changed; resuming the same durable turn",
+                    timestamp=time.time(),
+                )
+            )
 
     def _managed_turn_ids(self) -> set[str]:
         managed: set[str] = set()
