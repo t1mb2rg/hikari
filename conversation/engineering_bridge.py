@@ -34,6 +34,7 @@ from .engineering_intent import (
     EngineeringIntentResolutionError,
     EngineeringIntentResolver,
 )
+from .engineering_voice import EngineeringVoiceFacts, EngineeringVoiceRenderer
 from .models import AssistantReply, UserTurn
 
 
@@ -306,6 +307,23 @@ def _remember_control_exchange(
         )
 
 
+def _voice_reply(
+    engine: ConversationEngine,
+    turn: UserTurn,
+    facts: EngineeringVoiceFacts,
+) -> AssistantReply:
+    text = EngineeringVoiceRenderer(engine).render(
+        facts,
+        channel=turn.channel,
+        conversation_id=turn.conversation_id,
+    )
+    return AssistantReply(
+        channel=turn.channel,
+        conversation_id=turn.conversation_id,
+        text=text,
+    )
+
+
 def _contains_any(text: str, markers: tuple[str, ...]) -> bool:
     return any(marker in text for marker in markers)
 
@@ -558,26 +576,31 @@ class ConversationEngineeringBridge:
         requirements = resolution.required_capabilities
         assessment = assess_task_capabilities(requirements, capabilities)
         if assessment.status == ASSESSMENT_CAPABILITY_GAP:
-            missing = ", ".join(assessment.missing)
-            reply = AssistantReply(
-                channel=turn.channel,
-                conversation_id=turn.conversation_id,
-                text=(
-                    "这个需求在我当前的项目维护职责里，但 Engineering Runtime 还缺少实际执行能力："
-                    f"{missing}。这是能力缺口，不是需要你逐个动作给我授权。"
-                    "当前我不会假装已经具备这项能力，也不会自行越过项目 mandate。"
+            reply = _voice_reply(
+                engine,
+                turn,
+                EngineeringVoiceFacts(
+                    kind="capability_gap",
+                    goal=resolution.goal or turn.text,
+                    capabilities=tuple(assessment.missing),
+                    details=(
+                        "The requested effect is inside the standing project mandate; the missing item is implementation capability, not per-action authorization.",
+                    ),
                 ),
             )
             _remember_control_exchange(engine, turn, reply)
             return reply
         if assessment.status == ASSESSMENT_ESCALATION_REQUIRED:
-            escalation = ", ".join(assessment.escalation)
-            reply = AssistantReply(
-                channel=turn.channel,
-                conversation_id=turn.conversation_id,
-                text=(
-                    "这个需求触及当前项目 mandate 之外的影响边界，需要你决定是否扩展这次授权："
-                    f"{escalation}。"
+            reply = _voice_reply(
+                engine,
+                turn,
+                EngineeringVoiceFacts(
+                    kind="escalation",
+                    goal=resolution.goal or turn.text,
+                    capabilities=tuple(assessment.escalation),
+                    details=(
+                        "The authority decision has already been made deterministically: this effect is outside the standing project mandate and requires a human decision before execution.",
+                    ),
                 ),
             )
             _remember_control_exchange(engine, turn, reply)
@@ -709,27 +732,31 @@ class ConversationEngineeringBridge:
         self.store.enqueue_turn(state.session_id, engineering_turn)
 
         if effect == "inspect_project":
-            text = "我去看。已经开始一个只读工程会话，完成后我会把实际检查结果发回来。"
+            details = (
+                "已经开始一个只读工程会话，完成后会返回实际检查结果。",
+            )
         elif effect == "run_project_command":
-            text = (
-                "我来跑。已经开始一个项目内命令工程会话；命令会在隔离 worktree 中执行，"
-                "不会获得仓库写入、网络或发布权限，完成后我会把实际结果发回来。"
+            details = (
+                "已经开始一个项目内命令工程会话；命令会在隔离 worktree 中执行，不会获得仓库写入、网络或发布权限。",
             )
         elif effect == "push_engineering_branch":
-            text = (
-                f"我来推。已把当前非保护工程分支 `{state.workspace_branch}` 交给 Engineering Worker；"
-                "只会推送这个 Hikari engineering 分支到 `origin`，不会 force push 或 merge，"
-                "完成后我会把实际远端结果发回来。"
+            details = (
+                "当前非保护 engineering 分支已经进入 push turn；只会推送这个分支到 origin，不会 force push 或 merge。",
             )
         else:
-            text = (
-                "我来处理。这个任务在我的项目维护职责内，我已经交给 Engineering Runtime。"
-                "我会在隔离工程分支里完成修改、测试和提交，完成后把实际结果发回来。"
+            details = (
+                "这个任务在项目维护职责内；已经进入持久工程会话，可在隔离工程分支完成修改、测试和提交。",
             )
-        reply = AssistantReply(
-            channel=turn.channel,
-            conversation_id=turn.conversation_id,
-            text=text,
+        reply = _voice_reply(
+            engine,
+            turn,
+            EngineeringVoiceFacts(
+                kind="accepted",
+                goal=resolution.goal or turn.text,
+                status="accepted",
+                branch=state.workspace_branch,
+                details=details,
+            ),
         )
         _remember_control_exchange(engine, turn, reply)
         return reply
