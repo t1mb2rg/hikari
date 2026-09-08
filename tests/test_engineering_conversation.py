@@ -15,7 +15,7 @@ from engineering.bindings import (
     EngineeringConversationBinding,
     EngineeringConversationBindingStore,
 )
-from engineering.delivery import EngineeringCompletionDelivery
+from engineering.delivery import EngineeringCompletionDelivery, EngineeringCompletionFacts
 from engineering.session import (
     EngineeringAuthority,
     EngineeringResult,
@@ -121,7 +121,18 @@ def test_terminal_engineering_result_reuses_hikari_delivery_outbox(tmp_path: Pat
         )
     )
     outbox = DeliveryOutbox(tmp_path / "proactive_delivery.db")
-    delivery = EngineeringCompletionDelivery(sessions, bindings, outbox)
+    rendered: list[tuple[EngineeringCompletionFacts, str, str]] = []
+
+    def renderer(facts: EngineeringCompletionFacts, channel: str, conversation_id: str) -> str:
+        rendered.append((facts, channel, conversation_id))
+        return "搞定了。README 表明项目正在 M7。"
+
+    delivery = EngineeringCompletionDelivery(
+        sessions,
+        bindings,
+        outbox,
+        renderer=renderer,
+    )
 
     delivery.pump()
     delivery.pump()
@@ -131,10 +142,17 @@ def test_terminal_engineering_result_reuses_hikari_delivery_outbox(tmp_path: Pat
     assert record.state == "pending"
     assert record.request.channel == "qq"
     assert record.request.recipient == "42"
-    assert "工程任务结果：已完成" in record.request.text
-    assert "任务：看看 README" in record.request.text
-    assert "README 表明项目正在 M7" in record.request.text
+    assert record.request.text == "搞定了。README 表明项目正在 M7。"
+    assert "工程任务结果：已完成" not in record.request.text
     assert record.request.source == "engineering"
+    assert len(rendered) == 1
+    facts, channel, conversation_id = rendered[0]
+    assert facts.status == "completed"
+    assert facts.goal == "看看 README"
+    assert facts.summary == "README 表明项目正在 M7。"
+    assert facts.historical is False
+    assert channel == "qq"
+    assert conversation_id == "private:42"
 
 
 def test_historical_terminal_delivery_is_labeled_as_old_task(tmp_path: Path):
@@ -183,11 +201,25 @@ def test_historical_terminal_delivery_is_labeled_as_old_task(tmp_path: Path):
         )
     )
 
-    EngineeringCompletionDelivery(sessions, bindings, outbox).pump()
+    rendered: list[EngineeringCompletionFacts] = []
+
+    def renderer(facts: EngineeringCompletionFacts, channel: str, conversation_id: str) -> str:
+        rendered.append(facts)
+        return "刚补到一条旧任务失败结果：unrecognized model"
+
+    EngineeringCompletionDelivery(
+        sessions,
+        bindings,
+        outbox,
+        renderer=renderer,
+    ).pump()
     record = outbox.get(f"engineering:{old.session_id}:{old_turn.turn_id}")
     assert record is not None
-    assert "补发旧工程任务结果：没有完成" in record.request.text
-    assert "任务：旧任务：检查模型配置" in record.request.text
+    assert record.request.text == "刚补到一条旧任务失败结果：unrecognized model"
+    assert len(rendered) == 1
+    assert rendered[0].status == "failed"
+    assert rendered[0].goal == "旧任务：检查模型配置"
+    assert rendered[0].historical is True
 
 
 def test_engineering_status_query_reads_failed_terminal_result_without_model(tmp_path: Path):
