@@ -74,6 +74,7 @@ class EngineeringCompletionDelivery:
             raise TypeError("EngineeringCompletionDelivery renderer must be callable or None")
         self.sessions = sessions
         self.bindings = bindings
+        self.outbox = outbox
         self.router = DeliveryRouter(outbox)
         self.renderer = renderer
         self.goals = EngineeringGoalStore(sessions.root.parent / "engineering_goals")
@@ -82,7 +83,7 @@ class EngineeringCompletionDelivery:
         )
 
     def pump(self) -> int:
-        """Idempotently reconcile ownership, advance goals, and enqueue terminal facts."""
+        """Idempotently reconcile ownership, advance goals, and ensure terminal delivery."""
 
         if self.renderer is None:
             self._recover_worker_owned_running_turns()
@@ -194,14 +195,12 @@ class EngineeringCompletionDelivery:
                 branch=state.workspace_branch,
                 baseline_commit=state.baseline_commit,
             )
-            discarded = workspace.discard_uncommitted_changes()
+            workspace.discard_uncommitted_changes()
         except (EngineeringWorkspaceError, OSError) as exc:
             return (
                 "Engineering Worker 重启时无法把隔离 worktree 恢复到可信 committed state："
                 f"{type(exc).__name__}；不会在半完成修改上自动重放"
             )
-        if discarded:
-            return None
         return None
 
     def _block_recovery(self, session_id: str, turn_id: str, message: str) -> None:
@@ -236,10 +235,37 @@ class EngineeringCompletionDelivery:
                     managed.add(step.turn_id)
         return managed
 
+    def _ensure_delivery(
+        self,
+        *,
+        delivery_id: str,
+        channel: str,
+        conversation_id: str,
+        facts: EngineeringCompletionFacts,
+        source: str,
+    ) -> bool:
+        """Ensure one immutable durable delivery exists without re-rendering on later pumps."""
+
+        existing = self.outbox.get(delivery_id)
+        if existing is not None:
+            return True
+        if self.renderer is None:
+            return False
+        text = self.renderer(facts, channel, conversation_id)
+        request = DeliveryRequest(
+            delivery_id=delivery_id,
+            channel=channel,
+            recipient=conversation_id.removeprefix("private:"),
+            text=text,
+            source=source,
+        )
+        self.router.submit(request)
+        return True
+
     def _pump_single_turns(self, managed_turn_ids: set[str]) -> int:
         if self.renderer is None:
             return 0
-        submitted = 0
+        ensured = 0
         for state in self.sessions.list_states():
             if state.status not in {"completed", "failed", "blocked"}:
                 continue
@@ -254,7 +280,6 @@ class EngineeringCompletionDelivery:
             binding = self.bindings.get(state.session_id)
             if binding is None:
                 continue
-            delivery_id = f"engineering:{state.session_id}:{turn_id}"
             facts = EngineeringCompletionFacts(
                 status=result.status,
                 goal=turn.intent,
@@ -262,24 +287,20 @@ class EngineeringCompletionDelivery:
                 changed_files=result.changed_files,
                 branch=state.workspace_branch,
             )
-            text = self.renderer(facts, binding.channel, binding.conversation_id)
-            request = DeliveryRequest(
-                delivery_id=delivery_id,
+            if self._ensure_delivery(
+                delivery_id=f"engineering:{state.session_id}:{turn_id}",
                 channel=binding.channel,
-                recipient=binding.conversation_id.removeprefix("private:"),
-                text=text,
-                kind="engineering_terminal",
-                created_at=result.completed_at or time.time(),
-                source_id=turn_id,
-            )
-            if self.router.submit(request):
-                submitted += 1
-        return submitted
+                conversation_id=binding.conversation_id,
+                facts=facts,
+                source="engineering_terminal",
+            ):
+                ensured += 1
+        return ensured
 
     def _pump_terminal_goals(self) -> int:
         if self.renderer is None:
             return 0
-        submitted = 0
+        ensured = 0
         for goal in self.goals.list_states():
             if goal.status not in {"completed", "failed", "blocked"}:
                 continue
@@ -287,28 +308,22 @@ class EngineeringCompletionDelivery:
             if binding is None:
                 continue
             state = self.sessions.load(goal.session_id)
-            changed_files = self._goal_changed_files(goal)
             facts = EngineeringCompletionFacts(
                 status=goal.status,
                 goal=goal.goal,
                 summary=goal.final_summary or goal.current_step.result_message,
-                changed_files=changed_files,
+                changed_files=self._goal_changed_files(goal),
                 branch=state.workspace_branch,
             )
-            text = self.renderer(facts, binding.channel, binding.conversation_id)
-            delivery_id = f"engineering-goal:{goal.goal_id}"
-            request = DeliveryRequest(
-                delivery_id=delivery_id,
+            if self._ensure_delivery(
+                delivery_id=f"engineering-goal:{goal.goal_id}",
                 channel=binding.channel,
-                recipient=binding.conversation_id.removeprefix("private:"),
-                text=text,
-                kind="engineering_goal_terminal",
-                created_at=goal.updated_at,
-                source_id=goal.goal_id,
-            )
-            if self.router.submit(request):
-                submitted += 1
-        return submitted
+                conversation_id=binding.conversation_id,
+                facts=facts,
+                source="engineering_goal_terminal",
+            ):
+                ensured += 1
+        return ensured
 
     def _goal_changed_files(self, goal: EngineeringGoalState) -> tuple[str, ...]:
         seen: set[str] = set()
