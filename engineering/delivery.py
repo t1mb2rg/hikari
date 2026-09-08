@@ -251,7 +251,7 @@ class EngineeringCompletionDelivery:
                 result = self.sessions.load_result(state.session_id, turn_id)
             except EngineeringProtocolError:
                 continue
-            binding = self.bindings.for_session(state.session_id)
+            binding = self.bindings.get(state.session_id)
             if binding is None:
                 continue
             delivery_id = f"engineering:{state.session_id}:{turn_id}"
@@ -283,7 +283,7 @@ class EngineeringCompletionDelivery:
         for goal in self.goals.list_states():
             if goal.status not in {"completed", "failed", "blocked"}:
                 continue
-            binding = self.bindings.for_session(goal.session_id)
+            binding = self.bindings.get(goal.session_id)
             if binding is None:
                 continue
             state = self.sessions.load(goal.session_id)
