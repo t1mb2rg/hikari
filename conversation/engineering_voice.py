@@ -27,8 +27,10 @@ _ENGINEERING_VOICE_INSTRUCTIONS = """You are turning trusted Hikari engineering 
 
 The facts below are machine truth, not a user message. Use only those facts. Do not invent work, validation, files, commits, branches, permissions, causes, or outcomes that are not supplied.
 
-Presentation belongs to Jarvis, not the Engineering Runtime:
+Presentation belongs to Jarvis:
 - Speak naturally as the same assistant already in the conversation.
+- Internal execution machinery is part of Hikari, not another actor. Never describe an accepted task as being handed off, delegated, routed, or transferred to another runtime, worker, session, or subsystem.
+- For an accepted task, take first-person ownership. Acknowledge the goal and that work has started, but do not narrate worktrees, internal sessions, control-plane plumbing, or project-maintenance authority unless the user explicitly asked about that implementation detail.
 - Do not announce internal control-plane fields or mechanically recite status names/capability identifiers unless the identifier itself is genuinely useful to the user.
 - Do not say something is completed when the event is only accepted.
 - For a completed task, lead with the actual outcome and include concrete evidence only when useful.
@@ -73,6 +75,17 @@ class EngineeringVoiceFacts:
             f"event: {self.kind}",
             f"goal: {self.goal}",
         ]
+
+        # Acceptance is intentionally projected through a narrow voice boundary.
+        # Runtime/session/worktree facts may be useful to the control plane, but they
+        # are not part of the user-facing ownership story. Hikari accepted the work;
+        # the implementation machinery remains internal unless the user asks for it.
+        if self.kind == "accepted":
+            lines.append(
+                "accepted_scope: Hikari has accepted this goal and started work; no terminal outcome exists yet."
+            )
+            return "\n".join(lines)
+
         if self.status:
             lines.append(f"status: {self.status}")
         if self.summary:
@@ -90,12 +103,10 @@ class EngineeringVoiceFacts:
         return "\n".join(lines)
 
     def fallback_text(self) -> str:
-        """Small deterministic degraded path used only when voice generation is unavailable."""
+        """User-facing degraded voice used if production Jarvis rendering is unavailable."""
 
         if self.kind == "accepted":
-            if self.details:
-                return f"我来处理。{self.details[0]}"
-            return "我来处理。任务已经开始，完成后我把实际结果发回来。"
+            return "我来处理。已经开始了，完成后我把实际结果发回来。"
         if self.kind == "completed":
             prefix = "刚补到一条旧任务结果：" if self.historical else "搞定了。"
             return f"{prefix}{self.summary or self.goal}"
@@ -116,6 +127,18 @@ class EngineeringVoiceFacts:
                 return f"这一步触及当前项目 mandate 之外的影响边界，需要你决定是否扩展这次授权：{boundary}。"
             return "这一步触及当前项目 mandate 之外的影响边界，需要你决定是否扩展这次授权。"
         raise AssertionError(self.kind)
+
+    def compatibility_text(self) -> str:
+        """Deterministic legacy/base-engine text kept for routing and boundary tests.
+
+        Production NaturalConversationEngine never uses this path. It exists while the
+        pre-release ConversationEngine compatibility surface is still intentionally
+        present and keeps those tests focused on deterministic authority decisions.
+        """
+
+        if self.kind == "accepted" and self.details:
+            return f"我来处理。{self.details[0]}"
+        return self.fallback_text()
 
 
 class EngineeringVoiceRenderer:
@@ -147,7 +170,7 @@ class EngineeringVoiceRenderer:
         # Keeping the base engine model-free makes it explicit that the model phrases an
         # already-decided boundary; it never participates in the authority decision.
         if not isinstance(self.engine, NaturalConversationEngine):
-            return facts.fallback_text()
+            return facts.compatibility_text()
 
         try:
             history = self.engine._recent_history(channel, conversation_id)
