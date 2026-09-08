@@ -7,13 +7,16 @@ import time
 from core.delivery import DeliveryOutbox, DeliveryRequest, DeliveryRouter
 
 from .bindings import EngineeringConversationBindingStore
+from .effects import RESTART_REPLAY_SAFE_EFFECTS, turn_effect
 from .goal import EngineeringGoalState, EngineeringGoalStore
 from .maintainer_loop import PersistentMaintainerLoop
 from .session import (
     EngineeringEvent,
     EngineeringProtocolError,
+    EngineeringResult,
     EngineeringSessionStore,
 )
+from .workspace import EngineeringWorkspace, EngineeringWorkspaceError
 
 
 @dataclass(frozen=True)
@@ -47,8 +50,9 @@ class EngineeringCompletionDelivery:
     Engineering Worker constructs this class without a renderer. The Worker invokes its
     pump only after successfully acquiring the single-worker lease. That ownership
     transition is therefore also the safe place to reconcile a ``running`` session left
-    behind by a killed previous Worker: an existing durable result is finalized, while a
-    result-less in-flight turn is returned to ``pending`` with the exact same turn id.
+    behind by a killed previous Worker. Restart replay is effect-aware: only explicitly
+    replay-safe effects are returned to ``pending``. Commands with uncertain side effects
+    become a grounded blocked result rather than being executed a second time.
     Existing DeliveryOutbox rows remain immutable historical facts.
     """
 
@@ -116,10 +120,10 @@ class EngineeringCompletionDelivery:
                 result = self.sessions.load_result(state.session_id, turn_id)
             except EngineeringProtocolError as exc:
                 if not str(exc).startswith("unknown engineering result:"):
-                    self.sessions.update_runtime(
+                    self._block_recovery(
                         state.session_id,
-                        status="blocked",
-                        latest_summary="Engineering Worker 重启时无法读取遗留 turn result",
+                        turn_id,
+                        "Engineering Worker 重启时无法读取遗留 turn result；不会猜测执行结果",
                     )
                     continue
             else:
@@ -128,19 +132,42 @@ class EngineeringCompletionDelivery:
                 continue
 
             try:
-                self.sessions.load_turn(state.session_id, turn_id)
+                turn = self.sessions.load_turn(state.session_id, turn_id)
             except EngineeringProtocolError:
-                self.sessions.update_runtime(
+                self._block_recovery(
                     state.session_id,
-                    status="blocked",
-                    latest_summary="Engineering Worker 重启时发现遗留 running turn 不可读取",
+                    turn_id,
+                    "Engineering Worker 重启时发现遗留 running turn 不可读取；不会猜测或重放",
                 )
                 continue
+
+            effect = turn_effect(turn)
+            if effect not in RESTART_REPLAY_SAFE_EFFECTS:
+                label = effect or "unknown"
+                self._block_recovery(
+                    state.session_id,
+                    turn_id,
+                    (
+                        f"Engineering Worker 重启时 `{label}` 的执行结果不确定；"
+                        "该 effect 不允许自动重放，以避免重复副作用"
+                    ),
+                )
+                continue
+
+            if effect in {"inspect_project", "maintain_project"}:
+                cleanup_error = self._clean_interrupted_local_work(state)
+                if cleanup_error is not None:
+                    self._block_recovery(
+                        state.session_id,
+                        turn_id,
+                        cleanup_error,
+                    )
+                    continue
 
             recovered = self.sessions.update_runtime(
                 state.session_id,
                 status="pending",
-                latest_summary="Engineering Worker 重启后恢复未完成 turn",
+                latest_summary="Engineering Worker restart recovered the same durable turn",
             )
             self.sessions.append_event(
                 EngineeringEvent(
@@ -148,10 +175,57 @@ class EngineeringCompletionDelivery:
                     turn_id=turn_id,
                     sequence=recovered.next_sequence,
                     kind="accepted",
-                    summary="Engineering Worker restart recovered the same durable turn",
+                    summary=(
+                        f"Engineering Worker restart recovered the same durable turn; "
+                        f"effect={effect}"
+                    ),
                     timestamp=time.time(),
                 )
             )
+
+    def _clean_interrupted_local_work(self, state) -> str | None:
+        if not (state.workspace_path and state.workspace_branch and state.baseline_commit):
+            return None
+        try:
+            workspace = EngineeringWorkspace.resume(
+                repository=state.repository,
+                workspace_path=state.workspace_path,
+                branch=state.workspace_branch,
+                baseline_commit=state.baseline_commit,
+            )
+            discarded = workspace.discard_uncommitted_changes()
+        except (EngineeringWorkspaceError, OSError) as exc:
+            return (
+                "Engineering Worker 重启时无法把隔离 worktree 恢复到可信 committed state："
+                f"{type(exc).__name__}；不会在半完成修改上自动重放"
+            )
+        if discarded:
+            return None
+        return None
+
+    def _block_recovery(self, session_id: str, turn_id: str, message: str) -> None:
+        """Persist one grounded terminal result when restart outcome is not replay-safe."""
+
+        state = self.sessions.load(session_id)
+        self.sessions.append_event(
+            EngineeringEvent(
+                session_id=session_id,
+                turn_id=turn_id,
+                sequence=state.next_sequence,
+                kind="blocked",
+                summary=message[:1000],
+                timestamp=time.time(),
+            )
+        )
+        self.sessions.save_result(
+            session_id,
+            EngineeringResult(
+                turn_id=turn_id,
+                status="blocked",
+                message=message,
+                completed_at=time.time(),
+            ),
+        )
 
     def _managed_turn_ids(self) -> set[str]:
         managed: set[str] = set()
