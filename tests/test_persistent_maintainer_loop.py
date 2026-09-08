@@ -14,6 +14,7 @@ from engineering.session import (
     EngineeringSessionState,
     EngineeringSessionStore,
 )
+from engineering.worker import _turn_effect
 
 
 def _runtime(tmp_path: Path, *, effect: str = "maintain_project"):
@@ -65,6 +66,17 @@ def _save_current_result(
         ),
     )
     return turn_id
+
+
+def test_persistent_turn_machine_effect_is_read_exactly_by_worker(tmp_path: Path) -> None:
+    sessions, goals, loop = _runtime(tmp_path, effect="open_or_update_draft_pr")
+
+    outcome = loop.advance_once("goal-1")
+
+    assert outcome.turn_id is not None
+    turn = sessions.load_turn("goal-session", outcome.turn_id)
+    assert "Requested effect: open_or_update_draft_pr.\n" in turn.context
+    assert _turn_effect(turn) == "open_or_update_draft_pr"
 
 
 def test_retryable_failed_step_gets_one_new_deterministic_attempt(tmp_path: Path) -> None:
