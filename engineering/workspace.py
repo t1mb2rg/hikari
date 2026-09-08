@@ -177,6 +177,32 @@ class EngineeringWorkspace:
         ).stdout.split("\0")
         return _clean_file_list([*tracked, *staged, *untracked])
 
+    def discard_uncommitted_changes(self) -> tuple[str, ...]:
+        """Return an interrupted isolated worktree to its last durable commit.
+
+        Only uncommitted state inside the dedicated engineering worktree is discarded.
+        Earlier Hikari-owned commits in the same EngineeringSession are preserved. This is
+        used before replaying a crash-interrupted maintainer/inspection turn so partial agent
+        edits cannot be applied twice or mistaken for durable work.
+        """
+
+        dirty = self.uncommitted_files()
+        if not dirty:
+            return ()
+        current_branch = _git(self.path, "branch", "--show-current").stdout.strip()
+        if current_branch != self.branch:
+            raise EngineeringWorkspaceError(
+                "engineering workspace branch does not match durable session state"
+            )
+        _git(self.path, "reset", "--hard", "HEAD")
+        _git(self.path, "clean", "-fd")
+        remaining = self.uncommitted_files()
+        if remaining:
+            raise EngineeringWorkspaceError(
+                "engineering workspace remained dirty after restart recovery cleanup"
+            )
+        return dirty
+
     def diff_text(self) -> str:
         """Return the session diff, including readable untracked text files."""
 
