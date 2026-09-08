@@ -205,9 +205,20 @@ def add_awareness_context(
     if not wants_foreground and not wants_activity:
         return context
 
+    requested_provider_names: set[str] = set()
+    if wants_foreground:
+        requested_provider_names.add("foreground")
+    if wants_activity:
+        requested_provider_names.add("input_activity")
+
     collector = awareness_collector or _default_conversation_awareness_collector()
+    selected_collector = ContextCollector(
+        provider
+        for provider in collector.providers
+        if provider.name in requested_provider_names
+    )
     try:
-        snapshot = collector.capture()
+        snapshot = selected_collector.capture()
     except Exception:
         return context
 
