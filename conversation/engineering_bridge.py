@@ -627,7 +627,7 @@ class ConversationEngineeringBridge:
                 repository_read=True,
                 run_commands=True,
             )
-        elif effect == "push_engineering_branch":
+        elif effect in {"push_engineering_branch", "open_or_update_draft_pr"}:
             turn_authority = project_push_authority()
         elif effect == "maintain_project":
             turn_authority = project_maintainer_authority()
@@ -655,17 +655,24 @@ class ConversationEngineeringBridge:
             _remember_control_exchange(engine, turn, reply)
             return reply
 
-        if effect == "push_engineering_branch":
+        if effect in {"push_engineering_branch", "open_or_update_draft_pr"}:
             if state is None or not (
                 state.workspace_path and state.workspace_branch and state.baseline_commit
             ):
+                if effect == "open_or_update_draft_pr":
+                    text = (
+                        "这个会话当前没有已经提交的 Engineering 分支可以开 Draft PR。"
+                        "我不会为没有工程结果的会话创建空 PR。"
+                    )
+                else:
+                    text = (
+                        "这个会话当前没有已经提交的 Engineering 分支可以推送。"
+                        "我不会为了满足 push 请求临时创建一个空远端分支。"
+                    )
                 reply = AssistantReply(
                     channel=turn.channel,
                     conversation_id=turn.conversation_id,
-                    text=(
-                        "这个会话当前没有已经提交的 Engineering 分支可以推送。"
-                        "我不会为了满足 push 请求临时创建一个空远端分支。"
-                    ),
+                    text=text,
                 )
                 _remember_control_exchange(engine, turn, reply)
                 return reply
@@ -676,7 +683,7 @@ class ConversationEngineeringBridge:
                     text=(
                         "当前绑定的 EngineeringSession 建立时还没有远端发布 ceiling。"
                         "我不会临时扩大一个旧会话的权限；新的 maintainer 会话会直接具备"
-                        "非保护 engineering 分支 push 的 standing ceiling。"
+                        "非保护 engineering 分支发布的 standing ceiling。"
                     ),
                 )
                 _remember_control_exchange(engine, turn, reply)
@@ -742,6 +749,10 @@ class ConversationEngineeringBridge:
         elif effect == "push_engineering_branch":
             details = (
                 "当前非保护 engineering 分支已经进入 push turn；只会推送这个分支到 origin，不会 force push 或 merge。",
+            )
+        elif effect == "open_or_update_draft_pr":
+            details = (
+                "当前 engineering 分支已经进入 Draft PR 发布 turn；只会为这个非保护分支创建或维护草稿 PR，不会 merge、force push 或改变 ready-for-review PR 的评审状态。",
             )
         else:
             details = (
