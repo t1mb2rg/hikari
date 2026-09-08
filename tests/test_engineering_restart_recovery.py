@@ -78,12 +78,14 @@ def test_worker_owned_pump_requeues_orphaned_running_turn_with_same_id(tmp_path:
     recovered = sessions.load("session-1")
     assert recovered.status == "pending"
     assert recovered.current_turn_id == turn.turn_id
-    assert recovered.latest_summary == "Engineering Worker restart recovered the same durable turn"
+    assert recovered.latest_summary == (
+        "Engineering Worker restart recovered the same durable turn; effect=inspect_project"
+    )
     assert sessions.load_turn(recovered.session_id, turn.turn_id).turn_id == turn.turn_id
     events = sessions.events(recovered.session_id)
     assert events[-1].kind == "accepted"
     assert events[-1].turn_id == turn.turn_id
-    assert "restart recovered" in events[-1].summary
+    assert events[-1].summary == recovered.latest_summary
 
 
 def test_resident_owned_pump_does_not_requeue_running_turn(tmp_path: Path) -> None:
