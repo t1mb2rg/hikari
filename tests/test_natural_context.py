@@ -142,9 +142,7 @@ def test_user_model_context_exposes_statements_without_internal_metadata():
     assert "revision" not in context
 
 
-def test_selected_context_reads_awareness_only_for_relevant_current_environment_question(
-    tmp_path: Path,
-):
+def test_selected_context_reads_only_requested_awareness_providers(tmp_path: Path):
     calls = {"foreground": 0, "input_activity": 0}
 
     class FakeForegroundProvider:
@@ -189,17 +187,29 @@ def test_selected_context_reads_awareness_only_for_relevant_current_environment_
     assert calls == {"foreground": 0, "input_activity": 0}
     assert "Visual Studio Code" not in ordinary
 
-    environment = build_selected_conversation_context(
+    foreground = build_selected_conversation_context(
         base,
         memory=memory,
         user_model_service=None,
-        query="我现在前台是什么窗口，刚刚多久没动电脑？",
+        query="你知道我现在前台在挂什么窗口吗",
+        awareness_collector=collector,
+    )
+
+    assert calls == {"foreground": 1, "input_activity": 0}
+    assert "Visual Studio Code - hikari" in foreground
+    assert "最近一次本机键盘或鼠标输入" not in foreground
+    assert "不代表用户的意图、专注状态或是否在场" in foreground
+    assert "process_id" not in foreground
+    assert "Chrome_WidgetWin_1" not in foreground
+
+    activity = build_selected_conversation_context(
+        base,
+        memory=memory,
+        user_model_service=None,
+        query="我刚刚多久没动电脑？",
         awareness_collector=collector,
     )
 
     assert calls == {"foreground": 1, "input_activity": 1}
-    assert "Visual Studio Code - hikari" in environment
-    assert "最近一次本机键盘或鼠标输入距今约 8 秒" in environment
-    assert "不代表用户的意图、专注状态或是否在场" in environment
-    assert "process_id" not in environment
-    assert "Chrome_WidgetWin_1" not in environment
+    assert "最近一次本机键盘或鼠标输入距今约 8 秒" in activity
+    assert "Visual Studio Code" not in activity
