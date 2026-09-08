@@ -13,7 +13,6 @@ from engineering.bindings import (
 )
 from engineering.effects import SUPPORTED_ENGINEERING_EFFECTS, authority_for_effect
 from engineering.goal import (
-    EngineeringGoalCoordinator,
     EngineeringGoalState,
     EngineeringGoalStep,
     EngineeringGoalStore,
@@ -44,7 +43,8 @@ class PersistentConversationEngineeringBridge(ConversationEngineeringBridge):
 
     Semantic resolution may return an ordered list of requested effects. Capability and
     authority remain deterministic. Single-effect requests keep the existing M7-A path;
-    only genuine multi-effect requests become persistent Engineering Goals.
+    only genuine multi-effect requests become persistent Engineering Goals. Conversation
+    persists the goal but does not choose when to enqueue it; Resident owns that choice.
     """
 
     def __init__(
@@ -63,7 +63,6 @@ class PersistentConversationEngineeringBridge(ConversationEngineeringBridge):
             intent_resolver=intent_resolver,
         )
         self.goals = goals or EngineeringGoalStore(store.root.parent / "engineering_goals")
-        self.goal_coordinator = EngineeringGoalCoordinator(self.goals, store)
 
     def respond(
         self,
@@ -147,20 +146,6 @@ class PersistentConversationEngineeringBridge(ConversationEngineeringBridge):
             source_conversation_id=turn.conversation_id,
         )
         self.goals.create(goal)
-        outcome = self.goal_coordinator.advance_once(goal.goal_id)
-        if outcome.status in {"failed", "blocked"}:
-            reply = _voice_reply(
-                engine,
-                turn,
-                EngineeringVoiceFacts(
-                    kind=outcome.status,
-                    goal=goal.goal,
-                    status=outcome.status,
-                    summary=outcome.message,
-                ),
-            )
-            _remember_control_exchange(engine, turn, reply)
-            return reply
 
         reply = _voice_reply(
             engine,
@@ -172,7 +157,7 @@ class PersistentConversationEngineeringBridge(ConversationEngineeringBridge):
                 branch=state.workspace_branch,
                 details=(
                     f"Persistent engineering goal created with {len(goal.steps)} ordered steps. "
-                    "Hikari will continue them from durable state without asking for each routine step.",
+                    "Resident will select and continue it from durable state without asking for each routine step.",
                 ),
             ),
         )
