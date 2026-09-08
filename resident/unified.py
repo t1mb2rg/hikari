@@ -18,6 +18,7 @@ from .napcat_login_guard import NapCatLoginGuard
 
 ProcessFactory = Callable[..., subprocess.Popen[bytes]]
 Clock = Callable[[], float]
+EngineeringDeliveryPump = Callable[[], int]
 
 
 def runtime_bool(
@@ -327,7 +328,7 @@ class EngineeringWorkerSupervisor:
 
 
 class UnifiedResidentService:
-    """Own Presence, Conversation, and Hikari-owned child capabilities."""
+    """Own Presence, Conversation, voice projection, and Hikari-owned child capabilities."""
 
     def __init__(
         self,
@@ -338,6 +339,7 @@ class UnifiedResidentService:
         bind_port: int,
         qq_supervisor: QQBridgeSupervisor | None = None,
         engineering_supervisor: EngineeringWorkerSupervisor | None = None,
+        engineering_delivery_pump: EngineeringDeliveryPump | None = None,
         napcat_login_guard: NapCatLoginGuard | None = None,
     ) -> None:
         if not isinstance(presence, ResidentPresenceRuntime):
@@ -348,6 +350,8 @@ class UnifiedResidentService:
             raise ValueError("bind_host must not be empty")
         if not 0 <= int(bind_port) <= 65535:
             raise ValueError("bind_port must be between 0 and 65535")
+        if engineering_delivery_pump is not None and not callable(engineering_delivery_pump):
+            raise TypeError("engineering_delivery_pump must be callable or None")
 
         self.presence = presence
         self.conversation_host = conversation_host
@@ -355,6 +359,7 @@ class UnifiedResidentService:
         self.bind_port = int(bind_port)
         self.qq_supervisor = qq_supervisor
         self.engineering_supervisor = engineering_supervisor
+        self.engineering_delivery_pump = engineering_delivery_pump
         self.napcat_login_guard = napcat_login_guard
         self.stop_event = asyncio.Event()
         self.started_event = asyncio.Event()
@@ -373,6 +378,25 @@ class UnifiedResidentService:
                     self.stop_event.wait(),
                     timeout=self.presence.poll_interval,
                 )
+            except TimeoutError:
+                pass
+
+    async def _engineering_delivery_loop(self) -> None:
+        pump = self.engineering_delivery_pump
+        if pump is None:
+            return
+        while not self.stop_event.is_set():
+            try:
+                await asyncio.to_thread(pump)
+            except Exception as exc:
+                print(
+                    f"[engineering-delivery] degraded: {type(exc).__name__}: {exc}",
+                    flush=True,
+                )
+            if self.stop_event.is_set():
+                return
+            try:
+                await asyncio.wait_for(self.stop_event.wait(), timeout=1.0)
             except TimeoutError:
                 pass
 
@@ -395,6 +419,13 @@ class UnifiedResidentService:
                 self.started_event.set()
 
                 tasks.append(asyncio.create_task(self._presence_loop()))
+                if self.engineering_delivery_pump is not None:
+                    tasks.append(
+                        asyncio.create_task(
+                            self._engineering_delivery_loop(),
+                            name="hikari-engineering-delivery",
+                        )
+                    )
                 if self.qq_supervisor is not None:
                     tasks.append(
                         asyncio.create_task(self.qq_supervisor.run(self.stop_event))
