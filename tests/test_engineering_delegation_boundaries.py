@@ -46,7 +46,7 @@ def test_intent_mapper_prioritizes_high_impact_boundaries_over_routine_write_ver
         assert engineering_requirements_for_intent(text) == (expected,)
 
 
-def test_intent_mapper_surfaces_delegated_but_unimplemented_outcomes() -> None:
+def test_intent_mapper_surfaces_delegated_engineering_outcomes() -> None:
     cases = {
         "把 engineering 分支 push 到远端": "engineering.git.push_non_protected",
         "给这个改动开 Draft PR": "engineering.git.open_or_update_draft_pr",
@@ -77,6 +77,31 @@ def test_push_capability_gap_is_deterministic_and_does_not_enqueue_work(tmp_path
     assert "engineering.git.push_non_protected" in reply.text
     assert "逐个动作给我授权" in reply.text
     assert bindings.for_conversation("qq", "private:42") is None
+
+
+def test_project_command_routes_to_non_mutating_engineering_turn(tmp_path: Path) -> None:
+    bridge, engine, bindings = _bridge(tmp_path)
+
+    reply = bridge.respond(
+        engine,
+        UserTurn("qq", "private:42", "在 Hikari 项目里运行命令 python -V"),
+    )
+
+    assert "项目内命令工程会话" in reply.text
+    assert "仓库写入、网络或发布权限" in reply.text
+    binding = bindings.for_conversation("qq", "private:42")
+    assert binding is not None
+    sessions = EngineeringSessionStore(tmp_path / "engineering")
+    state = sessions.load(binding.session_id)
+    assert state.status == "pending"
+    assert state.current_turn_id is not None
+    engineering_turn = sessions.load_turn(state.session_id, state.current_turn_id)
+    assert engineering_turn.authority.repository_read is True
+    assert engineering_turn.authority.run_commands is True
+    assert engineering_turn.authority.repository_write is False
+    assert engineering_turn.authority.run_tests is False
+    assert engineering_turn.authority.network is False
+    assert engineering_turn.authority.publish is False
 
 
 def test_secret_change_escalates_before_routine_write_and_does_not_enqueue_work(
