@@ -309,10 +309,15 @@ class EngineeringCompletionDelivery:
             if binding is None:
                 continue
             state = self.sessions.load(goal.session_id)
+            summary = (
+                self._goal_summary(goal)
+                if goal.status == "completed"
+                else (goal.final_summary or goal.current_step.result_message)
+            )
             facts = EngineeringCompletionFacts(
                 status=goal.status,
                 goal=goal.goal,
-                summary=self._goal_summary(goal),
+                summary=summary,
                 changed_files=self._goal_changed_files(goal),
                 branch=state.workspace_branch,
                 historical=self._is_historical_binding(binding),
