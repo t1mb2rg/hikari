@@ -107,34 +107,73 @@ class EngineeringWorkerLease:
         heartbeat_store: EngineeringWorkerHeartbeatStore,
         *,
         process_probe: Callable[[int], bool] = _process_alive,
+        wall_clock: Callable[[], float] = time.time,
+        heartbeat_max_age_seconds: float = 5.0,
+        startup_grace_seconds: float = 5.0,
     ) -> None:
+        heartbeat_max_age = float(heartbeat_max_age_seconds)
+        startup_grace = float(startup_grace_seconds)
+        if heartbeat_max_age <= 0:
+            raise ValueError("engineering heartbeat max age must be > 0")
+        if startup_grace <= 0:
+            raise ValueError("engineering worker startup grace must be > 0")
         self.path = Path(path).expanduser().resolve()
         self.heartbeat_store = heartbeat_store
         self._process_probe = process_probe
+        self._wall_clock = wall_clock
+        self.heartbeat_max_age_seconds = heartbeat_max_age
+        self.startup_grace_seconds = startup_grace
         self._pid: int | None = None
 
+    def _heartbeat_is_fresh(self, heartbeat: EngineeringWorkerHeartbeat) -> bool:
+        age = float(self._wall_clock()) - float(heartbeat.updated_at)
+        return age <= self.heartbeat_max_age_seconds
+
+    def _lease_is_in_startup_grace(self, payload: dict[str, object]) -> bool:
+        try:
+            started_at = float(payload.get("started_at", 0.0))
+        except (TypeError, ValueError):
+            return False
+        if started_at <= 0:
+            return False
+        age = float(self._wall_clock()) - started_at
+        return age <= self.startup_grace_seconds
+
     def _live_existing_owner(self) -> tuple[int, str] | None:
-        # The lease itself is authoritative during the tiny startup window before
-        # the heartbeat thread has written its first sample.
+        # PID existence alone is not sufficient on Windows. A terminated process
+        # object may remain open briefly, and a PID can later be reused. Require a
+        # fresh worker heartbeat once the small startup grace window has elapsed.
         try:
             payload = json.loads(self.path.read_text(encoding="utf-8"))
         except (FileNotFoundError, OSError, UnicodeDecodeError, json.JSONDecodeError):
             payload = None
+
+        heartbeat = self.heartbeat_store.load()
         if isinstance(payload, dict):
             pid = payload.get("pid")
-            owner = payload.get("owner")
+            owner = str(payload.get("owner") or "unknown")
             if (
                 isinstance(pid, int)
                 and not isinstance(pid, bool)
                 and pid > 0
                 and self._process_probe(pid)
             ):
-                return pid, str(owner or "unknown")
+                if (
+                    heartbeat is not None
+                    and heartbeat.pid == pid
+                    and self._heartbeat_is_fresh(heartbeat)
+                ):
+                    return pid, heartbeat.owner
+                if self._lease_is_in_startup_grace(payload):
+                    return pid, owner
 
-        # A valid heartbeat is a second line of defence if the lease file was
+        # A fresh heartbeat is a second line of defence if the lease file was
         # malformed or left by an older implementation.
-        heartbeat = self.heartbeat_store.load()
-        if heartbeat is not None and self._process_probe(heartbeat.pid):
+        if (
+            heartbeat is not None
+            and self._heartbeat_is_fresh(heartbeat)
+            and self._process_probe(heartbeat.pid)
+        ):
             return heartbeat.pid, heartbeat.owner
         return None
 
