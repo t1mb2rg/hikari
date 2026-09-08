@@ -8,7 +8,6 @@ from .goal import (
     EngineeringGoalAdvanceOutcome,
     EngineeringGoalCoordinator,
     EngineeringGoalState,
-    EngineeringGoalStep,
     EngineeringGoalStore,
 )
 from .session import EngineeringSessionStore
@@ -25,12 +24,13 @@ _RETRYABLE_EFFECTS = frozenset(
 
 
 class PersistentMaintainerLoop:
-    """Resident-owned continuation policy above deterministic goal coordination.
+    """Resident-owned selection, continuation, and bounded recovery policy.
 
-    One failed step may receive one bounded recovery attempt when the effect is safe to
-    resume in the same isolated EngineeringSession. Blocked work never retries, command
-    turns never retry automatically, and authority is never expanded. Publication turns
-    are safe to retry because push is non-force and Draft PR publication is head-idempotent.
+    At most one durable goal per project is advanced by each Resident pump. The oldest
+    unfinished goal wins, giving Hikari a deterministic project-local work queue instead
+    of starting every goal concurrently. One failed safe step may receive one bounded
+    recovery attempt in the same isolated EngineeringSession. Blocked work never retries,
+    command turns never replay automatically, and authority is never expanded.
     """
 
     def __init__(
@@ -69,11 +69,17 @@ class PersistentMaintainerLoop:
         return self.coordinator.advance_once(goal_id)
 
     def advance_all(self) -> list[EngineeringGoalAdvanceOutcome]:
-        outcomes: list[EngineeringGoalAdvanceOutcome] = []
-        for goal in self.goals.list_states():
-            if goal.status == "active" or self._can_retry(goal):
-                outcomes.append(self.advance_once(goal.goal_id))
-        return outcomes
+        candidates = [
+            goal
+            for goal in self.goals.list_states()
+            if goal.status == "active" or self._can_retry(goal)
+        ]
+        candidates.sort(key=lambda goal: (goal.created_at, goal.goal_id))
+
+        selected: dict[str, EngineeringGoalState] = {}
+        for goal in candidates:
+            selected.setdefault(goal.project_id, goal)
+        return [self.advance_once(goal.goal_id) for goal in selected.values()]
 
     def _recover_retryable_terminal(
         self,
