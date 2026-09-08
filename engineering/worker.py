@@ -13,6 +13,7 @@ from core.delivery import DeliveryOutbox
 from .backend import ClaudeEngineeringBackend, EngineeringAgentEvent, EngineeringAgentResult
 from .bindings import EngineeringConversationBindingStore
 from .delivery import EngineeringCompletionDelivery
+from .github_publish import open_or_update_draft_pr
 from .heartbeat import (
     EngineeringWorkerHeartbeatEmitter,
     EngineeringWorkerHeartbeatStore,
@@ -69,6 +70,23 @@ _VALIDATION_COMMAND_MARKERS = (
     "go test",
     "dotnet test",
 )
+_EFFECT_PREFIX = "Requested effect: "
+
+
+def _turn_effect(turn: EngineeringTurn) -> str:
+    """Read the deterministic effect written by ConversationEngineeringBridge.
+
+    This deliberately does not interpret the user's natural-language intent. Older
+    publish turns without the field remain compatible with the original push path.
+    """
+
+    effect = ""
+    for line in turn.context.splitlines():
+        normalized = line.strip()
+        if not normalized.startswith(_EFFECT_PREFIX):
+            continue
+        effect = normalized[len(_EFFECT_PREFIX) :].strip().rstrip(".")
+    return effect
 
 
 def _prompt_for_read_only_turn(state: EngineeringSessionState, turn: EngineeringTurn) -> str:
@@ -205,8 +223,8 @@ class EngineeringWorker:
 
         read_only = is_read_only_authority(turn.authority)
         maintainer = is_maintainer_authority(turn.authority)
-        push = is_push_authority(turn.authority)
-        if not read_only and not maintainer and not push:
+        publish = is_push_authority(turn.authority)
+        if not read_only and not maintainer and not publish:
             return self._finish(
                 state,
                 turn,
@@ -235,8 +253,18 @@ class EngineeringWorker:
             )
 
         state = self.store.load(state.session_id)
-        if push:
-            return self._run_push(state, turn, workspace)
+        if publish:
+            effect = _turn_effect(turn)
+            if effect in {"", "push_engineering_branch"}:
+                return self._run_push(state, turn, workspace)
+            if effect == "open_or_update_draft_pr":
+                return self._run_draft_pr(state, turn, workspace)
+            return self._finish(
+                state,
+                turn,
+                status="blocked",
+                message=f"publish turn 包含未实现的确定性 effect：{effect}",
+            )
         if read_only:
             return self._run_read_only(state, turn, workspace)
         return self._run_maintainer(state, turn, workspace)
@@ -281,6 +309,56 @@ class EngineeringWorker:
             message=(
                 f"已将非保护工程分支 `{workspace.branch}` 推送到 `origin`。\n"
                 f"提交：`{commit_sha[:12]}`。"
+            ),
+        )
+
+    def _run_draft_pr(
+        self,
+        state: EngineeringSessionState,
+        turn: EngineeringTurn,
+        workspace: EngineeringWorkspace,
+    ) -> WorkerOutcome:
+        self._event(state.session_id, turn.turn_id, "progress", "正在创建或维护 Draft PR")
+        if workspace.uncommitted_files():
+            return self._finish(
+                state,
+                turn,
+                status="blocked",
+                message="engineering 分支仍有未提交变更，Worker 拒绝发布 Draft PR。",
+            )
+        try:
+            result = open_or_update_draft_pr(
+                source_repo=state.repository,
+                worktree=workspace.path,
+                branch=workspace.branch,
+                baseline_commit=workspace.baseline_commit,
+            )
+        except (OSError, subprocess.SubprocessError, RuntimeError) as exc:
+            detail = str(exc).strip()
+            if len(detail) > 1200:
+                detail = detail[-1200:]
+            message = "Draft PR 发布失败"
+            if detail:
+                message += f"：{detail}"
+            return self._finish(
+                state,
+                turn,
+                status="failed",
+                message=message,
+            )
+
+        verb = {
+            "created": "已创建",
+            "updated": "已更新",
+            "existing": "已确认已有",
+        }[result.action]
+        return self._finish(
+            state,
+            turn,
+            status="completed",
+            message=(
+                f"{verb} Draft PR #{result.number}：{result.url}\n"
+                f"Head：`{result.head}`；Base：`{result.base}`。"
             ),
         )
 
