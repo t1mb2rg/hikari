@@ -147,8 +147,8 @@ class EngineeringCompletionDelivery:
                     session_id=state.session_id,
                     turn_id=turn_id,
                     sequence=recovered.next_sequence,
-                    kind="recovered",
-                    summary="Engineering Worker ownership changed; resuming the same durable turn",
+                    kind="accepted",
+                    summary="Engineering Worker restart recovered the same durable turn",
                     timestamp=time.time(),
                 )
             )
