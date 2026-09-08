@@ -22,6 +22,12 @@ _RETRYABLE_EFFECTS = frozenset(
         "open_or_update_draft_pr",
     }
 )
+_PUBLISH_EFFECTS = frozenset(
+    {
+        "push_engineering_branch",
+        "open_or_update_draft_pr",
+    }
+)
 
 
 class _WorkerCompatibleGoalCoordinator(EngineeringGoalCoordinator):
@@ -46,9 +52,11 @@ class PersistentMaintainerLoop:
 
     At most one durable goal per project is advanced by each Resident pump. The oldest
     unfinished goal wins, giving Hikari a deterministic project-local work queue instead
-    of starting every goal concurrently. One failed safe step may receive one bounded
-    recovery attempt in the same isolated EngineeringSession. Blocked work never retries,
-    command turns never replay automatically, and authority is never expanded.
+    of starting every goal concurrently. Local inspect/maintain work gets one bounded
+    recovery attempt by default. Idempotent remote publication gets a slightly wider
+    bounded budget because remote visibility/network checks can fail transiently without
+    changing the durable project result. Blocked work never retries, command turns never
+    replay automatically, and authority is never expanded.
 
     Every automatic maintainer replay starts from the last durable commit. Partial edits
     from a failed agent attempt are discarded only inside Hikari's isolated worktree so a
@@ -61,6 +69,7 @@ class PersistentMaintainerLoop:
         sessions: EngineeringSessionStore,
         *,
         max_attempts: int = 2,
+        publish_max_attempts: int = 3,
     ) -> None:
         if not isinstance(goals, EngineeringGoalStore):
             raise TypeError("PersistentMaintainerLoop requires EngineeringGoalStore")
@@ -68,9 +77,12 @@ class PersistentMaintainerLoop:
             raise TypeError("PersistentMaintainerLoop requires EngineeringSessionStore")
         if max_attempts < 1:
             raise ValueError("max_attempts must be >= 1")
+        if publish_max_attempts < 1:
+            raise ValueError("publish_max_attempts must be >= 1")
         self.goals = goals
         self.sessions = sessions
         self.max_attempts = int(max_attempts)
+        self.publish_max_attempts = int(publish_max_attempts)
         self.coordinator = _WorkerCompatibleGoalCoordinator(goals, sessions)
 
     def advance_once(self, goal_id: str) -> EngineeringGoalAdvanceOutcome:
@@ -176,10 +188,15 @@ class PersistentMaintainerLoop:
         if goal.status != "failed":
             return False
         step = goal.current_step
+        max_attempts = (
+            self.publish_max_attempts
+            if step.effect in _PUBLISH_EFFECTS
+            else self.max_attempts
+        )
         return (
             step.status == "failed"
             and step.effect in _RETRYABLE_EFFECTS
-            and step.attempts < self.max_attempts
+            and step.attempts < max_attempts
         )
 
     @staticmethod
