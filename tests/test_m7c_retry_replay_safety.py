@@ -9,6 +9,7 @@ from engineering.bindings import (
     EngineeringConversationBindingStore,
 )
 from engineering.delivery import EngineeringCompletionDelivery, EngineeringCompletionFacts
+from engineering.effects import RESTART_REPLAY_SAFE_EFFECTS, turn_effect
 from engineering.goal import EngineeringGoalState, EngineeringGoalStep, EngineeringGoalStore
 from engineering.maintainer import project_maintainer_authority, project_session_authority_ceiling
 from engineering.maintainer_loop import PersistentMaintainerLoop
@@ -42,6 +43,18 @@ def _repo(path: Path) -> Path:
     _git(path, "add", "README.md")
     _git(path, "commit", "-m", "baseline")
     return path
+
+
+def test_legacy_command_authority_stays_non_replayable_without_effect_marker() -> None:
+    turn = EngineeringTurn.create(
+        intent="legacy explicit command",
+        authority=EngineeringAuthority(repository_read=True, run_commands=True),
+    )
+
+    effect = turn_effect(turn)
+
+    assert effect == "run_project_command"
+    assert effect not in RESTART_REPLAY_SAFE_EFFECTS
 
 
 def test_failed_maintainer_retry_discards_partial_attempt_before_attempt_two(tmp_path: Path) -> None:
