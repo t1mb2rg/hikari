@@ -164,10 +164,14 @@ class EngineeringCompletionDelivery:
                     )
                     continue
 
+            recovery_summary = (
+                "Engineering Worker restart recovered the same durable turn; "
+                f"effect={effect}"
+            )
             recovered = self.sessions.update_runtime(
                 state.session_id,
                 status="pending",
-                latest_summary="Engineering Worker restart recovered the same durable turn",
+                latest_summary=recovery_summary,
             )
             self.sessions.append_event(
                 EngineeringEvent(
@@ -175,10 +179,7 @@ class EngineeringCompletionDelivery:
                     turn_id=turn_id,
                     sequence=recovered.next_sequence,
                     kind="accepted",
-                    summary=(
-                        f"Engineering Worker restart recovered the same durable turn; "
-                        f"effect={effect}"
-                    ),
+                    summary=recovery_summary,
                     timestamp=time.time(),
                 )
             )
@@ -236,52 +237,42 @@ class EngineeringCompletionDelivery:
         return managed
 
     def _pump_single_turns(self, managed_turn_ids: set[str]) -> int:
+        if self.renderer is None:
+            return 0
         submitted = 0
-        for binding in self.bindings.all():
-            if binding.channel != "qq":
-                continue
-            try:
-                state = self.sessions.load(binding.session_id)
-            except EngineeringProtocolError:
-                continue
+        for state in self.sessions.list_states():
             if state.status not in {"completed", "failed", "blocked"}:
                 continue
             turn_id = state.current_turn_id
             if not turn_id or turn_id in managed_turn_ids:
                 continue
             try:
-                result = self.sessions.load_result(state.session_id, turn_id)
                 turn = self.sessions.load_turn(state.session_id, turn_id)
+                result = self.sessions.load_result(state.session_id, turn_id)
             except EngineeringProtocolError:
                 continue
-            recipient = self._qq_recipient(binding.channel, binding.conversation_id)
-            if recipient is None:
+            binding = self.bindings.for_session(state.session_id)
+            if binding is None:
                 continue
-
             delivery_id = f"engineering:{state.session_id}:{turn_id}"
-            if self._already_submitted(delivery_id):
-                submitted += 1
-                continue
-            if self.renderer is None:
-                continue
-
-            current = self.bindings.for_conversation(binding.channel, binding.conversation_id)
-            historical = current is not None and current.session_id != state.session_id
             facts = EngineeringCompletionFacts(
                 status=result.status,
                 goal=turn.intent,
                 summary=result.message,
-                changed_files=tuple(result.changed_files),
+                changed_files=result.changed_files,
                 branch=state.workspace_branch,
-                historical=historical,
             )
-            if self._submit(
-                delivery_id,
-                recipient,
-                facts,
-                binding.channel,
-                binding.conversation_id,
-            ):
+            text = self.renderer(facts, binding.channel, binding.conversation_id)
+            request = DeliveryRequest(
+                delivery_id=delivery_id,
+                channel=binding.channel,
+                recipient=binding.conversation_id.removeprefix("private:"),
+                text=text,
+                kind="engineering_terminal",
+                created_at=result.completed_at or time.time(),
+                source_id=turn_id,
+            )
+            if self.router.submit(request):
                 submitted += 1
         return submitted
 
@@ -290,64 +281,38 @@ class EngineeringCompletionDelivery:
             return 0
         submitted = 0
         for goal in self.goals.list_states():
-            if not goal.terminal:
+            if goal.status not in {"completed", "failed", "blocked"}:
                 continue
-            if goal.source_channel is None or goal.source_conversation_id is None:
+            binding = self.bindings.for_session(goal.session_id)
+            if binding is None:
                 continue
-            recipient = self._qq_recipient(
-                goal.source_channel,
-                goal.source_conversation_id,
-            )
-            if recipient is None:
-                continue
-            delivery_id = f"engineering-goal:{goal.goal_id}"
-            if self._already_submitted(delivery_id):
-                submitted += 1
-                continue
-            try:
-                state = self.sessions.load(goal.session_id)
-            except EngineeringProtocolError:
-                continue
-
-            current = self.bindings.for_conversation(
-                goal.source_channel,
-                goal.source_conversation_id,
-            )
-            historical = current is not None and current.session_id != goal.session_id
+            state = self.sessions.load(goal.session_id)
+            changed_files = self._goal_changed_files(goal)
             facts = EngineeringCompletionFacts(
                 status=goal.status,
                 goal=goal.goal,
-                summary=self._goal_summary(goal),
-                changed_files=self._goal_changed_files(goal),
+                summary=goal.final_summary or goal.current_step.result_message,
+                changed_files=changed_files,
                 branch=state.workspace_branch,
-                historical=historical,
             )
-            if self._submit(
-                delivery_id,
-                recipient,
-                facts,
-                goal.source_channel,
-                goal.source_conversation_id,
-            ):
+            text = self.renderer(facts, binding.channel, binding.conversation_id)
+            delivery_id = f"engineering-goal:{goal.goal_id}"
+            request = DeliveryRequest(
+                delivery_id=delivery_id,
+                channel=binding.channel,
+                recipient=binding.conversation_id.removeprefix("private:"),
+                text=text,
+                kind="engineering_goal_terminal",
+                created_at=goal.updated_at,
+                source_id=goal.goal_id,
+            )
+            if self.router.submit(request):
                 submitted += 1
         return submitted
 
-    def _goal_summary(self, goal: EngineeringGoalState) -> str:
-        lines: list[str] = []
-        for index, step in enumerate(goal.steps, start=1):
-            if not step.result_message:
-                continue
-            lines.append(
-                f"step {index}/{len(goal.steps)} {step.effect} [{step.status}]: "
-                f"{step.result_message}"
-            )
-        if lines:
-            return "\n".join(lines)
-        return goal.final_summary or f"persistent engineering goal ended with {goal.status}"
-
     def _goal_changed_files(self, goal: EngineeringGoalState) -> tuple[str, ...]:
-        changed: list[str] = []
         seen: set[str] = set()
+        files: list[str] = []
         for step in goal.steps:
             if not step.turn_id:
                 continue
@@ -355,51 +320,8 @@ class EngineeringCompletionDelivery:
                 result = self.sessions.load_result(goal.session_id, step.turn_id)
             except EngineeringProtocolError:
                 continue
-            for item in result.changed_files:
-                if item not in seen:
-                    seen.add(item)
-                    changed.append(item)
-        return tuple(changed)
-
-    @staticmethod
-    def _qq_recipient(channel: str, conversation_id: str) -> str | None:
-        if channel != "qq" or not conversation_id.startswith("private:"):
-            return None
-        recipient = conversation_id.removeprefix("private:").strip()
-        return recipient or None
-
-    def _already_submitted(self, delivery_id: str) -> bool:
-        try:
-            existing = self.router.outbox.get(delivery_id)
-        except Exception:
-            existing = None
-        return existing is not None and existing.state in {
-            "pending",
-            "sending",
-            "sent",
-            "uncertain",
-        }
-
-    def _submit(
-        self,
-        delivery_id: str,
-        recipient: str,
-        facts: EngineeringCompletionFacts,
-        channel: str,
-        conversation_id: str,
-    ) -> bool:
-        if self.renderer is None:
-            return False
-        text = self.renderer(facts, channel, conversation_id)
-        if not isinstance(text, str) or not text.strip():
-            raise ValueError("engineering completion renderer returned empty text")
-        record = self.router.submit(
-            DeliveryRequest(
-                delivery_id=delivery_id,
-                channel="qq",
-                recipient=recipient,
-                text=text.strip(),
-                source="engineering",
-            )
-        )
-        return record.state in {"pending", "sending", "sent", "uncertain"}
+            for path in result.changed_files:
+                if path not in seen:
+                    seen.add(path)
+                    files.append(path)
+        return tuple(files)
