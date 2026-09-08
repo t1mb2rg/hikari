@@ -32,7 +32,8 @@ def test_engineering_self_state_denies_direct_filesystem_perception_but_exposes_
     assert engineering["repository_write_enabled"] is True
     assert engineering["project_tests_enabled"] is True
     assert engineering["engineering_branch_commit_enabled"] is True
-    assert engineering["non_protected_push_enabled"] is False
+    assert engineering["non_protected_push_enabled"] is True
+    assert engineering["draft_pr_publish_enabled"] is True
     assert engineering["worker_liveness"] == "not_asserted_by_self_state"
 
 
@@ -104,8 +105,10 @@ def test_capabilities_replace_external_forge_with_internal_engineering_runtime()
     model = capabilities["capability_model"]
     assert model["engineering.repository.write"]["available"] is True
     assert model["engineering.repository.write"]["delegated"] is True
-    assert model["engineering.git.push_non_protected"]["available"] is False
+    assert model["engineering.git.push_non_protected"]["available"] is True
     assert model["engineering.git.push_non_protected"]["delegated"] is True
+    assert model["engineering.git.open_or_update_draft_pr"]["available"] is True
+    assert model["engineering.git.open_or_update_draft_pr"]["delegated"] is True
 
     mandate = capabilities["project_mandates"]["hikari"]
     assert mandate["role"] == "maintainer"
