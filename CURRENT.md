@@ -1,7 +1,7 @@
 # Hikari Current Context
 
 - 项目/系统工程名仍是 Hikari；默认对话人格现在是 Jarvis。
-- Architecture Audit / Cleanup 已收官；Awareness 0 也已完成物理验收，主线现在进入 M7 收尾阶段的 Persistent Maintainer Loop / Long-Run closure。
+- Architecture Audit / Cleanup 已收官；Awareness 0 也已完成物理验收。
 - M7-07 Capability-Aware Delegation 已完成。
 - 默认 Jarvis 对话入口、Epistemic Boundary、Natural Context 0、Natural Context 1、Memory Context 0 和 Memory Context 1 均已完成物理验收。
 - Architecture Cleanup A / Truth Alignment 已完成物理验收：Dashboard、配置和文档已与真实 Engineering Runtime 对齐。
@@ -27,7 +27,6 @@
 - M7-B planning 已收口为受限 effect plan：Conversation 模型只负责识别用户实际请求的工程效果，确定性 planner 只允许安全排序和必要前置条件，不扩权限。用户要求“修改后开 Draft PR”时会自动补入 `push_engineering_branch` 前置步骤，形成 `maintain_project → push_engineering_branch → open_or_update_draft_pr`；不会自行加入 merge、force push、部署、secret、权限扩张或外部成本动作。
 - M7-B Persistent Maintainer Loop 由 Resident ownership 的既有 Engineering delivery pump 驱动。Conversation 对多 effect 请求只持久化 goal，不直接 enqueue 第一步；Resident 每轮从 durable truth 中按 `oldest_unfinished_goal_per_project` 选择下一项工作，消费真实 EngineeringResult 后继续下一 step。每个项目同一时刻只推进一个未完成 goal，避免并发交错。
 - M7-B Unified Physical Gate 使用单条 QQ Goal 创建 `docs/M7-B_PHYSICAL_GATE.md` 并最终创建 Draft PR。accepted 后主动重启 Resident 暴露了 orphaned `running` turn；Goal、plan、session 与稳定 turn id 均未丢。加入 Worker ownership restart reconciliation 后，没有重新发送用户 Goal，同一个 durable Goal / EngineeringSession 自动继续完成 maintain → push → Draft PR，并创建真实 Draft PR #78。GitHub 核验为 draft/open/not merged、1 commit、1 changed file，唯一变更及内容均精确匹配请求。因此 M7-B 判定 PHYSICAL PASS。
-- 当前分支：`m7-c-long-run-graduation`。M7-C implementation 已完成代码收口，本地 targeted regression 与全量 pytest 已由用户实际运行并全绿；当前只剩最终 Long-Run Graduation Physical Gate，尚未判定 M7-C 或 M7 PHYSICAL PASS。
 - M7-C 不增加普通工程动作，目标是把 M7-B 的可持续执行提升为可长期信任的恢复语义：不丢任务、不重复危险副作用、不在半完成 worktree 上叠加 retry、不越权、不虚构状态，并保证 whole-goal terminal delivery 在 transport crash window 下仍不重复发送。
 - M7-C restart replay 已改为 effect-aware：`inspect_project`、`maintain_project`、`push_engineering_branch` 与 `open_or_update_draft_pr` 属于可确定性/幂等恢复集合；显式 `run_project_command` 不属于自动 replay 集合。若 Worker ownership 改变时 command 仍为 `running` 且没有 durable result，Hikari 会将其写成 grounded `blocked` terminal result，明确说明执行结果不确定且未自动重放，避免命令副作用被执行两次。旧格式 command turn 即使没有 `Requested effect` marker，也按其窄 authority 正确识别为 command，而不会误判成 read-only inspect。
 - M7-C restart reconciliation 仍只有取得 single-worker lease 的 Worker-owned pump 可以执行；Resident-owned delivery 不抢 Worker state。若 result 已先落盘而 `state.json` 尚未更新，新 Worker直接用同一 durable result finalize，不重跑 effect；turn/result 不可读取时 block，不猜成功。
@@ -41,10 +40,12 @@
 - M7-C heartbeat 写入已针对 Windows 长跑收口：后台刷新使用唯一临时文件后原子替换，单次瞬时 I/O 失败不会杀死 heartbeat thread，下一拍继续；首次 startup heartbeat 写失败仍会直接失败，不伪装 Worker healthy。
 - Windows Resident process lifecycle 已有既存测试覆盖：stop 前快照整个 descendant tree，按 parent-first 终止 Resident 与当时托管的 children，并容忍快照后 child 自行退出。EngineeringWorkerLease 负责“只有一个 executor owner”的硬约束；瞬间看到多个 contender PID 不等于多个 Worker 同时消费 durable state。
 - self-state 已同步 M7-C 的真实实现语义：公开 worker restart reconciliation、interrupted maintainer cleanup、effect-aware restart replay，以及 uncertain transport send 不自动 retry；这些是 implementation/configuration truth，不宣称当前 runtime 一定健康。
-- M7-C 软件验收已经完成：用户在 Windows 本地真实环境运行全量 `python -m pytest -q`，最终全部通过（另有 1 个既有 skipped），因此 implementation/regression 阶段判定 green；尚未据此提前宣称 M7-C PHYSICAL PASS。
+- M7-C 软件验收已经完成：用户在 Windows 本地真实环境运行 targeted regression 与全量 `python -m pytest -q`，最终均全绿（另有 1 个既有 skipped）。
 - M7-C Physical Gate #1 已真实执行并判定 FAIL，但 durable continuity 本身通过：同一 QQ Goal 在 Worker / Resident 中断后继续完成 maintain、commit 与自动 push；真实工程分支 `hikari/engineering/64b9d1abc3a345c19b52d4d497c591cc` 已到达 origin，commit `79579b02ccfa...` 只新增 `docs/M7-C_LONG_RUN_GRADUATION.md` 且内容精确匹配请求。最终失败点是 Draft PR publisher 在 push 后的 remote-head visibility check 将瞬时 `ls-remote` 不可见直接升级为失败；同时失败 terminal 聚合了前序成功 step 文案，出现“这次没做完。任务已完成。”的语义冲突。
 - Gate #1 暴露的问题已修复且保留失败历史，不篡改旧 Goal/outbox：Draft PR publisher 对同一 expected SHA 的 `ls-remote` 改为 bounded read-only verification（最多 4 次，0.5s / 1s / 2s backoff），仍要求精确 SHA 后才允许 PR 副作用；Goal-level safe retry 仍保持原有最多 2 attempts，已交付 terminal 的 failed Goal 不会被升级后复活；failed/blocked whole-goal summary 只投影真实终止原因；commit subject 只取 semantic intent 第一行，避免 planner 内部约束泄漏到 Git metadata。
 - Gate #1 专属 regression 已新增于 `tests/test_m7c_physical_failure_regressions.py`，并与 Draft PR、goal delivery、persistent maintainer loop、grounded self-state targeted suite 一起由用户在真实 Windows 环境运行全绿；随后全量 `python -m pytest -q` 再次全绿。因此 failure repair 的软件验收正式 green。
-- M7-C Graduation Physical Gate #2 / FINAL 现在是唯一 active gate。必须使用一个新的 durable Goal 与新的文档路径，不复用第一次失败 Goal；验收仍要求单条 QQ Goal、真实 Worker 中断、真实 Resident 重启、期间不重发 Goal/继续/push/PR/status 指令，最终由 Hikari 自主完成 maintain → commit → push → Draft PR，并只产生一次与 durable truth 一致的 whole-goal terminal delivery。
-- M7-C 最终 Physical Gate 仍应只给 Hikari 一个真实工程 Goal，然后用户不再 babysit。验收必须包含至少一次真实 Resident/Worker 中断或可恢复故障，并验证无需重发 Goal、无需手工 push/PR、任务连续、没有 duplicate commit/effect/delivery、权限未扩大、最终 GitHub 工件与 QQ terminal reply 都由 durable truth 支撑。
-- M7 最终毕业标准仍是：用户交给 Hikari 一个真实工程目标后可以离开，期间即使 Resident 重启或出现可恢复失败，Hikari 仍能持续推进、正确记录状态并最终交付真实结果，而不需要用户 babysit。通过 M7-C 后才进入 `M7 FREEZE`。
+- M7-C Graduation Physical Gate #2 / FINAL 已完成并判定 `PHYSICAL PASS`。用户只发送一条 QQ Goal 创建 `docs/M7-C_FINAL_GRADUATION_GATE.md` 并要求 Draft PR；Hikari accepted 后，真实 Engineering Worker 被强制终止，随后整个 Resident 被停止并重新启动。期间用户没有发送继续、状态、push 或 PR 指令。Hikari 依靠 durable EngineeringGoal / EngineeringSession 自动恢复并继续完成 maintain → commit → push → Draft PR → whole-goal terminal delivery。
+- Final Gate 的 GitHub 工件已硬核验：Draft PR #79 为 `open`、`draft=true`、`merged=false`、`mergeable=true`；base=`m7-c-long-run-graduation`，base SHA=`c8f96d0ad48f17c28c21d7bf2464814e20d946d3`；head=`hikari/engineering/e5ca4a481ca444d08de7f777959710a6`，head SHA=`b7d75b5ed727701fd66c3a985504d5d6da35d8d9`；仅 1 commit、1 changed file、+1/-0。唯一文件 `docs/M7-C_FINAL_GRADUATION_GATE.md` 的内容逐字匹配用户请求。
+- Final Gate 唯一 commit `b7d75b5ed727...` 的 parent 正是 Gate baseline `c8f96d0ad48f...`，证明没有重复 maintain/duplicate commit；同一个 engineering head 只存在 PR #79，没有 duplicate publication。QQ 侧只有 accepted 与一次最终 terminal success，没有中间把子步骤误报为整 Goal 完成，也没有重复 terminal delivery。
+- M7-C 正式判定 `PHYSICAL PASS`。M7 的毕业标准已满足：用户可以只交给 Hikari 一个真实工程目标并离开，期间即使 Worker 与 Resident 真实中断，Hikari 仍能从 durable truth 恢复、保持权限边界、避免重复副作用、自动完成分支发布与 Draft PR，并最终交付经过验证的结果，而不需要用户 babysit。
+- M7 正式 `GRADUATED`，从此进入 `M7 FREEZE`。后续开发不得在未明确开启下一阶段/新路线的情况下继续扩张 M7 普通能力或改写已通过的核心语义；M7 只允许针对真实回归、发布阻塞或安全/正确性问题进行必要修复。
