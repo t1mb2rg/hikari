@@ -1,3 +1,4 @@
+from dataclasses import replace
 from pathlib import Path
 
 from conversation.engine import ConversationEngine
@@ -6,8 +7,12 @@ from conversation.engineering_bridge import (
     engineering_requirements_for_intent,
 )
 from conversation.models import UserTurn
-from engineering.bindings import EngineeringConversationBindingStore
-from engineering.session import EngineeringSessionStore
+from engineering.bindings import (
+    EngineeringConversationBinding,
+    EngineeringConversationBindingStore,
+)
+from engineering.maintainer import project_session_authority_ceiling
+from engineering.session import EngineeringSessionState, EngineeringSessionStore
 from memory.store import MemoryStore
 
 
@@ -65,7 +70,9 @@ def test_ordinary_token_parser_edit_is_not_mistaken_for_secret_modification() ->
     assert "engineering.secrets.modify" not in requirements
 
 
-def test_push_capability_gap_is_deterministic_and_does_not_enqueue_work(tmp_path: Path) -> None:
+def test_push_without_bound_engineering_branch_does_not_create_empty_remote_branch(
+    tmp_path: Path,
+) -> None:
     bridge, engine, bindings = _bridge(tmp_path)
 
     reply = bridge.respond(
@@ -73,10 +80,55 @@ def test_push_capability_gap_is_deterministic_and_does_not_enqueue_work(tmp_path
         UserTurn("qq", "private:42", "把 engineering 分支 push 到远端"),
     )
 
-    assert "能力缺口" in reply.text
-    assert "engineering.git.push_non_protected" in reply.text
-    assert "逐个动作给我授权" in reply.text
+    assert "没有已经提交的 Engineering 分支" in reply.text
+    assert "空远端分支" in reply.text
     assert bindings.for_conversation("qq", "private:42") is None
+
+
+def test_bound_engineering_branch_routes_to_narrow_publish_turn(tmp_path: Path) -> None:
+    bridge, engine, bindings = _bridge(tmp_path)
+    sessions = EngineeringSessionStore(tmp_path / "engineering")
+    workspace = tmp_path / "engineering-worktree"
+    workspace.mkdir()
+    state = EngineeringSessionState.create(
+        project_id="hikari",
+        repository=tmp_path / "repo",
+        authority_ceiling=project_session_authority_ceiling(),
+        session_id="push-session",
+    )
+    state = replace(
+        state,
+        status="completed",
+        workspace_path=str(workspace),
+        workspace_branch="hikari/engineering/push-session",
+        baseline_commit="baseline-sha",
+    )
+    sessions.create(state)
+    bindings.bind(
+        EngineeringConversationBinding(
+            session_id=state.session_id,
+            channel="qq",
+            conversation_id="private:42",
+        )
+    )
+
+    reply = bridge.respond(
+        engine,
+        UserTurn("qq", "private:42", "把这个 engineering 分支 push 到远端"),
+    )
+
+    assert "不会 force push 或 merge" in reply.text
+    saved = sessions.load(state.session_id)
+    assert saved.status == "pending"
+    assert saved.current_turn_id is not None
+    turn = sessions.load_turn(saved.session_id, saved.current_turn_id)
+    assert turn.authority.repository_read is True
+    assert turn.authority.repository_write is False
+    assert turn.authority.run_commands is False
+    assert turn.authority.run_tests is False
+    assert turn.authority.network is True
+    assert turn.authority.publish is True
+    assert turn.authority.outside_repo is False
 
 
 def test_project_command_routes_to_non_mutating_engineering_turn(tmp_path: Path) -> None:
