@@ -11,6 +11,7 @@ from .goal import (
     EngineeringGoalStore,
 )
 from .session import EngineeringSessionStore, EngineeringTurn
+from .workspace import EngineeringWorkspace, EngineeringWorkspaceError
 
 
 _RETRYABLE_EFFECTS = frozenset(
@@ -48,6 +49,10 @@ class PersistentMaintainerLoop:
     of starting every goal concurrently. One failed safe step may receive one bounded
     recovery attempt in the same isolated EngineeringSession. Blocked work never retries,
     command turns never replay automatically, and authority is never expanded.
+
+    Every automatic maintainer replay starts from the last durable commit. Partial edits
+    from a failed agent attempt are discarded only inside Hikari's isolated worktree so a
+    retry cannot accidentally stack the same unfinished modification twice.
     """
 
     def __init__(
@@ -105,6 +110,27 @@ class PersistentMaintainerLoop:
         if not self._can_retry(goal):
             return None
         step = goal.current_step
+
+        if step.effect == "maintain_project":
+            cleanup_error = self._clean_failed_maintainer_attempt(goal)
+            if cleanup_error is not None:
+                blocked_step = replace(
+                    step,
+                    status="blocked",
+                    result_status="blocked",
+                    result_message=cleanup_error,
+                    updated_at=time.time(),
+                )
+                steps = list(goal.steps)
+                steps[goal.current_step_index] = blocked_step
+                return replace(
+                    goal,
+                    status="blocked",
+                    steps=tuple(steps),
+                    final_summary=cleanup_error,
+                    updated_at=time.time(),
+                )
+
         next_attempt = step.attempts + 1
         turn_id = self._stable_turn_id(goal.goal_id, step.step_id, next_attempt)
         retried = replace(
@@ -126,6 +152,25 @@ class PersistentMaintainerLoop:
             final_summary="",
             updated_at=time.time(),
         )
+
+    def _clean_failed_maintainer_attempt(self, goal: EngineeringGoalState) -> str | None:
+        state = self.sessions.load(goal.session_id)
+        if not (state.workspace_path and state.workspace_branch and state.baseline_commit):
+            return None
+        try:
+            workspace = EngineeringWorkspace.resume(
+                repository=state.repository,
+                workspace_path=state.workspace_path,
+                branch=state.workspace_branch,
+                baseline_commit=state.baseline_commit,
+            )
+            workspace.discard_uncommitted_changes()
+        except (EngineeringWorkspaceError, OSError) as exc:
+            return (
+                "failed maintainer attempt left an untrusted worktree that could not be "
+                f"restored before retry ({type(exc).__name__}); automatic continuation stopped"
+            )
+        return None
 
     def _can_retry(self, goal: EngineeringGoalState) -> bool:
         if goal.status != "failed":
