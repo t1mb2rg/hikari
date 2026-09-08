@@ -204,10 +204,9 @@ def hikari_engineering_capabilities(engineering_enabled: bool) -> dict[str, Capa
         ),
         "engineering.commands.run": CapabilityState(
             "engineering.commands.run",
-            available=False,
+            available=engineering_enabled,
             delegated=engineering_enabled,
-            scope="project_worktree",
-            gap="generic_project_command_execution_not_implemented_yet",
+            scope="isolated_project_worktree_non_mutating",
         ),
         "engineering.tests.run": CapabilityState(
             "engineering.tests.run",
