@@ -141,8 +141,8 @@ def describe_self_state(
             "work_selection_policy": "oldest_unfinished_goal_per_project",
             "continuation_source": "durable_goal_and_session_truth",
             "retry_policy": (
-                "safe_local_inspect_or_maintain_effects_allow_at_most_two_attempts; "
-                "idempotent_push_or_draft_pr_publish_effects_allow_at_most_three_attempts; "
+                "one_bounded_goal_level_retry_for_safe_inspect_maintain_push_or_draft_pr_effects; "
+                "draft_pr_remote_head_visibility_is_verified_with_bounded_read_only_rechecks; "
                 "blocked_work_and_project_commands_are_not_replayed_automatically"
             ),
             "restart_replay_policy": (
