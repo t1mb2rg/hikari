@@ -33,6 +33,29 @@ class EngineeringAgentResult:
 EventSink = Callable[[EngineeringAgentEvent], None]
 
 
+def _claude_child_environment(values: Mapping[str, str]) -> dict[str, str]:
+    """Remove ambient model overrides before starting Claude Code.
+
+    Hikari owns the engineering model through ``HIKARI_ENGINEERING_MODEL`` and
+    passes it explicitly with ``--model``. Conversation/runtime environments may
+    still contain Claude Code model override variables for other workflows; those
+    must not silently change the Engineering backend model or its side-models.
+    Provider/authentication variables are preserved.
+    """
+
+    result: dict[str, str] = {}
+    for key, value in values.items():
+        upper = key.upper()
+        if upper == "ANTHROPIC_MODEL":
+            continue
+        if upper.startswith("ANTHROPIC_DEFAULT_") and upper.endswith("_MODEL"):
+            continue
+        if upper == "CLAUDE_CODE_SUBAGENT_MODEL":
+            continue
+        result[key] = value
+    return result
+
+
 class ClaudeEngineeringBackend:
     """Thin Hikari harness around one Claude Code engineering session.
 
@@ -267,6 +290,7 @@ class ClaudeEngineeringBackend:
             proc = subprocess.Popen(
                 argv,
                 cwd=root,
+                env=_claude_child_environment(os.environ),
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
