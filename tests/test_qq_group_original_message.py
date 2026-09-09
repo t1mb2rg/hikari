@@ -37,7 +37,7 @@ class RecordingBot:
         self.group_sends.append(dict(kwargs))
 
 
-def _group_event() -> GroupMessageEvent:
+def _group_event(*, message: Message | None = None) -> GroupMessageEvent:
     return GroupMessageEvent(
         time=1,
         self_id=100,
@@ -46,11 +46,15 @@ def _group_event() -> GroupMessageEvent:
         user_id=7,
         message_type="group",
         message_id=501,
-        message=Message(
-            [
-                MessageSegment.at(100),
-                MessageSegment.text(" 你好"),
-            ]
+        message=(
+            message
+            if message is not None
+            else Message(
+                [
+                    MessageSegment.at(100),
+                    MessageSegment.text(" 你好"),
+                ]
+            )
         ),
         raw_message="[CQ:at,qq=100] 你好",
         font=0,
@@ -58,6 +62,25 @@ def _group_event() -> GroupMessageEvent:
         group_id=10,
         anonymous=None,
     )
+
+
+def _runtime(tmp_path: Path) -> tuple[QQBridgeRuntime, RecordingCore, RecordingBot]:
+    config = QQBridgeConfig.from_mapping(
+        {
+            "HIKARI_ONEBOT_ALLOWED_USER_IDS": "7",
+            "HIKARI_ONEBOT_ALLOWED_GROUP_IDS": "10",
+        },
+        state_dir=tmp_path,
+    )
+    core = RecordingCore()
+    bot = RecordingBot()
+    runtime = QQBridgeRuntime(
+        config,
+        core,  # type: ignore[arg-type]
+        BridgeSpool(tmp_path / "qq_bridge.db"),
+        OneBotLinkHealth(timeout_seconds=config.link_timeout_seconds),
+    )
+    return runtime, core, bot
 
 
 def test_group_runtime_uses_original_message_after_nonebot_strips_at_self(
@@ -74,21 +97,7 @@ def test_group_runtime_uses_original_message_after_nonebot_strips_at_self(
     assert [segment.type for segment in event.message] == ["text"]
     assert [segment.type for segment in event.original_message] == ["at", "text"]
 
-    config = QQBridgeConfig.from_mapping(
-        {
-            "HIKARI_ONEBOT_ALLOWED_USER_IDS": "7",
-            "HIKARI_ONEBOT_ALLOWED_GROUP_IDS": "10",
-        },
-        state_dir=tmp_path,
-    )
-    core = RecordingCore()
-    bot = RecordingBot()
-    runtime = QQBridgeRuntime(
-        config,
-        core,  # type: ignore[arg-type]
-        BridgeSpool(tmp_path / "qq_bridge.db"),
-        OneBotLinkHealth(timeout_seconds=config.link_timeout_seconds),
-    )
+    runtime, core, bot = _runtime(tmp_path)
 
     asyncio.run(runtime.handle_group_message(bot, event))  # type: ignore[arg-type]
 
@@ -106,3 +115,23 @@ def test_group_runtime_uses_original_message_after_nonebot_strips_at_self(
             "auto_escape": True,
         }
     ]
+
+
+def test_group_runtime_does_not_trust_to_me_without_original_at_self(
+    tmp_path: Path,
+):
+    event = _group_event(message=Message([MessageSegment.text("你好")]))
+
+    # `to_me` may be set by adapter behavior other than an explicit at-self
+    # (for example reply/nickname handling). Hikari's shared ingress contract is
+    # intentionally stricter: only a real @Hikari present in original_message passes.
+    event.to_me = True
+
+    assert [segment.type for segment in event.original_message] == ["text"]
+
+    runtime, core, bot = _runtime(tmp_path)
+
+    asyncio.run(runtime.handle_group_message(bot, event))  # type: ignore[arg-type]
+
+    assert core.calls == []
+    assert bot.group_sends == []
