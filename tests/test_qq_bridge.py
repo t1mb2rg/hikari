@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import os
 from pathlib import Path
+import sqlite3
 import subprocess
 import sys
 
@@ -263,6 +264,99 @@ def test_spool_survives_restart_and_tracks_delivery(tmp_path: Path):
     assert restarted.unsent() == []
 
 
+def test_spool_migrates_legacy_schema_and_persists_sender(tmp_path: Path):
+    path = tmp_path / "legacy.db"
+    legacy = sqlite3.connect(path)
+    legacy.execute(
+        """
+        CREATE TABLE qq_bridge_spool (
+            request_id TEXT PRIMARY KEY,
+            channel TEXT NOT NULL,
+            conversation_id TEXT NOT NULL,
+            user_text TEXT NOT NULL,
+            reply_text TEXT,
+            state TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+    legacy.execute(
+        """
+        INSERT INTO qq_bridge_spool (
+            request_id, channel, conversation_id, user_text, state
+        ) VALUES (?, ?, ?, ?, 'pending')
+        """,
+        ("qq:100:g:10:1", "qq", "group:10", "在吗",),
+    )
+    legacy.commit()
+    legacy.close()
+
+    spool = BridgeSpool(path)
+    migrated = spool.get("qq:100:g:10:1")
+    assert migrated is not None
+    assert migrated.sender_user_id is None
+
+    stored = spool.record_turn(
+        "qq:100:2",
+        UserTurn("qq", "private:7", "hello"),
+        sender_user_id="7",
+    )
+    assert stored.sender_user_id == "7"
+    assert spool.get("qq:100:2").sender_user_id == "7"  # type: ignore[union-attr]
+    assert spool.get("qq:100:2").state == "pending"  # type: ignore[union-attr]
+
+    reopened = BridgeSpool(path)
+    assert reopened.get("qq:100:2").sender_user_id == "7"  # type: ignore[union-attr]
+
+
+def test_spool_heals_legacy_sender_on_same_request_reported_again(
+    tmp_path: Path,
+):
+    path = tmp_path / "legacy2.db"
+    legacy = sqlite3.connect(path)
+    legacy.execute(
+        """
+        CREATE TABLE qq_bridge_spool (
+            request_id TEXT PRIMARY KEY,
+            channel TEXT NOT NULL,
+            conversation_id TEXT NOT NULL,
+            user_text TEXT NOT NULL,
+            reply_text TEXT,
+            state TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+    legacy.execute(
+        """
+        INSERT INTO qq_bridge_spool (
+            request_id, channel, conversation_id, user_text, state
+        ) VALUES (?, ?, ?, ?, 'pending')
+        """,
+        ("qq:100:g:10:1", "qq", "group:10", "在吗",),
+    )
+    legacy.commit()
+    legacy.close()
+    spool = BridgeSpool(path)
+
+    healed = spool.record_turn(
+        "qq:100:g:10:1",
+        UserTurn("qq", "group:10", "在吗"),
+        sender_user_id="7",
+    )
+
+    assert healed.sender_user_id == "7"
+
+    with pytest.raises(ValueError, match="different QQ sender"):
+        spool.record_turn(
+            "qq:100:g:10:1",
+            UserTurn("qq", "group:10", "在吗"),
+            sender_user_id="8",
+        )
+
+
 def test_link_health_probes_quiet_connections_without_declaring_disconnect():
     now = [0.0]
     health = OneBotLinkHealth(timeout_seconds=10, clock=lambda: now[0])
@@ -480,7 +574,66 @@ def test_outbound_validation_requires_approved_group_target(tmp_path: Path):
         BridgeSpool(tmp_path / "spool2.db"),
         OneBotLinkHealth(timeout_seconds=10),
     )
-    runtime._validate_outbound(AssistantReply("qq", "group:10", "hi"))
+    runtime._validate_outbound(
+        AssistantReply("qq", "group:10", "hi"), sender_user_id="7"
+    )
+
+
+def test_outbound_group_reply_requires_recorded_allowlisted_sender(
+    tmp_path: Path,
+):
+    config = QQBridgeConfig.from_mapping(
+        {
+            "HIKARI_ONEBOT_ALLOWED_USER_IDS": "7",
+            "HIKARI_ONEBOT_ALLOWED_GROUP_IDS": "10",
+        },
+        state_dir=tmp_path,
+    )
+    runtime = QQBridgeRuntime(
+        config,
+        FakeCore(),  # type: ignore[arg-type]
+        BridgeSpool(tmp_path / "spool.db"),
+        OneBotLinkHealth(timeout_seconds=10),
+    )
+    with pytest.raises(ValueError, match="without a recorded sender"):
+        runtime._validate_outbound(AssistantReply("qq", "group:10", "hi"))
+    with pytest.raises(ValueError, match="no-longer-allowlisted sender"):
+        runtime._validate_outbound(
+            AssistantReply("qq", "group:10", "hi"), sender_user_id="9"
+        )
+
+
+def test_runtime_refuses_revoked_sender_group_turn_before_model_call(
+    tmp_path: Path,
+):
+    config = QQBridgeConfig.from_mapping(
+        {
+            "HIKARI_ONEBOT_ALLOWED_USER_IDS": "8",
+            "HIKARI_ONEBOT_ALLOWED_GROUP_IDS": "10",
+        },
+        state_dir=tmp_path,
+    )
+    core = FakeCore()
+    bot = FakeBot()
+    spool = BridgeSpool(tmp_path / "spool.db")
+    spool.record_turn(
+        "qq:100:g:10:55",
+        UserTurn("qq", "group:10", "在吗"),
+        sender_user_id="7",
+    )
+    runtime = QQBridgeRuntime(
+        config,
+        core,  # type: ignore[arg-type]
+        spool,
+        OneBotLinkHealth(timeout_seconds=10),
+    )
+
+    drained = asyncio.run(runtime.drain_unsent(bot))  # type: ignore[arg-type]
+
+    assert drained is False
+    assert core.requests == []
+    assert bot.sent == []
+    assert spool.get("qq:100:g:10:55").state == "pending"  # type: ignore[union-attr]
 
 
 def test_runtime_automatically_retries_pending_turn_after_model_recovery(

@@ -51,3 +51,4 @@
 - M7 正式 `GRADUATED`，从此进入 `M7 FREEZE`。后续开发不得在未明确开启下一阶段/新路线的情况下继续扩张 M7 普通能力或改写已通过的核心语义；M7 只允许针对真实回归、发布阻塞或安全/正确性问题进行必要修复。
 - M7 FREEZE 后首个明确请求的 QQ 能力扩展（群聊对话）已在 Bridge 层实现，不触及 M7 工程运行时语义：`HIKARI_ONEBOT_ALLOWED_GROUP_IDS` 群白名单（空即禁用）叠加既有用户白名单，只有群里 @Hikari 的纯文本消息会触发模型，at-self 片段剥离后按 `group:<group_id>` 会话进入 Conversation，回复以纯文本送回同一群；@别人、不带 at-self、夹带非文本段、非白名单发送者或非白名单群的消息一律 fail-closed 不触发。请求 id 为 `qq:<self>:g:<group_id>:<message_id>`，与私聊共用同一 durable spool 去重与恢复路径。
 - 群聊对话的 targeted 测试已随实现提交（config 群白名单解析、group mapper 接受/拒绝矩阵、runtime 群消息一次投递与去重、非白名单群忽略、回复出站校验）；工程 worktree 内测试命令无执行授权，真实环境 `python -m pytest -q` 验证尚未运行，QQ 群聊物理验收尚未进行。
+- 群聊回复出站校验已补齐发起人维度（安全修复）：spool 持久化 `sender_user_id`（旧库自动 ALTER 迁移；OneBot 重报同一 message_id 时自我修复回填该字段）。投递前与发送前都会重新校验——群聊回复必须同时满足目标群仍在群白名单、**发起人仍在用户白名单**，缺少记录的 legacy 群行 fail-closed 拒发；用户被移出白名单后重启桥接，已入 spool 的群回复不会再发进群里，且撤销后不再触发模型调用。相关 targeted 测试已随修复提交；工程 worktree 内测试命令无执行授权，真实环境 `python -m pytest -q` 验证尚未运行。

@@ -11,6 +11,7 @@ from conversation.models import AssistantReply, UserTurn
 class BridgeSpoolItem:
     request_id: str
     turn: UserTurn
+    sender_user_id: str | None
     reply_text: str | None
     state: str
 
@@ -49,6 +50,7 @@ class BridgeSpool:
                     channel TEXT NOT NULL,
                     conversation_id TEXT NOT NULL,
                     user_text TEXT NOT NULL,
+                    sender_user_id TEXT,
                     reply_text TEXT,
                     state TEXT NOT NULL,
                     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -56,6 +58,14 @@ class BridgeSpool:
                 )
                 """
             )
+            columns = {
+                str(row["name"])
+                for row in connection.execute("PRAGMA table_info(qq_bridge_spool)")
+            }
+            if "sender_user_id" not in columns:
+                connection.execute(
+                    "ALTER TABLE qq_bridge_spool ADD COLUMN sender_user_id TEXT"
+                )
 
     @staticmethod
     def _row_to_item(row: sqlite3.Row) -> BridgeSpoolItem:
@@ -66,6 +76,7 @@ class BridgeSpool:
                 conversation_id=row["conversation_id"],
                 text=row["user_text"],
             ),
+            sender_user_id=row["sender_user_id"],
             reply_text=row["reply_text"],
             state=row["state"],
         )
@@ -77,7 +88,9 @@ class BridgeSpool:
         with self._connect() as connection:
             row = connection.execute(
                 """
-                SELECT request_id, channel, conversation_id, user_text, reply_text, state
+                SELECT
+                    request_id, channel, conversation_id, user_text,
+                    sender_user_id, reply_text, state
                 FROM qq_bridge_spool
                 WHERE request_id = ?
                 """,
@@ -85,26 +98,58 @@ class BridgeSpool:
             ).fetchone()
         return None if row is None else self._row_to_item(row)
 
-    def record_turn(self, request_id: str, turn: UserTurn) -> BridgeSpoolItem:
+    def record_turn(
+        self,
+        request_id: str,
+        turn: UserTurn,
+        *,
+        sender_user_id: str | None = None,
+    ) -> BridgeSpoolItem:
         request_id = str(request_id).strip()
         if not request_id:
             raise ValueError("request_id must not be empty")
         if not isinstance(turn, UserTurn):
             raise TypeError("turn must be UserTurn")
+        if sender_user_id is not None:
+            if not isinstance(sender_user_id, str):
+                raise TypeError("sender_user_id must be a str or None")
+            sender_user_id = sender_user_id.strip()
+            if not sender_user_id:
+                sender_user_id = None
         with self._connect() as connection:
             connection.execute(
                 """
                 INSERT OR IGNORE INTO qq_bridge_spool (
-                    request_id, channel, conversation_id, user_text, state
-                ) VALUES (?, ?, ?, ?, 'pending')
+                    request_id, channel, conversation_id, user_text,
+                    sender_user_id, state
+                ) VALUES (?, ?, ?, ?, ?, 'pending')
                 """,
-                (request_id, turn.channel, turn.conversation_id, turn.text),
+                (
+                    request_id,
+                    turn.channel,
+                    turn.conversation_id,
+                    turn.text,
+                    sender_user_id,
+                ),
             )
+            if sender_user_id is not None:
+                # OneBot message ids are globally unique, so a re-reported id
+                # belongs to the same original message and sender; heal legacy
+                # rows that predate sender persistence.
+                connection.execute(
+                    """
+                    UPDATE qq_bridge_spool SET sender_user_id = ?
+                    WHERE request_id = ? AND sender_user_id IS NULL
+                    """,
+                    (sender_user_id, request_id),
+                )
         item = self.get(request_id)
         if item is None:
             raise RuntimeError("failed to persist QQ bridge turn")
         if item.turn != turn:
             raise ValueError("request_id was reused for a different QQ turn")
+        if item.sender_user_id != sender_user_id:
+            raise ValueError("request_id was reused by a different QQ sender")
         return item
 
     def set_reply(self, request_id: str, reply: AssistantReply) -> BridgeSpoolItem:
@@ -159,7 +204,9 @@ class BridgeSpool:
         with self._connect() as connection:
             rows = connection.execute(
                 """
-                SELECT request_id, channel, conversation_id, user_text, reply_text, state
+                SELECT
+                    request_id, channel, conversation_id, user_text,
+                    sender_user_id, reply_text, state
                 FROM qq_bridge_spool
                 WHERE state != 'sent'
                 ORDER BY created_at ASC, request_id ASC

@@ -68,7 +68,9 @@ class QQBridgeRuntime:
         if normalized is None:
             return
         request_id, turn = normalized
-        item = self.spool.record_turn(request_id, turn)
+        item = self.spool.record_turn(
+            request_id, turn, sender_user_id=str(event.user_id)
+        )
         if item.state == "sent":
             return
         await self._deliver_item(bot, item)
@@ -86,7 +88,9 @@ class QQBridgeRuntime:
         if normalized is None:
             return
         request_id, turn = normalized
-        item = self.spool.record_turn(request_id, turn)
+        item = self.spool.record_turn(
+            request_id, turn, sender_user_id=str(event.user_id)
+        )
         if item.state == "sent":
             return
         await self._deliver_item(bot, item)
@@ -98,6 +102,13 @@ class QQBridgeRuntime:
                 raise RuntimeError("QQ bridge spool item disappeared before delivery")
             if current.state == "sent":
                 return
+            # Re-check the allowlist against the recorded sender before spending
+            # a model call on a turn whose origin was revoked since it was spooled.
+            self._validate_target(
+                channel=current.turn.channel,
+                conversation_id=current.turn.conversation_id,
+                sender_user_id=current.sender_user_id,
+            )
             reply = current.reply
             if reply is None:
                 reply = await self.core.request(current.request_id, current.turn)
@@ -105,11 +116,19 @@ class QQBridgeRuntime:
                 reply = current.reply
             if reply is None:
                 raise RuntimeError("QQ bridge spool lost assistant reply")
-            await self._send_outbound(bot, reply)
+            await self._send_outbound(
+                bot, reply, sender_user_id=current.sender_user_id
+            )
             self.spool.mark_sent(current.request_id)
 
-    async def _send_outbound(self, bot: Bot, reply: AssistantReply) -> None:
-        self._validate_outbound(reply)
+    async def _send_outbound(
+        self,
+        bot: Bot,
+        reply: AssistantReply,
+        *,
+        sender_user_id: str | None = None,
+    ) -> None:
+        self._validate_outbound(reply, sender_user_id=sender_user_id)
         if reply.conversation_id.startswith("private:"):
             await bot.send_private_msg(
                 user_id=self._onebot_user_id(
@@ -134,20 +153,47 @@ class QQBridgeRuntime:
         except ValueError:
             return user_id_text
 
-    def _validate_outbound(self, reply: AssistantReply) -> None:
-        if reply.channel != "qq":
+    def _validate_target(
+        self,
+        *,
+        channel: str,
+        conversation_id: str,
+        sender_user_id: str | None,
+    ) -> None:
+        if channel != "qq":
             raise ValueError("QQ bridge refuses non-QQ replies")
-        if reply.conversation_id.startswith("private:"):
-            user_id = reply.conversation_id.removeprefix("private:")
+        if conversation_id.startswith("private:"):
+            user_id = conversation_id.removeprefix("private:")
             if user_id not in self.config.allowed_user_ids:
                 raise ValueError("QQ bridge refuses replies outside the allowlist")
             return
-        if reply.conversation_id.startswith("group:"):
-            group_id = reply.conversation_id.removeprefix("group:")
+        if conversation_id.startswith("group:"):
+            group_id = conversation_id.removeprefix("group:")
             if group_id not in self.config.allowed_group_ids:
                 raise ValueError("QQ bridge refuses replies to an unapproved group")
+            if sender_user_id is None:
+                raise ValueError(
+                    "QQ bridge refuses group replies without a recorded sender"
+                )
+            if sender_user_id not in self.config.allowed_user_ids:
+                raise ValueError(
+                    "QQ bridge refuses group replies from a "
+                    "no-longer-allowlisted sender"
+                )
             return
         raise ValueError("QQ bridge refuses replies outside private or approved groups")
+
+    def _validate_outbound(
+        self,
+        reply: AssistantReply,
+        *,
+        sender_user_id: str | None = None,
+    ) -> None:
+        self._validate_target(
+            channel=reply.channel,
+            conversation_id=reply.conversation_id,
+            sender_user_id=sender_user_id,
+        )
 
     def _validate_proactive(self, item: DeliveryRecord) -> None:
         request = item.request
