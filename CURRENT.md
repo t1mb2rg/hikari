@@ -54,4 +54,8 @@
 - M8-01 shared Conversation 只投影同群历史与当前 actor identity，不读取主要用户的 cross-conversation Memory、User Model、Awareness、relationship/private project context，也不把 shared turn assimilate 进 primary User Model；private cross-conversation recall 同时排除新 `scope=shared` 与旧 `conversation_id=group:*` events。
 - M8-01 shared turn 在 `ConversationRequestProcessor` 结构上绕过 private Engineering action bridge，因此即使主要用户本人在群里要求修改仓库、运行命令、commit、push 或 Draft PR，也不会创建 EngineeringSession / EngineeringGoal；群聊仅作为共享 conversation surface。
 - M8-01 兼容迁移已覆盖 #80 旧 durable state：旧 QQ spool / Conversation receipt 增加 actor/scope 列后，`group:*` 确定性回填为 `shared`，`private:*` 保持 `private` 并可从 route 恢复 actor；旧 group actor 无证据时保持 unknown，不编造身份。
-- M8-01 软件验收已完成：用户在真实 Windows 环境运行 shared-boundary targeted regression 与全量 `python -m pytest -q`，两轮均全绿。下一 gate 是真实 QQ 群 `1087641577` 的 physical validation；在 physical PASS 前 PR #81 保持 Draft，不 merge。
+- M8-01 软件验收已完成：用户在真实 Windows 环境运行 shared-boundary targeted regression 与全量 `python -m pytest -q`，两轮均全绿。
+- M8-01 Physical Gate #1 在真实 QQ 群 `1087641577` 失败于 ingress：NapCat / NoneBot 已收到真实 `@Hikari` 群消息，但 NoneBot 的 `_check_at_me()` 在 matcher 前从 `event.message` 剥离 at-self，导致 Hikari 二次检查时误判为未 @。修复后 group gate 改用 adapter 保留的 `event.original_message`，仍保持“必须显式 @Hikari”而不泛化为 `to_me=True`。
+- M8-01 Physical Gate #2 已完成并判定 `PHYSICAL PASS`。真实群消息通过 NapCat → NoneBot → QQ Bridge → shared Conversation → 群回复闭环；已观测到 transport-grounded actor id `2971936331`。后续真实群聊验收由用户确认全部符合预期：Jarvis 默认对话人格在 shared scope 中保持连续，私聊临时口令没有泄漏到群聊，本机 Foreground/Input Awareness 不在 shared scope 暴露，群内 Engineering 请求被结构性拒绝且不启动私人工程执行。
+- M8-01 同时确立工程测试策略：`Fake Hikari-owned abstractions, not external contracts.` 第三方 adapter 边界优先使用真实 contract 对象；开发阶段跑 focused unit/contract tests，merge 前跑 full suite，关键 transport/publish/recovery 能力仍以 Physical Gate 验证现实。对应规范已写入 `docs/ENGINEERING_TESTING.md`。
+- M8-01 正式判定 `PHYSICAL PASS`。PR #81 继续保持 Draft，最后 merge 条件只剩最新 head 上一次完整 `python -m pytest -q` 全绿；不自动 merge。
