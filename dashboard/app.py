@@ -6,8 +6,13 @@ import ipaddress
 from pathlib import Path
 from typing import Sequence
 
+from starlette.requests import Request
+
 from .napcat_control import NapCatDashboardControl
 from .probes import DashboardProbeConfig, DashboardProbeService
+from .operations import DashboardOperations
+from .settings import DashboardSettings, SettingsConflict
+from .github import DashboardGitHub
 
 
 DEFAULT_DASHBOARD_PORT = 8787
@@ -18,12 +23,16 @@ def create_app(config: DashboardProbeConfig):
         from fastapi import FastAPI, HTTPException
         from fastapi.responses import FileResponse, Response
         from fastapi.staticfiles import StaticFiles
+        from starlette.middleware.trustedhost import TrustedHostMiddleware
     except ImportError as exc:
         raise RuntimeError(
             'Dashboard dependencies are missing; install with `pip install -e ".[dashboard]"`'
         ) from exc
 
     service = DashboardProbeService(config)
+    settings = DashboardSettings(config.env_file or config.repository / ".env")
+    operations = DashboardOperations(config.state_dir, settings)
+    github = DashboardGitHub(config.repository, settings)
     napcat_control = NapCatDashboardControl(config.napcat_root)
     static_dir = Path(__file__).with_name("static")
     app = FastAPI(
@@ -32,6 +41,22 @@ def create_app(config: DashboardProbeConfig):
         redoc_url=None,
         openapi_url=None,
     )
+    app.add_middleware(TrustedHostMiddleware, allowed_hosts=["localhost", "127.0.0.1", "[::1]"])
+
+    @app.middleware("http")
+    async def local_operator_boundary(request: Request, call_next):
+        if request.method not in {"GET", "HEAD", "OPTIONS"}:
+            origin = request.headers.get("origin")
+            if (request.headers.get("x-hikari-action") != "dashboard"
+                    or request.headers.get("sec-fetch-site") == "cross-site"
+                    or (origin is not None and origin.rstrip("/") != str(request.base_url).rstrip("/"))):
+                return Response("操作需要从本机 Hikari 面板发起", status_code=403)
+        response = await call_next(request)
+        response.headers["Cache-Control"] = "no-store"
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["Content-Security-Policy"] = "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; frame-ancestors 'none'; base-uri 'self'"
+        return response
 
     @app.get("/api/status")
     def api_status():
@@ -40,6 +65,32 @@ def create_app(config: DashboardProbeConfig):
     @app.get("/api/events")
     def api_events(limit: int = 60):
         return {"events": service.recent_events(limit=limit)}
+
+    @app.get("/api/operations")
+    def api_operations():
+        return operations.snapshot()
+
+    @app.get("/api/github")
+    def api_github():
+        return github.snapshot()
+
+    @app.get("/api/settings")
+    def api_settings():
+        return settings.snapshot()
+
+    @app.put("/api/settings")
+    async def api_save_settings(request: Request):
+        if len(await request.body()) > 65536:
+            raise HTTPException(status_code=413, detail="配置请求过大")
+        try:
+            payload = await request.json()
+            if not isinstance(payload, dict):
+                raise ValueError("配置请求必须为对象")
+            return settings.save(payload.get("changes"), payload.get("revision"))
+        except SettingsConflict as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from None
+        except (ValueError, TypeError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from None
 
     @app.get("/api/napcat/qrcode")
     def api_napcat_qrcode():
@@ -106,6 +157,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=DEFAULT_DASHBOARD_PORT)
     parser.add_argument("--state-dir", default=None)
+    parser.add_argument("--env-file", default=None)
     parser.add_argument("--napcat-root", default=r"D:\NapCat-Shell-v4.18.19")
     parser.add_argument("--napcat-task-name", default="Hikari NapCat Shell")
     parser.add_argument("--onebot-port", type=int, default=8081)
@@ -139,6 +191,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         napcat_root=Path(args.napcat_root),
         napcat_task_name=args.napcat_task_name,
         onebot_port=args.onebot_port,
+        env_file=Path(args.env_file) if args.env_file else None,
     )
     try:
         import uvicorn

@@ -450,6 +450,19 @@ class UnifiedResidentService:
             except TimeoutError:
                 pass
 
+    async def _observation_loop(self) -> None:
+        from .telemetry import record_observation
+        root = self.conversation_host.processor.receipts.path.parent
+        while not self.stop_event.is_set():
+            record_observation(root, "conversation", "healthy", port=self.bound_port,
+                               engineering_enabled=self.engineering_supervisor is not None,
+                               qq_enabled=self.qq_supervisor is not None)
+            try:
+                await asyncio.wait_for(self.stop_event.wait(), timeout=3)
+            except TimeoutError:
+                pass
+        record_observation(root, "conversation", "offline", port=self.bound_port)
+
     async def run(self) -> None:
         print(self.presence.start(), flush=True)
         tasks: list[asyncio.Task[None]] = []
@@ -469,6 +482,7 @@ class UnifiedResidentService:
                 self.started_event.set()
 
                 tasks.append(asyncio.create_task(self._presence_loop()))
+                tasks.append(asyncio.create_task(self._observation_loop()))
                 if self.engineering_delivery_pump is not None:
                     tasks.append(
                         asyncio.create_task(

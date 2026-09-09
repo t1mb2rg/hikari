@@ -35,7 +35,7 @@ def test_qrcode_endpoint_renders_napcat_login_url_as_png(tmp_path: Path, monkeyp
         )
 
     monkeypatch.setattr(DashboardProbeService, "probe_napcat", fake_probe)
-    client = TestClient(create_app(_config(tmp_path)))
+    client = TestClient(create_app(_config(tmp_path)), base_url="http://127.0.0.1")
 
     response = client.get("/api/napcat/qrcode")
 
@@ -52,9 +52,9 @@ def test_qrcode_refresh_calls_only_bounded_napcat_action(tmp_path: Path, monkeyp
         "refresh_qrcode",
         lambda self: calls.append("refresh"),
     )
-    client = TestClient(create_app(_config(tmp_path)))
+    client = TestClient(create_app(_config(tmp_path)), base_url="http://127.0.0.1")
 
-    response = client.post("/api/napcat/qrcode/refresh")
+    response = client.post("/api/napcat/qrcode/refresh", headers={"X-Hikari-Action": "dashboard"})
 
     assert response.status_code == 200
     assert response.json()["ok"] is True

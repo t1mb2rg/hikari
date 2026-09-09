@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Protocol, runtime_checkable
 
 from brain.model_reasoner import ChatProvider
+from brain.providers.observed import ObservedChatProvider
 from memory.store import MemoryStore
 from resident.environment import load_runtime_environment
 from resident.paths import default_state_dir
@@ -100,7 +101,7 @@ def build_remote_conversation_engine(
     """Build the standalone host with the same natural Jarvis conversation path as Resident."""
 
     return NaturalConversationEngine(
-        provider,
+        ObservedChatProvider(provider, state_dir, model=str(getattr(provider, "model", "configured"))),
         memory,
         context_collector=None,
         personality_profile=None,

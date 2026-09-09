@@ -19,6 +19,7 @@ from awareness import (
 )
 from brain import ModelReasoner, Reasoner, SimpleReasoner
 from brain.providers import OpenAICompatibleProvider
+from brain.providers.observed import ObservedChatProvider
 from conversation.cli import build_chat_provider, default_context_collector
 from conversation.engine import ConversationEngine, INTERACTIVE_SYSTEM_INSTRUCTIONS
 from conversation.persistent_engineering_bridge import PersistentConversationEngineeringBridge
@@ -398,7 +399,8 @@ def main(argv: Sequence[str] | None = None) -> None:
         return
 
     try:
-        provider = build_chat_provider(values)
+        provider = ObservedChatProvider(build_chat_provider(values), memory_path.parent,
+                                        model=values.get("HIKARI_MODEL_NAME", ""))
         conversation_context_profile = _conversation_context_profile(values)
         (
             engine_type,
