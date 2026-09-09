@@ -1,0 +1,23 @@
+name: Hikari isolated GitHub gate
+
+on:
+  pull_request:
+    branches: ["hikari/engineering/integration-base-20260909T172359033110Z"]
+  push:
+    branches: ["hikari/engineering/integration-head-20260909T172359033110Z"]
+
+permissions:
+  contents: read
+
+jobs:
+  marker:
+    name: Hikari isolated marker check
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Verify isolated marker document
+        shell: bash
+        run: test "$(cat docs/hikari-isolated-gate-20260909T172359033110Z.txt)" = "hikari-github-gate:20260909T172359033110Z"
