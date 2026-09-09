@@ -360,6 +360,7 @@ class FakeGroupEvent:
         self.user_id = user_id
         self.message_id = message_id
         self.message = message
+        self.original_message = message
 
 
 def test_runtime_delivers_each_onebot_message_once(tmp_path: Path):
