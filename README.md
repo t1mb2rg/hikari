@@ -61,12 +61,16 @@ ConversationEngine / Memory / Hikari identity
 
 `hikari-qq` 使用 NoneBot2 + OneBot V11 adapter，但这些平台 SDK 只存在于 `integrations/qq_bridge/`。共享 `conversation/`、`brain/`、`memory/` 和 `personality/` 不依赖 NoneBot、NapCat 或 OneBot。
 
-第一道 Physical Gate 故意很窄：只接受 allowlist 中用户的**私聊纯文本**。群聊、notice、图片、文件和非白名单用户不会触发模型调用。
+第一道 Physical Gate 故意很窄：只接受 allowlist 中用户的**私聊纯文本**。notice、图片、文件和非白名单用户不会触发模型调用。
+
+群聊对话已加入（同样 fail-closed）：只有当消息同时满足以下条件才触发模型——发送者在 `HIKARI_ONEBOT_ALLOWED_USER_IDS`、群在 `HIKARI_ONEBOT_ALLOWED_GROUP_IDS`、消息 @Hikari 且其余部分为纯文本。at-self 片段会被剥离后再交给 Conversation，回复以纯文本送回同一个群；@别人、不带 @Hikari、夹带图片/文件或来自非白名单发送者/非白名单群的群消息都不会触发模型调用。群白名单留空即完全禁用群聊。
 
 `.env` 至少配置自己的 QQ 号和模型：
 
 ```dotenv
 HIKARI_ONEBOT_ALLOWED_USER_IDS=123456789
+# 可选：要启用群聊，把群号填入（逗号分隔，留空禁用）
+HIKARI_ONEBOT_ALLOWED_GROUP_IDS=
 HIKARI_CONVERSATION_HOST=127.0.0.1
 HIKARI_CONVERSATION_PORT=8765
 HIKARI_CONVERSATION_URL=ws://127.0.0.1:8765
