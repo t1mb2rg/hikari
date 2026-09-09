@@ -77,16 +77,31 @@ class QQBridgeRuntime:
         effective_group_users = (
             self.config.allowed_user_ids | self.config.allowed_group_user_ids
         )
+        # NoneBot OneBot V11 preprocesses message events before matchers run.
+        # Its _check_at_me() removes an at-self segment from event.message after
+        # setting event.to_me. Hikari's group gate intentionally requires the
+        # explicit transport-level @Hikari, so inspect the immutable deep copy
+        # captured by the adapter at event construction instead of the mutated
+        # matcher-facing message.
         normalized = normalize_group_message(
             bot_self_id=bot.self_id,
             group_id=event.group_id,
             user_id=event.user_id,
             message_id=event.message_id,
-            message=event.message,
+            message=event.original_message,
             allowed_group_user_ids=effective_group_users,
             allowed_group_ids=self.config.allowed_group_ids,
         )
         if normalized is None:
+            segment_types = [
+                str(getattr(segment, "type", "unknown"))
+                for segment in event.original_message
+            ]
+            logger.info(
+                "Hikari QQ ignored group message at safe ingress gate: "
+                f"group={event.group_id} user={event.user_id} "
+                f"segment_types={segment_types}"
+            )
             return
         request_id, turn = normalized
         item = self.spool.record_turn(request_id, turn)
