@@ -359,6 +359,16 @@ class EngineeringWorker:
             "updated": "已更新",
             "existing": "已确认已有",
         }[result.action]
+        if result.action == "created":
+            from urllib.parse import urlparse
+            from integrations.github.governance import GitHubEvidenceStore
+            url = urlparse(result.url)
+            parts = url.path.strip("/").split("/")
+            if url.hostname == "github.com" and len(parts) == 4 and parts[2] == "pull":
+                GitHubEvidenceStore(self.store.root.parent / "github_evidence.db").record_owned(
+                    "/".join(parts[:2]), result.number, session_id=state.session_id,
+                    head=result.head, base=result.base,
+                )
         return self._finish(
             state,
             turn,

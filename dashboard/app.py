@@ -32,7 +32,7 @@ def create_app(config: DashboardProbeConfig):
     service = DashboardProbeService(config)
     settings = DashboardSettings(config.env_file or config.repository / ".env")
     operations = DashboardOperations(config.state_dir, settings)
-    github = DashboardGitHub(config.repository, settings)
+    github = DashboardGitHub(config.repository, settings, config.state_dir)
     napcat_control = NapCatDashboardControl(config.napcat_root)
     static_dir = Path(__file__).with_name("static")
     app = FastAPI(
@@ -73,6 +73,13 @@ def create_app(config: DashboardProbeConfig):
     @app.get("/api/github")
     def api_github():
         return github.snapshot()
+
+    @app.get("/api/github/prs/{number}/gates")
+    def api_github_gates(number: int):
+        try:
+            return github.assessment(number)
+        except (ValueError, RuntimeError, OSError) as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from None
 
     @app.get("/api/settings")
     def api_settings():

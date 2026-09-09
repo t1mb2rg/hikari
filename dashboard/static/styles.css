@@ -429,6 +429,9 @@ main {
   display: block;
   color: var(--muted);
 }
+.gate-button {
+  margin-left: 15px;
+}
 .empty-state {
   padding: 24px 8px;
   font-size: 12px;

@@ -4,16 +4,25 @@ from threading import Lock
 import time
 
 from integrations.github import GitHubClient, GitHubError, repository_from_origin
+from integrations.github.governance import GitHubEvidenceStore, GitHubMergeGate
 from .settings import DashboardSettings
 
 
 class DashboardGitHub:
-    def __init__(self, repository: Path, settings: DashboardSettings):
+    def __init__(self, repository: Path, settings: DashboardSettings, state_dir: Path):
         self.repository = repository
         self.settings = settings
+        self.state_dir = Path(state_dir)
         self._lock = Lock()
         self._cache = None
         self._cache_at = 0.0
+
+    def assessment(self, number: int) -> dict:
+        name = self.settings.values().get("HIKARI_GITHUB_REPOSITORY", "").strip() or repository_from_origin(self.repository)
+        return GitHubMergeGate(
+            GitHubClient(name), GitHubEvidenceStore(self.state_dir / "github_evidence.db", read_only=True),
+            self.state_dir / "github_policy.json",
+        ).assess(number)
 
     def snapshot(self) -> dict:
         with self._lock:

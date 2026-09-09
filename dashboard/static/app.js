@@ -505,6 +505,9 @@ async function refreshGithub() {
             escapeHtml(p.head + " → " + p.base) +
             "</small>" +
             pill(p.draft ? "draft" : p.state) +
+            '<button class="text-button gate-button" data-pr-gates="' +
+            p.number +
+            '">查看合并条件</button>' +
             "</div>",
         )
         .join("") || empty("暂无可读取的 PR。");
@@ -656,6 +659,46 @@ $$("[data-go]").forEach((x) =>
 $("#refresh-all").addEventListener("click", refresh);
 $("#refresh-events").addEventListener("click", refreshEvents);
 $("#refresh-github").addEventListener("click", refreshGithub);
+$("#github-prs").addEventListener("click", async (event) => {
+  const button = event.target.closest("[data-pr-gates]");
+  if (!button) return;
+  button.disabled = true;
+  $("#github-gates").innerHTML =
+    '<div class="notice">正在核对远端最新提交与合并条件…</div>';
+  try {
+    const data = await api(
+      "/api/github/prs/" +
+        encodeURIComponent(button.dataset.prGates) +
+        "/gates",
+    );
+    $("#github-gates").innerHTML =
+      '<section class="panel"><div class="panel-heading"><h2>PR #' +
+      data.number +
+      " · 合并条件</h2>" +
+      pill(data.ready ? "healthy" : "blocked") +
+      '</div><p class="small">已检查提交 ' +
+      escapeHtml(data.head_sha) +
+      "</p>" +
+      data.conditions
+        .map(
+          (c) =>
+            '<div class="attention-item">' +
+            pill(c.passed ? "success" : "blocked") +
+            " " +
+            escapeHtml(c.reason) +
+            "</div>",
+        )
+        .join("") +
+      "</section>";
+  } catch (error) {
+    $("#github-gates").innerHTML =
+      '<div class="notice">合并条件无法确认：' +
+      escapeHtml(error.message) +
+      "</div>";
+  } finally {
+    button.disabled = false;
+  }
+});
 $("#reload-settings").addEventListener("click", loadSettings);
 $("#task-filter").addEventListener("change", renderTasks);
 $("#refresh-now").addEventListener("click", () =>
