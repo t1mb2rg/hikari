@@ -59,6 +59,7 @@ include = ["core*", "memory*", "user_model*", "events*", "attention*", "brain*",
 exclude = ["tests*"]
 
 [tool.setuptools.package-data]
+core = ["*.yaml"]
 personality = ["*.yaml"]
 dashboard = ["static/*.html", "static/*.css", "static/*.js"]
 engineering = ["*.schema.json"]
