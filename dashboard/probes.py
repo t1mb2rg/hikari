@@ -320,7 +320,8 @@ class DashboardProbeService:
         onebot_connected = None
         try:
             observed = read_observation(self.config.state_dir, "qq")
-            if observed and _process_alive(observed["pid"]) and time.time() - observed["observed_at"] < 30:
+            ttl = min(600, max(15, float((observed or {}).get("details", {}).get("observation_ttl_seconds", 30))))
+            if observed and _process_alive(observed["pid"]) and time.time() - observed["observed_at"] < ttl:
                 onebot_connected = observed.get("details", {}).get("connected") is True
         except (OSError, ValueError, KeyError):
             pass

@@ -5,6 +5,7 @@ import asyncio
 from collections.abc import Mapping, Sequence
 import hmac
 import ipaddress
+import logging
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
@@ -13,10 +14,12 @@ from brain.providers.observed import ObservedChatProvider
 from memory.store import MemoryStore
 from resident.environment import load_runtime_environment
 from resident.paths import default_state_dir
+from resident.telemetry import record_observation
 from user_model import UserModelService, ModelUserFactExtractor, build_user_model_runtime
 from websockets.asyncio.server import ServerConnection, serve
 
-from .cli import build_chat_provider
+from .cli import build_chat_provider, _entrypoint_paths, _entrypoint_engineering_bridge, _bounded_user_model_worker
+from .bootstrap import build_private_task_router
 from .engine import ConversationEngine
 from .jarvis_openjarvis import JARVIS_PRODUCTION_SYSTEM_INSTRUCTIONS
 from .models import AssistantReply, UserTurn
@@ -37,6 +40,9 @@ from .receipts import ConversationReceiptStore
 
 DEFAULT_CONVERSATION_HOST = "127.0.0.1"
 DEFAULT_CONVERSATION_PORT = 8765
+CONVERSATION_OBSERVATION_INTERVAL_SECONDS = 3.0
+USER_MODEL_DRAIN_INTERVAL_SECONDS = 0.5
+logger = logging.getLogger(__name__)
 
 PRIMARY_REMOTE_RELATIONSHIP_CONTEXT = {
     "kind": "primary_local_user",
@@ -115,6 +121,7 @@ def build_remote_conversation_engine(
             state_dir=state_dir,
             qq_enabled=qq_enabled,
             engineering_enabled=engineering_enabled,
+            host_kind="standalone",
         ),
         relevant_context_placement="current_turn",
     )
@@ -290,6 +297,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--env-file", default=None)
     parser.add_argument("--db", default=None)
+    parser.add_argument("--repository", default=None)
+    parser.add_argument("--state-dir", default=None)
     parser.add_argument("--receipt-db", default=None)
     parser.add_argument("--host", default=None)
     parser.add_argument("--port", type=int, default=None)
@@ -307,16 +316,63 @@ async def _run_host(
     *,
     bind_host: str,
     bind_port: int,
+    state_dir: Path | None = None,
+    engineering_enabled: bool = False,
+    qq_enabled: bool = False,
 ) -> None:
-    async with serve(
-        host.handle,
-        bind_host,
-        bind_port,
-        max_size=1024 * 1024,
-        ping_interval=20,
-        ping_timeout=20,
-    ) as server:
-        await server.serve_forever()
+    root = state_dir or host.processor.receipts.path.parent
+    started = False
+    port = bind_port
+
+    async def observe_listener():
+        while True:
+            record_observation(root, "conversation", "healthy", port=port,
+                               engineering_enabled=engineering_enabled, qq_enabled=qq_enabled,
+                               standalone=True)
+            await asyncio.sleep(CONVERSATION_OBSERVATION_INTERVAL_SECONDS)
+
+    processor = getattr(host, "processor", None)
+    router = getattr(processor, "action_bridge", None)
+    worker = _bounded_user_model_worker(getattr(router, "user_model_worker", None))
+
+    async def drain_user_model():
+        while True:
+            await asyncio.sleep(USER_MODEL_DRAIN_INTERVAL_SECONDS)
+            job = asyncio.create_task(asyncio.to_thread(worker.drain_once))
+            try:
+                await asyncio.shield(job)
+            except asyncio.CancelledError:
+                # Cancelling to_thread alone abandons ownership while its DB/model
+                # work still runs. Wait for the bounded current job before exiting.
+                await asyncio.gather(job, return_exceptions=True)
+                raise
+            except Exception as exc:
+                logger.warning("User Model background drain degraded: %s", type(exc).__name__)
+
+    try:
+        async with serve(
+            host.handle,
+            bind_host,
+            bind_port,
+            max_size=1024 * 1024,
+            ping_interval=20,
+            ping_timeout=20,
+        ) as server:
+            started = True
+            if server.sockets:
+                port = server.sockets[0].getsockname()[1]
+            observation = asyncio.create_task(observe_listener())
+            learning = asyncio.create_task(drain_user_model(), name="hikari-host-user-model") if worker is not None else None
+            try:
+                await server.serve_forever()
+            finally:
+                observation.cancel()
+                if learning is not None:
+                    learning.cancel()
+                await asyncio.gather(observation, *([learning] if learning else []), return_exceptions=True)
+    finally:
+        if started:
+            record_observation(root, "conversation", "offline", port=port, standalone=True)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -355,12 +411,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         shared_secret = values.get("HIKARI_CONVERSATION_SHARED_SECRET")
         shared_secret = shared_secret.strip() if shared_secret else None
 
-        state_dir = default_state_dir()
-        memory_path = (
-            Path(args.db).expanduser().resolve()
-            if args.db
-            else (state_dir / "memory.db").resolve()
-        )
+        repository, state_dir, memory_path = _entrypoint_paths(args, values)
         receipt_path = (
             Path(args.receipt_db).expanduser().resolve()
             if args.receipt_db
@@ -368,25 +419,30 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         user_model_service, user_fact_extractor = build_user_model_runtime(
             provider,
-            memory_path.parent / "user_model.db",
+            state_dir / "user_model.db",
         )
+        engineering_enabled = _runtime_bool(values, "HIKARI_ENGINEERING_ENABLED", default=False)
+        qq_enabled = _runtime_bool(values, "HIKARI_QQ_ENABLED", default=False)
         engine = build_remote_conversation_engine(
             provider,
             MemoryStore(memory_path),
-            state_dir=memory_path.parent,
+            state_dir=state_dir,
             history_limit=args.history_limit,
             user_model_service=user_model_service,
             user_fact_extractor=user_fact_extractor,
-            qq_enabled=_runtime_bool(values, "HIKARI_QQ_ENABLED", default=False),
-            engineering_enabled=_runtime_bool(
-                values,
-                "HIKARI_ENGINEERING_ENABLED",
-                default=False,
+            qq_enabled=qq_enabled,
+            engineering_enabled=engineering_enabled,
+        )
+        router = build_private_task_router(
+            engine, repository=repository, state_dir=state_dir, values=dict(values),
+            engineering_bridge=_entrypoint_engineering_bridge(
+                repository=repository, state_dir=state_dir, enabled=engineering_enabled,
             ),
         )
         processor = ConversationRequestProcessor(
             engine,
             ConversationReceiptStore(receipt_path),
+            action_bridge=router,
         )
         websocket_host = ConversationWebSocketHost(
             processor,
@@ -407,6 +463,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                 websocket_host,
                 bind_host=bind_host,
                 bind_port=bind_port,
+                state_dir=state_dir,
+                engineering_enabled=engineering_enabled,
+                qq_enabled=qq_enabled,
             )
         )
     except KeyboardInterrupt:

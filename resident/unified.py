@@ -26,6 +26,19 @@ Clock = Callable[[], float]
 EngineeringDeliveryPump = Callable[[], int]
 
 
+def _child_runtime_environment(environment: Mapping[str, str]) -> dict[str, str]:
+    """Keep child imports on this trusted Hikari build, not a target project's cwd.
+
+    A development interpreter may have an editable install pointing at another
+    checkout. Target repositories are work inputs, never the runtime code owner.
+    """
+    values = dict(environment)
+    package_root = Path(__file__).resolve().parents[1]
+    previous = values.get("PYTHONPATH", "")
+    values["PYTHONPATH"] = os.pathsep.join([str(package_root), *[p for p in previous.split(os.pathsep) if p and p != str(package_root)]])
+    return values
+
+
 def runtime_bool(
     environment: Mapping[str, str],
     name: str,
@@ -144,8 +157,8 @@ class QQBridgeSupervisor:
         with self.config.log_path.open("ab") as log_handle:
             process = self._process_factory(
                 self.config.argv(),
-                cwd=self.config.repository,
-                env=dict(self.config.environment),
+                cwd=Path(__file__).resolve().parents[1],
+                env=_child_runtime_environment(self.config.environment),
                 stdin=subprocess.DEVNULL,
                 stdout=log_handle,
                 stderr=subprocess.STDOUT,
@@ -284,8 +297,8 @@ class EngineeringWorkerSupervisor:
         with self.config.log_path.open("ab") as log_handle:
             process = self._process_factory(
                 self.config.argv(),
-                cwd=self.config.repository,
-                env=dict(self.config.environment),
+                cwd=Path(__file__).resolve().parents[1],
+                env=_child_runtime_environment(self.config.environment),
                 stdin=subprocess.DEVNULL,
                 stdout=log_handle,
                 stderr=subprocess.STDOUT,
@@ -385,6 +398,7 @@ class UnifiedResidentService:
         engineering_supervisor: EngineeringWorkerSupervisor | None = None,
         engineering_delivery_pump: EngineeringDeliveryPump | None = None,
         napcat_login_guard: NapCatLoginGuard | None = None,
+        task_pump=None,
     ) -> None:
         if not isinstance(presence, ResidentPresenceRuntime):
             raise TypeError("UnifiedResidentService requires ResidentPresenceRuntime")
@@ -410,6 +424,7 @@ class UnifiedResidentService:
         self.qq_supervisor = qq_supervisor
         self.engineering_supervisor = engineering_supervisor
         self.engineering_delivery_pump = engineering_delivery_pump
+        self.task_pump = task_pump
         self.napcat_login_guard = napcat_login_guard
         self.stop_event = asyncio.Event()
         self.started_event = asyncio.Event()
@@ -463,6 +478,41 @@ class UnifiedResidentService:
                 pass
         record_observation(root, "conversation", "offline", port=self.bound_port)
 
+    async def _task_loop(self) -> None:
+        while not self.stop_event.is_set():
+            try:
+                await asyncio.to_thread(self.task_pump)
+            except Exception as exc:
+                print(f"[task-continuation] degraded: {type(exc).__name__}: {exc}", flush=True)
+            try:
+                await asyncio.wait_for(self.stop_event.wait(), timeout=2)
+            except TimeoutError:
+                pass
+
+    async def _user_model_loop(self) -> None:
+        router = self.conversation_host.processor.action_bridge
+        worker = getattr(router, "user_model_worker", None)
+        while worker is not None and not self.stop_event.is_set():
+            try:
+                await asyncio.to_thread(worker.drain_once)
+            except Exception as exc:
+                print(f"[user-model-jobs] degraded: {type(exc).__name__}", flush=True)
+            try:
+                await asyncio.wait_for(self.stop_event.wait(), timeout=1)
+            except TimeoutError:
+                pass
+
+    async def _github_loop(self) -> None:
+        while not self.stop_event.is_set():
+            try:
+                await asyncio.to_thread(self.task_pump.github_once)
+            except Exception as exc:
+                print(f"[github-continuation] degraded: {type(exc).__name__}", flush=True)
+            try:
+                await asyncio.wait_for(self.stop_event.wait(), timeout=5)
+            except TimeoutError:
+                pass
+
     async def run(self) -> None:
         print(self.presence.start(), flush=True)
         tasks: list[asyncio.Task[None]] = []
@@ -483,6 +533,12 @@ class UnifiedResidentService:
 
                 tasks.append(asyncio.create_task(self._presence_loop()))
                 tasks.append(asyncio.create_task(self._observation_loop()))
+                if self.task_pump is not None:
+                    tasks.append(asyncio.create_task(self._task_loop()))
+                    if hasattr(self.task_pump, "github_once"):
+                        tasks.append(asyncio.create_task(self._github_loop()))
+                if getattr(self.conversation_host.processor.action_bridge, "user_model_worker", None) is not None:
+                    tasks.append(asyncio.create_task(self._user_model_loop()))
                 if self.engineering_delivery_pump is not None:
                     tasks.append(
                         asyncio.create_task(

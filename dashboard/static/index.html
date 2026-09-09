@@ -111,6 +111,7 @@
             <option value="completed">已完成</option>
           </select>
         </div>
+        <div id="task-source-list"></div>
         <div id="goal-list"></div>
         <div class="section-heading">
           <h2>Engineering Sessions</h2>
@@ -154,6 +155,11 @@
           配置描述的是授权意图。运行条件仍需要实际心跳与执行证据支持。
         </div>
         <div id="capability-list" class="capability-grid"></div>
+        <div class="section-heading">
+          <h2>能力增长</h2>
+          <button id="refresh-growth" class="text-button">刷新候选状态</button>
+        </div>
+        <div id="growth-requests"></div>
       </section>
       <section id="page-github" class="page">
         <div class="page-heading">
@@ -240,6 +246,93 @@
             </button>
           </div>
         </form>
+        <section class="panel settings-group">
+          <div class="panel-heading">
+            <h2>GitHub 自动合并授权</h2>
+            <button id="reload-github-policy" class="text-button">
+              重新加载
+            </button>
+          </div>
+          <p class="subtitle">
+            由你指定仓库、目标分支与必需检查。策略保存后可被后续请求使用，当前页面不会自动合并任何
+            PR。
+          </p>
+          <form id="github-policy-form" class="settings-grid policy-form">
+            <label class="field"
+              >仓库<input
+                id="policy-repository"
+                placeholder="owner/repository"
+                required
+            /></label>
+            <label class="field"
+              >允许条件化自动合并<select id="policy-merge">
+                <option value="false">关闭</option>
+                <option value="true">开启</option>
+              </select></label
+            >
+            <label class="field"
+              >允许的目标分支（每行一个）<textarea
+                id="policy-bases"
+                rows="3"
+              ></textarea>
+            </label>
+            <label class="field"
+              >必需的 Actions 检查名称（每行一个）<textarea
+                id="policy-checks"
+                rows="3"
+              ></textarea>
+            </label>
+            <label class="field"
+              >真实验收要求<select id="policy-physical">
+                <option value="true">当前提交必须有真实验收证据</option>
+                <option value="false">此仓库由已配置检查验收</option>
+              </select></label
+            >
+            <label class="field"
+              >合并方式<select id="policy-method">
+                <option value="squash">Squash</option>
+                <option value="merge">Merge commit</option>
+                <option value="rebase">Rebase</option>
+              </select></label
+            >
+            <label class="field full-width"
+              >允许重跑的工作流（每行：路径 = 完整 blob SHA）<textarea
+                id="policy-workflows"
+                rows="2"
+                placeholder=".github/workflows/test.yml = ..."
+              ></textarea
+              ><small>只允许重跑内容与授权版本一致的测试工作流。</small></label
+            >
+            <div class="full-width">
+              <button class="button primary" type="submit">
+                保存 GitHub 授权策略</button
+              ><span id="github-policy-state" class="small"></span>
+            </div>
+          </form>
+        </section>
+        <section class="panel settings-group">
+          <div class="panel-heading">
+            <h2>纯文本能力的自动启用</h2>
+            <button id="reload-growth-policy" class="text-button">
+              重新加载
+            </button>
+          </div>
+          <p class="subtitle">
+            仅适用于宿主独立验证通过的纯文本配方。原生代码、网络、文件系统与权限扩张仍需要单独的部署决定。
+          </p>
+          <form id="growth-policy-form" class="policy-form">
+            <label class="field"
+              >自动启用已验证的配方<select id="growth-auto">
+                <option value="false">关闭，逐版本由我启用</option>
+                <option value="true">开启，仅限以下服务</option>
+              </select></label
+            >
+            <div id="growth-services" class="service-options"></div>
+            <button class="button primary" type="submit">
+              保存能力授权策略</button
+            ><span id="growth-policy-state" class="small"></span>
+          </form>
+        </section>
       </section>
       <footer>
         HIKARI <span>持续存在，真实行动。</span><span id="footer-time"></span>

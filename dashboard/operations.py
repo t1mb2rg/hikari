@@ -70,6 +70,8 @@ class DashboardOperations:
             errors.append({"source": "goals", "error": str(exc)})
 
         tables = {
+            "user_model_jobs": ("user_model_jobs.db", "SELECT source_ref,status,attempts,retry_at,last_error_type,created_at,updated_at FROM user_model_jobs ORDER BY sequence DESC LIMIT 60"),
+            "tasks": ("conversation_tasks.db", "SELECT source_ref,turn_json,intent_json,status,evidence_json,created_at,updated_at FROM task_requests ORDER BY created_at DESC LIMIT 60"),
             "receipts": ("conversation_receipts.db", "SELECT request_id, channel, conversation_id, user_text, reply_text, created_at FROM conversation_receipts ORDER BY rowid DESC LIMIT 60"),
             "claims": ("conversation_receipts.db", "SELECT request_id, channel, conversation_id, state, created_at FROM conversation_request_claims ORDER BY rowid DESC LIMIT 60"),
             "deliveries": ("proactive_delivery.db", "SELECT delivery_id, channel, state, attempts, last_error, updated_at FROM proactive_delivery_outbox ORDER BY rowid DESC LIMIT 60"),
@@ -83,6 +85,13 @@ class DashboardOperations:
                 # Claims are additive; absence on an older runtime isn't corruption.
                 if not (name == "claims" and "no such table" in str(exc)):
                     errors.append({"source": name, "error": type(exc).__name__})
+        for task in records["tasks"]:
+            for key in ("turn", "intent", "evidence"):
+                try:
+                    task[key] = json.loads(task.pop(key + "_json"))
+                except (ValueError, KeyError):
+                    task[key] = {}
+                    errors.append({"source": "tasks", "id": task["source_ref"], "error": "invalid task evidence"})
 
         worker = {"id": "worker", "label": "Engineering Worker", "status": "unknown",
                   "message": "没有可读取的心跳", "observed_at": _now()}
@@ -107,6 +116,8 @@ class DashboardOperations:
                     age = max(0, time.time() - observation["observed_at"])
                     alive = _process_alive(observation["pid"])
                     maximum = 300 if component == "model" else 30
+                    if component == "qq":
+                        maximum = min(600, max(15, float(observation.get("details", {}).get("observation_ttl_seconds", 30))))
                     entry.update(observation.get("details", {}), observed_at=observation["observed_at"],
                                  status=observation["status"] if alive and age < maximum else "unknown",
                                  age_seconds=round(age, 1))
@@ -114,11 +125,12 @@ class DashboardOperations:
             except (OSError, ValueError, KeyError):
                 entry.update(status="error", message="运行观察记录不可读取")
             observations[component] = entry
+        activation_known = observations["conversation"]["status"] == "healthy" and isinstance(observations["conversation"].get("engineering_enabled"), bool)
         enabled = observations["conversation"].get("engineering_enabled") is True
         capabilities = [
             {"key": key, **capability.to_mapping(),
-             "delegated": capability.delegated and enabled,
-             "runtime_ready": (worker["status"] == "healthy" and enabled) if capability.available else False}
+             "delegated": (capability.delegated and enabled) if activation_known else (False if not capability.delegated else None),
+             "runtime_ready": (worker["status"] == "healthy" and enabled) if activation_known and capability.available else (False if not capability.available else None)}
             for key, capability in hikari_engineering_capabilities(True).items()
         ]
         observations["model"]["configured_model"] = values.get("HIKARI_MODEL_NAME", "")

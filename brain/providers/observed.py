@@ -16,11 +16,17 @@ class ObservedChatProvider:
         self.last_success_at = None
 
     def complete(self, messages):
+        return self._observe_call(self.provider.complete, messages)
+
+    def complete_json(self, messages):
+        return self._observe_call(getattr(self.provider, "complete_json", self.provider.complete), messages)
+
+    def _observe_call(self, method, messages):
         started = time.monotonic()
         record_observation(self.state_dir, "model", "running", model=self.model,
                            last_success_at=self.last_success_at)
         try:
-            result = self.provider.complete(messages)
+            result = method(messages)
         except Exception as exc:
             record_observation(self.state_dir, "model", "error", model=self.model,
                                error_type=type(exc).__name__, last_success_at=self.last_success_at,

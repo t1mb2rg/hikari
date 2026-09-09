@@ -12,6 +12,7 @@ from urllib.parse import urlparse
 from uuid import uuid4
 
 from dotenv import dotenv_values
+from resident.file_locks import serialized_file_update
 
 
 @dataclass(frozen=True)
@@ -42,6 +43,7 @@ SETTINGS = (
     Setting("HIKARI_CONVERSATION_SHARED_SECRET", "Conversation 通道密钥", "qq", "secret"),
     Setting("HIKARI_PRESENCE_CHANNEL", "主动提醒通道", "presence", "choice", "windows", ("windows", "qq")),
     Setting("HIKARI_GITHUB_REPOSITORY", "GitHub 仓库（留空使用 origin）", "github", "repository"),
+    Setting("HIKARI_GITHUB_ALLOWED_REPOSITORIES", "允许访问的远端仓库（逗号分隔）", "github", "repositories"),
 )
 _SCHEMA = {setting.key: setting for setting in SETTINGS}
 _WRITE_LOCK = RLock()
@@ -102,6 +104,8 @@ class DashboardSettings:
             if not isinstance(value, str) or any(ch in value for ch in "\r\n\x00") or len(value) > 4096:
                 raise ValueError(f"{item.label} 格式不正确")
             value = value.strip()
+            if "${" in value:
+                raise ValueError(f"{item.label} 不支持变量插值，请填写最终配置值")
             if item.kind == "secret" and not value:
                 continue  # Empty secret fields preserve the existing credential.
             if item.kind == "bool" and value not in {"true", "false"}:
@@ -117,6 +121,8 @@ class DashboardSettings:
                         raise ValueError
                 except ValueError:
                     raise ValueError(f"{item.label} 必须为有效正数") from None
+                if item.kind == "integer":
+                    value = str(int(number))
             if item.kind == "url" and value:
                 parsed = urlparse(value)
                 if parsed.scheme not in {"https", "http"} or not parsed.hostname or parsed.username or parsed.password:
@@ -124,9 +130,12 @@ class DashboardSettings:
             if item.kind == "repository" and value:
                 from integrations.github.client import validate_repository
                 validate_repository(value)
+            if item.kind == "repositories" and value:
+                from integrations.github.client import validate_repository
+                value = ",".join(dict.fromkeys(validate_repository(part.strip()) for part in value.split(",")))
             normalized[key] = value
 
-        with _WRITE_LOCK:
+        with _WRITE_LOCK, serialized_file_update(self.path):
             raw = self._read()
             if revision != self._revision(raw):
                 raise SettingsConflict("配置已被其他操作更新，请重新加载后再保存")

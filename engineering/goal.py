@@ -14,6 +14,8 @@ from .session import (
     EngineeringResult,
     EngineeringSessionStore,
     EngineeringTurn,
+    _optional_text,
+    _text_items,
 )
 
 
@@ -139,6 +141,9 @@ class EngineeringGoalState:
     final_summary: str = ""
     created_at: float = 0.0
     updated_at: float = 0.0
+    constraints: tuple[str, ...] = ()
+    acceptance_criteria: tuple[str, ...] = ()
+    source_request_id: str | None = None
 
     def __post_init__(self) -> None:
         goal_id = self.goal_id.strip()
@@ -186,6 +191,9 @@ class EngineeringGoalState:
         object.__setattr__(self, "status", status)
         object.__setattr__(self, "source_channel", source_channel)
         object.__setattr__(self, "source_conversation_id", source_conversation_id)
+        object.__setattr__(self, "constraints", _text_items(self.constraints, name="constraints"))
+        object.__setattr__(self, "acceptance_criteria", _text_items(self.acceptance_criteria, name="acceptance_criteria"))
+        object.__setattr__(self, "source_request_id", _optional_text(self.source_request_id, name="source_request_id"))
         object.__setattr__(self, "final_summary", self.final_summary.strip())
         object.__setattr__(self, "created_at", created_at)
         object.__setattr__(self, "updated_at", updated_at)
@@ -201,6 +209,9 @@ class EngineeringGoalState:
         source_channel: str | None = None,
         source_conversation_id: str | None = None,
         goal_id: str | None = None,
+        constraints: tuple[str, ...] = (),
+        acceptance_criteria: tuple[str, ...] = (),
+        source_request_id: str | None = None,
     ) -> "EngineeringGoalState":
         now = time.time()
         return cls(
@@ -211,6 +222,9 @@ class EngineeringGoalState:
             steps=tuple(steps),
             source_channel=source_channel,
             source_conversation_id=source_conversation_id,
+            constraints=constraints,
+            acceptance_criteria=acceptance_criteria,
+            source_request_id=source_request_id,
             created_at=now,
             updated_at=now,
         )
@@ -234,6 +248,9 @@ class EngineeringGoalState:
             "current_step_index": self.current_step_index,
             "source_channel": self.source_channel,
             "source_conversation_id": self.source_conversation_id,
+            "constraints": list(self.constraints),
+            "acceptance_criteria": list(self.acceptance_criteria),
+            "source_request_id": self.source_request_id,
             "final_summary": self.final_summary,
             "steps": [step.to_mapping() for step in self.steps],
             "created_at": self.created_at,
@@ -271,6 +288,9 @@ class EngineeringGoalState:
                 else None
             ),
             final_summary=str(payload.get("final_summary", "")),
+            constraints=_text_items(payload.get("constraints", ()), name="constraints"),
+            acceptance_criteria=_text_items(payload.get("acceptance_criteria", ()), name="acceptance_criteria"),
+            source_request_id=_optional_text(payload.get("source_request_id"), name="source_request_id"),
             created_at=float(payload.get("created_at", 0.0)),
             updated_at=float(payload.get("updated_at", 0.0)),
         )
@@ -524,11 +544,17 @@ class EngineeringGoalCoordinator:
                 f"Persistent goal id: {goal.goal_id}\n"
                 f"Persistent step id: {step.step_id}\n"
                 f"Persistent goal: {goal.goal}\n"
+                f"User constraints: {json.dumps(goal.constraints, ensure_ascii=False)}\n"
+                f"Acceptance criteria: {json.dumps(goal.acceptance_criteria, ensure_ascii=False)}\n"
                 f"Requested effect: {step.effect}\n"
                 "Do only this step. Hikari owns continuation to later steps."
             ),
             authority=authority_for_effect(step.effect),
             created_at=step.created_at,
+            effect=step.effect,
+            constraints=goal.constraints,
+            acceptance_criteria=goal.acceptance_criteria,
+            source_request_id=goal.source_request_id,
         )
 
     def _load_result_or_none(self, session_id: str, turn_id: str) -> EngineeringResult | None:

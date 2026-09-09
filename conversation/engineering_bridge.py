@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import logging
+import json
+from dataclasses import replace
 from pathlib import Path
 
 from core.delegation import (
@@ -40,6 +42,7 @@ from .engineering_intent import (
     _PUSH_ACTION_HINTS,
     _WRITE_HINTS,
     _explicit_high_impact_effect,
+    resolve_engineering_intent,
 )
 from .engineering_voice import EngineeringVoiceFacts, EngineeringVoiceRenderer
 from .models import AssistantReply, UserTurn
@@ -91,6 +94,8 @@ def _remember_control_exchange(
                 "channel": turn.channel,
                 "conversation_id": turn.conversation_id,
                 "role": "user",
+                "scope": turn.scope,
+                "actor_id": turn.actor_id,
             },
             importance=1.0,
         )
@@ -101,6 +106,8 @@ def _remember_control_exchange(
                 "channel": turn.channel,
                 "conversation_id": turn.conversation_id,
                 "role": "assistant",
+                "scope": turn.scope,
+                "actor_id": turn.actor_id,
             },
             importance=1.0,
         )
@@ -165,11 +172,11 @@ def looks_like_read_only_engineering_intent(text: str) -> bool:
     return engineering_requirements_for_intent(text) == _READ_REQUIREMENTS
 
 
-def looks_like_engineering_status_query(text: str) -> bool:
+def looks_like_engineering_status_query(text: str, *, bound_session: bool = False) -> bool:
     normalized = text.casefold()
     if _contains_any(normalized, _WRITE_HINTS):
         return False
-    return _contains_any(normalized, _STATUS_SUBJECTS) and _contains_any(
+    return (bound_session or _contains_any(normalized, _STATUS_SUBJECTS)) and _contains_any(
         normalized,
         _STATUS_QUESTIONS,
     )
@@ -293,19 +300,48 @@ class ConversationEngineeringBridge:
                 step = goal.current_step
                 position = goal.current_step_index + 1
                 if goal.status == "active":
-                    progress = describe_engineering_progress(state)
+                    owns_current_turn = step.turn_id is not None and state.current_turn_id == step.turn_id
+                    phase = describe_engineering_progress(state).phase if owns_current_turn else "pending"
+                    summary = (
+                        state.latest_summary or "暂无更细的阶段信息"
+                        if owns_current_turn else "目标已保存，等待推进当前步骤"
+                    )
                     text = (
                         f"当前持久 Engineering 目标是 `active`，第 {position}/{len(goal.steps)} 步。\n"
                         f"目标：{goal.goal}\n"
-                        f"当前步骤：`{step.effect}` / `{step.status}`，工程阶段 `{progress.phase}`。\n"
-                        f"最后一次持久进度：{state.latest_summary or '暂无更细的阶段信息'}。"
+                        f"当前步骤：`{step.effect}` / `{step.status}`，工程阶段 `{phase}`。\n"
+                        f"最后一次持久进度：{summary}。"
                     )
                 else:
-                    text = (
-                        f"当前持久 Engineering 目标状态是 `{goal.status}`。\n"
-                        f"目标：{goal.goal}\n"
-                        f"实际结果：{goal.final_summary or step.result_message or '没有可读取的 terminal summary'}"
-                    )
+                    summary = goal.final_summary or step.result_message or "没有可读取的 terminal summary"
+                    evidence_missing = False
+                    if goal.status == "completed":
+                        for finished_step in goal.steps:
+                            try:
+                                result = self.store.load_result(goal.session_id, finished_step.turn_id or "")
+                            except EngineeringProtocolError:
+                                evidence_missing = True
+                                break
+                            if result.status != "completed":
+                                evidence_missing = True
+                                break
+                            summary = result.message
+                    if evidence_missing:
+                        text = (
+                            f"持久 Engineering 目标：{goal.goal}\n"
+                            "目标记录标记为 completed，但缺少相符的持久步骤结果。"
+                            "我不能据此宣称任务实际完成。"
+                        )
+                    else:
+                        text = (
+                            f"当前持久 Engineering 目标状态是 `{goal.status}`。\n"
+                            f"目标：{goal.goal}\n"
+                            f"实际结果：{summary}"
+                        )
+                if goal.constraints:
+                    text += "\n约束：" + "；".join(goal.constraints)
+                if goal.acceptance_criteria:
+                    text += "\n验收标准：" + "；".join(goal.acceptance_criteria)
             else:
                 progress = describe_engineering_progress(state)
                 engineering_turn: EngineeringTurn | None = None
@@ -366,15 +402,17 @@ class ConversationEngineeringBridge:
         turn: UserTurn,
         state: EngineeringSessionState | None,
         capabilities,
+        source_request_id: str | None = None,
     ) -> EngineeringIntentResolution | None:
         resolver = self.intent_resolver or EngineeringIntentResolver(engine.provider)
-        if not resolver.is_candidate(turn.text, bound_session=state is not None):
-            return None
         try:
-            return resolver.resolve(
-                turn.text,
+            return resolve_engineering_intent(
+                resolver,
+                engine,
+                turn,
                 capabilities=capabilities,
                 state=state,
+                source_request_id=source_request_id,
             )
         except (EngineeringIntentResolutionError, Exception) as exc:
             logger.warning(
@@ -524,6 +562,9 @@ class ConversationEngineeringBridge:
             ),
             source_channel=turn.channel,
             source_conversation_id=turn.conversation_id,
+            constraints=plan.constraints,
+            acceptance_criteria=plan.acceptance_criteria,
+            source_request_id=plan.source_request_id,
         )
         self.goals.create(goal_state)
         return _voice_reply(
@@ -545,15 +586,25 @@ class ConversationEngineeringBridge:
         turn: UserTurn,
         *,
         source_ref: str | None = None,
+        resolved_intent: EngineeringIntentResolution | None = None,
     ) -> AssistantReply:
-        if looks_like_engineering_status_query(turn.text):
+        # The shared-space boundary applies even to an already resolved intent.
+        if turn.is_shared:
+            return engine.respond(turn, source_ref=source_ref)
+        state = self._bound_state(turn.channel, turn.conversation_id)
+        if looks_like_engineering_status_query(turn.text, bound_session=state is not None):
             reply = self._status_reply(turn)
             _remember_control_exchange(engine, turn, reply)
             return reply
 
-        state = self._bound_state(turn.channel, turn.conversation_id)
         capabilities = hikari_engineering_capabilities(True)
-        resolution = self._resolve_intent(engine, turn, state, capabilities)
+        resolution = resolved_intent
+        if resolution is None:
+            resolution = self._resolve_intent(engine, turn, state, capabilities, source_ref)
+        elif not isinstance(resolution, EngineeringIntentResolution):
+            raise TypeError("resolved_intent must be EngineeringIntentResolution")
+        if resolution is not None and source_ref is not None:
+            resolution = replace(resolution, source_request_id=source_ref)
         if resolution is None or not resolution.engineering:
             return engine.respond(turn, source_ref=source_ref)
 
@@ -597,12 +648,22 @@ class ConversationEngineeringBridge:
             return reply
 
         effects = resolution.requested_effects
-        if len(effects) > 1:
+        if len(effects) > 1 or (
+            len(effects) == 1
+            and (
+                resolution.constraints
+                or resolution.acceptance_criteria
+                or not EngineeringIntentResolver.is_candidate(turn.text)
+            )
+        ):
             try:
                 plan = build_engineering_goal_plan(
                     goal=resolution.goal or turn.text,
                     requested_effects=effects,
                     original_request=turn.text,
+                    constraints=resolution.constraints,
+                    acceptance_criteria=resolution.acceptance_criteria,
+                    source_request_id=resolution.source_request_id,
                 )
             except EngineeringProtocolError as exc:
                 reply = _voice_reply(
@@ -704,11 +765,17 @@ class ConversationEngineeringBridge:
             context=(
                 "This request came from Hikari's explicit conversation channel. "
                 f"Semantic engineering goal: {resolution.goal or turn.text}. "
+                f"User constraints: {json.dumps(resolution.constraints, ensure_ascii=False)}. "
+                f"Acceptance criteria: {json.dumps(resolution.acceptance_criteria, ensure_ascii=False)}. "
                 f"Requested effect: {effect}. "
                 "The Hikari repository has a standing maintainer mandate. Complete routine project "
                 "work autonomously inside that mandate and return the grounded result."
             ),
             authority=turn_authority,
+            effect=effect,
+            constraints=resolution.constraints,
+            acceptance_criteria=resolution.acceptance_criteria,
+            source_request_id=resolution.source_request_id,
         )
         self.store.enqueue_turn(state.session_id, engineering_turn)
 

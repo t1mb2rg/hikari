@@ -59,7 +59,8 @@ def test_engineering_backend_ignores_unrelated_ambient_model(monkeypatch, tmp_pa
             argv,
             stdout_lines=_stream(
                 {"type": "system", "subtype": "init", "session_id": "s1", "model": "sonnet"},
-                {"type": "result", "subtype": "success", "session_id": "s1", "is_error": False, "result": "done"},
+                {"type": "result", "subtype": "success", "session_id": "s1", "is_error": False, "result": "done",
+                 "structured_output": {"status": "completed", "summary": "done", "validation": []}},
             ),
             **kwargs,
         )
@@ -120,7 +121,8 @@ def test_engineering_backend_streams_grounded_activity(monkeypatch, tmp_path: Pa
                 ]
             },
         },
-        {"type": "result", "subtype": "success", "session_id": "stream-1", "is_error": False, "result": "implemented and validated"},
+        {"type": "result", "subtype": "success", "session_id": "stream-1", "is_error": False, "result": "implemented and validated",
+         "structured_output": {"status": "completed", "summary": "implemented and validated", "validation": ["pytest: 1 passed"]}},
     )
 
     monkeypatch.setattr(

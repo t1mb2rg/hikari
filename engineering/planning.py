@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from .effects import SUPPORTED_ENGINEERING_EFFECTS
-from .session import EngineeringProtocolError
+from .session import EngineeringProtocolError, _optional_text, _text_items
 
 
 _EFFECT_CAPABILITIES: dict[str, tuple[str, ...]] = {
@@ -31,6 +31,9 @@ class EngineeringGoalPlan:
     goal: str
     steps: tuple[PlannedEngineeringStep, ...]
     required_capabilities: tuple[str, ...]
+    constraints: tuple[str, ...] = ()
+    acceptance_criteria: tuple[str, ...] = ()
+    source_request_id: str | None = None
 
 
 def _step_instruction(effect: str, goal: str, original_request: str) -> str:
@@ -67,6 +70,9 @@ def build_engineering_goal_plan(
     goal: str,
     requested_effects: tuple[str, ...],
     original_request: str,
+    constraints: tuple[str, ...] = (),
+    acceptance_criteria: tuple[str, ...] = (),
+    source_request_id: str | None = None,
 ) -> EngineeringGoalPlan:
     """Build the deterministic execution skeleton for one already-resolved goal.
 
@@ -78,6 +84,9 @@ def build_engineering_goal_plan(
     """
 
     normalized_goal = goal.strip() or original_request.strip()
+    constraints = _text_items(constraints, name="constraints")
+    acceptance_criteria = _text_items(acceptance_criteria, name="acceptance_criteria")
+    source_request_id = _optional_text(source_request_id, name="source_request_id")
     if not normalized_goal:
         raise EngineeringProtocolError("persistent engineering goal must not be empty")
 
@@ -118,14 +127,22 @@ def build_engineering_goal_plan(
                 required_seen.add(capability)
                 required.append(capability)
 
+    handoff = ""
+    if constraints:
+        handoff += "\n用户约束：\n" + "\n".join(f"- {item}" for item in constraints)
+    if acceptance_criteria:
+        handoff += "\n验收标准：\n" + "\n".join(f"- {item}" for item in acceptance_criteria)
     return EngineeringGoalPlan(
         goal=normalized_goal,
         steps=tuple(
             PlannedEngineeringStep(
                 effect=effect,
-                instruction=_step_instruction(effect, normalized_goal, original_request),
+                instruction=_step_instruction(effect, normalized_goal, original_request) + handoff,
             )
             for effect in effects
         ),
         required_capabilities=tuple(required),
+        constraints=constraints,
+        acceptance_criteria=acceptance_criteria,
+        source_request_id=source_request_id,
     )

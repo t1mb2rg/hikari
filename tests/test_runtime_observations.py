@@ -5,6 +5,7 @@ import pytest
 
 from brain.providers.observed import ObservedChatProvider
 from resident.telemetry import read_observation
+from resident.telemetry import record_observation
 from dashboard.operations import DashboardOperations
 from dashboard.settings import DashboardSettings
 
@@ -37,3 +38,17 @@ def test_model_failure_preserves_exception_and_records_no_secret_text(tmp_path: 
     assert observed["status"] == "error"
     assert observed["details"]["error_type"] == "RuntimeError"
     assert "secret-bearing" not in json.dumps(observed)
+
+
+def test_quiet_qq_does_not_expire_before_configured_observation_interval(tmp_path: Path):
+    import time
+    record_observation(tmp_path, "qq", "healthy", connected=True, observation_ttl_seconds=150)
+    path = tmp_path / "observations" / "qq.json"
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data["observed_at"] = time.time() - 65
+    path.write_text(json.dumps(data), encoding="utf-8")
+    result = DashboardOperations(tmp_path, DashboardSettings(tmp_path / ".env")).snapshot()
+    assert result["qq"]["status"] == "healthy"
+    data["observed_at"] = time.time() - 160
+    path.write_text(json.dumps(data), encoding="utf-8")
+    assert DashboardOperations(tmp_path, DashboardSettings(tmp_path / ".env")).snapshot()["qq"]["status"] == "unknown"

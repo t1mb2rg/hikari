@@ -73,21 +73,11 @@ _VALIDATION_COMMAND_MARKERS = (
     "go test",
     "dotnet test",
 )
-_EFFECT_PREFIX = "Requested effect: "
-
-
 def _turn_effect(turn: EngineeringTurn) -> str:
-    """Read the deterministic effect written by ConversationEngineeringBridge.
+    """Use the same typed effect and legacy fallback as restart recovery."""
+    from .effects import turn_effect
 
-    This deliberately does not interpret the user's natural-language intent. The bridge
-    writes its machine field after the semantic goal, so the last marker is authoritative.
-    Older publish turns without the field remain compatible with the original push path.
-    """
-
-    _, marker, tail = turn.context.rpartition(_EFFECT_PREFIX)
-    if not marker:
-        return ""
-    return tail.split(".", 1)[0].strip()
+    return turn_effect(turn)
 
 
 def _prompt_for_read_only_turn(state: EngineeringSessionState, turn: EngineeringTurn) -> str:
@@ -138,6 +128,7 @@ def _prompt_for_maintainer_turn(state: EngineeringSessionState, turn: Engineerin
         "You may inspect and edit/create/delete project files needed for the task.",
         "Stay inside this repository. Do not use the network or access external secret locations.",
         "Do not stage, commit, push, merge, publish, deploy, or alter Git history; Hikari's Worker owns those steps.",
+        "Return completed when your edit/validation stage is complete. Hikari will commit after you return; do not report blocked merely because you correctly left that commit to Hikari.",
         "You own task-appropriate validation inside this turn. Choose validation proportionate to the actual change.",
         "Documentation-only changes do not need a meaningless full project test suite. For code/config/test changes, run the relevant checks needed to support completion.",
         "If a validation command fails because of your change, continue diagnosing and repairing inside this same agent loop before finishing.",
@@ -598,7 +589,7 @@ class EngineeringWorker:
         detail = (result.stderr or "").strip()
         if len(detail) > 1200:
             detail = detail[-1200:]
-        blocked = result.returncode == 77 and "[codex:blocked]" in detail
+        blocked = result.returncode == 77 and any(marker in detail for marker in ("[codex:blocked]", "[claude-code:blocked]"))
         message = "Engineering backend 被阻塞" if blocked else "Engineering backend 执行失败"
         if detail:
             message += f"：{detail}"

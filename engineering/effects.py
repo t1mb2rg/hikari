@@ -77,8 +77,8 @@ def _is_command_authority(authority: EngineeringAuthority) -> bool:
 def turn_effect(turn: EngineeringTurn) -> str:
     """Read the deterministic effect from one Bridge-authored EngineeringTurn.
 
-    The last marker wins because user/semantic text may mention the same literal phrase
-    earlier in the context. Legacy turns without the marker are mapped from their narrow
+    New turns use an explicit validated field, independent of natural-language context.
+    For old records the last marker wins; legacy turns without a marker use their narrow
     authority profile so restart recovery can retain the pre-M7-C behavior safely.
 
     Command authority is checked before generic read-only authority. The historical
@@ -89,6 +89,9 @@ def turn_effect(turn: EngineeringTurn) -> str:
 
     if not isinstance(turn, EngineeringTurn):
         raise TypeError("turn_effect requires EngineeringTurn")
+
+    if turn.effect is not None:
+        return turn.effect
 
     _, marker, tail = turn.context.rpartition(_EFFECT_PREFIX)
     if marker:

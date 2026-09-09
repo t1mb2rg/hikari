@@ -7,12 +7,14 @@ from pathlib import Path
 from typing import Sequence
 
 from starlette.requests import Request
+from resident.file_locks import FileUpdateBusy
 
 from .napcat_control import NapCatDashboardControl
 from .probes import DashboardProbeConfig, DashboardProbeService
 from .operations import DashboardOperations
 from .settings import DashboardSettings, SettingsConflict
 from .github import DashboardGitHub
+from .operator_controls import DashboardOperatorControls, OperatorPolicyConflict
 
 
 DEFAULT_DASHBOARD_PORT = 8787
@@ -33,6 +35,7 @@ def create_app(config: DashboardProbeConfig):
     settings = DashboardSettings(config.env_file or config.repository / ".env")
     operations = DashboardOperations(config.state_dir, settings)
     github = DashboardGitHub(config.repository, settings, config.state_dir)
+    operator = DashboardOperatorControls(config)
     napcat_control = NapCatDashboardControl(config.napcat_root)
     static_dir = Path(__file__).with_name("static")
     app = FastAPI(
@@ -81,6 +84,57 @@ def create_app(config: DashboardProbeConfig):
         except (ValueError, RuntimeError, OSError) as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from None
 
+    @app.get("/api/operator/github-policy")
+    def api_github_policy():
+        return operator.get_github_policy()
+
+    @app.get("/api/operator/growth-policy")
+    def api_growth_policy():
+        return operator.get_growth_policy()
+
+    @app.get("/api/operator/capabilities")
+    def api_capability_candidates():
+        return operator.growth_snapshot()
+
+    async def operator_payload(request):
+        if len(await request.body()) > 65536:
+            raise HTTPException(status_code=413, detail="操作请求过大")
+        try:
+            data = await request.json()
+        except ValueError:
+            raise HTTPException(status_code=422, detail="操作请求需要 JSON") from None
+        if not isinstance(data, dict):
+            raise HTTPException(status_code=422, detail="操作请求必须为对象")
+        return data
+
+    @app.put("/api/operator/github-policy")
+    async def api_save_github_policy(request: Request):
+        data = await operator_payload(request)
+        try:
+            return operator.save_github_policy(data.get("document"), data.get("revision"))
+        except OperatorPolicyConflict as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from None
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from None
+
+    @app.put("/api/operator/growth-policy")
+    async def api_save_growth_policy(request: Request):
+        data = await operator_payload(request)
+        try:
+            return operator.save_growth_policy(data.get("document"), data.get("revision"))
+        except OperatorPolicyConflict as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from None
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from None
+
+    @app.post("/api/operator/capabilities/{request_id}/activate")
+    async def api_activate_capability(request_id: str, request: Request):
+        data = await operator_payload(request)
+        try:
+            return operator.operator_activate_capability(request_id, data.get("digest"))
+        except (ValueError, RuntimeError) as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from None
+
     @app.get("/api/settings")
     def api_settings():
         return settings.snapshot()
@@ -94,7 +148,7 @@ def create_app(config: DashboardProbeConfig):
             if not isinstance(payload, dict):
                 raise ValueError("配置请求必须为对象")
             return settings.save(payload.get("changes"), payload.get("revision"))
-        except SettingsConflict as exc:
+        except (SettingsConflict, FileUpdateBusy) as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from None
         except (ValueError, TypeError) as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from None

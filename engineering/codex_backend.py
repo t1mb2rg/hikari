@@ -174,8 +174,12 @@ class CodexEngineeringBackend:
                     "Hikari owns git commit, push, PR publication and authority. Do not perform those actions, "
                     "change permissions, deploy, or read credentials. Perform appropriate tests and repair, "
                     "then report concrete changes and validation evidence using the required JSON schema. "
-                    "Set status=blocked when permissions or environment prevent the requested work; "
-                    "set status=failed when it remains incomplete. Never set completed just because you can reply.\n\n")
+                    "Your status reports ONLY the backend-assigned editing/inspection/validation stage. "
+                    "When that stage is done, return completed; Hikari will then do its own scope check and commit. "
+                    "The user's overall goal may include commit/push/PR: those are Hikari-owned later stages, "
+                    "so not performing them yourself is expected and must NOT make your stage blocked. "
+                    "Set status=blocked only when permissions or environment prevent your assigned stage; "
+                    "set status=failed when that stage remains incomplete. Never set completed just because you can reply.\n\n")
         try:
             proc.stdin.write(boundary + prompt + "\n")
             proc.stdin.close()

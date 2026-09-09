@@ -23,6 +23,8 @@ from brain.providers.observed import ObservedChatProvider
 from conversation.cli import build_chat_provider, default_context_collector
 from conversation.engine import ConversationEngine, INTERACTIVE_SYSTEM_INSTRUCTIONS
 from conversation.persistent_engineering_bridge import PersistentConversationEngineeringBridge
+from conversation.bootstrap import build_private_task_router
+from conversation.task_pump import ConversationTaskPump
 from conversation.jarvis_openjarvis import JARVIS_PRODUCTION_SYSTEM_INSTRUCTIONS
 from conversation.natural_context import build_resident_natural_context
 from conversation.receipts import ConversationReceiptStore
@@ -440,6 +442,7 @@ def main(argv: Sequence[str] | None = None) -> None:
                     state_dir=state_dir,
                     qq_enabled=qq_enabled,
                     engineering_enabled=engineering_enabled,
+                    repository=repository,
                 ),
                 "relevant_context_placement": "current_turn",
             }
@@ -481,11 +484,14 @@ def main(argv: Sequence[str] | None = None) -> None:
                     python_executable=child_python,
                 )
             )
+        task_router = build_private_task_router(engine, repository=repository, state_dir=state_dir,
+                                               values=values, engineering_bridge=engineering_bridge)
+        task_pump = ConversationTaskPump(task_router, DeliveryOutbox(state_dir / "proactive_delivery.db"))
         conversation_host = ConversationWebSocketHost(
             ConversationRequestProcessor(
                 engine,
                 ConversationReceiptStore(receipt_path),
-                action_bridge=engineering_bridge,
+                action_bridge=task_router,
             ),
             shared_secret=shared_secret,
         )
@@ -528,6 +534,7 @@ def main(argv: Sequence[str] | None = None) -> None:
         qq_supervisor=qq_supervisor,
         engineering_supervisor=engineering_supervisor,
         napcat_login_guard=napcat_login_guard,
+        task_pump=task_pump,
     )
     print(f"Hikari Conversation Host：ws://{bind_host}:{bind_port}", flush=True)
     print(f"Hikari 对话模型：{getattr(provider, 'model', type(provider).__name__)}", flush=True)

@@ -2,6 +2,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from threading import Lock
 import time
+import os
 
 from integrations.github import GitHubClient, GitHubError, repository_from_origin
 from integrations.github.governance import GitHubEvidenceStore, GitHubMergeGate
@@ -20,7 +21,7 @@ class DashboardGitHub:
     def assessment(self, number: int) -> dict:
         name = self.settings.values().get("HIKARI_GITHUB_REPOSITORY", "").strip() or repository_from_origin(self.repository)
         return GitHubMergeGate(
-            GitHubClient(name), GitHubEvidenceStore(self.state_dir / "github_evidence.db", read_only=True),
+            GitHubClient(name, environment={**self.settings.values(), **os.environ}), GitHubEvidenceStore(self.state_dir / "github_evidence.db", read_only=True),
             self.state_dir / "github_policy.json",
         ).assess(number)
 
@@ -31,7 +32,7 @@ class DashboardGitHub:
             name = ""
             try:
                 name = self.settings.values().get("HIKARI_GITHUB_REPOSITORY", "").strip() or repository_from_origin(self.repository)
-                client = GitHubClient(name)
+                client = GitHubClient(name, environment={**self.settings.values(), **os.environ})
                 with ThreadPoolExecutor(max_workers=3) as pool:
                     info = pool.submit(client.repository_info)
                     prs = pool.submit(client.pull_requests)

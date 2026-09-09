@@ -297,12 +297,14 @@ def build_resident_natural_context(
     qq_enabled: bool,
     engineering_enabled: bool,
     repository: str | Path | None = None,
+    host_kind: str = "resident",
 ) -> str:
     """Turn a few current resident/project facts into compact model-visible context."""
 
     lines = [
         "当前可用的系统事实：",
-        "- Hikari Resident 当前正在运行，这次对话由它的 Conversation Host 承载。",
+        ("- Hikari Resident 当前正在运行，这次对话由它的 Conversation Host 承载。" if host_kind == "resident"
+         else "- 这次对话由独立 Conversation Host 承载；不能据此判断 Resident 是否运行。"),
     ]
 
     if qq_enabled:

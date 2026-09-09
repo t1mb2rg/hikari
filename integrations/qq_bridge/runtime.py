@@ -53,7 +53,7 @@ class QQBridgeRuntime:
         snapshot = self.health.snapshot()
         root = self.spool.path.parent
         record_observation(root, "qq", "healthy" if snapshot.healthy else "offline",
-                           **asdict(snapshot))
+                           observation_ttl_seconds=max(15.0, self.config.link_check_seconds * 2.5), **asdict(snapshot))
 
     def observe_event(self) -> None:
         self.health.mark_event()
@@ -264,6 +264,7 @@ class QQBridgeRuntime:
                     )
                 else:
                     self.health.mark_probe(True)
+                self._publish_health(force=True)
         except asyncio.CancelledError:
             raise
 

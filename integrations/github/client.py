@@ -14,6 +14,10 @@ class GitHubError(RuntimeError):
     pass
 
 
+class GitHubOutcomeUnknown(GitHubError):
+    """A mutating request may have reached GitHub; it must not be replayed."""
+
+
 def validate_repository(repository: str) -> str:
     if not isinstance(repository, str) or not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository):
         raise ValueError("GitHub 仓库必须为 owner/name")
@@ -23,8 +27,11 @@ def validate_repository(repository: str) -> str:
 
 
 def repository_from_origin(path: Path) -> str:
-    result = subprocess.run(["git", "-C", str(path), "remote", "get-url", "origin"],
-                            capture_output=True, text=True, encoding="utf-8", timeout=5)
+    try:
+        result = subprocess.run(["git", "-C", str(path), "remote", "get-url", "origin"],
+                                capture_output=True, text=True, encoding="utf-8", timeout=5)
+    except (OSError, subprocess.TimeoutExpired):
+        raise GitHubError("无法读取 GitHub origin，请检查本机仓库或指定配置") from None
     remote = result.stdout.strip()
     match = re.fullmatch(r"(?:https://github\.com/|git@github\.com:)([^/]+/[^/]+?)(?:\.git)?", remote)
     if result.returncode or not match:
@@ -35,8 +42,8 @@ def repository_from_origin(path: Path) -> str:
 class GitHubClient:
     """A repository-scoped API adapter, never a model-supplied shell command.
 
-    Methods build fixed GitHub API endpoints. This first surface is read-only;
-    authorized mutations and exact-head merge gates are separate runtime effects.
+    Methods build fixed GitHub API endpoints. Mutations are exposed only through
+    the action service and exact-head merge gate.
     """
 
     def __init__(self, repository: str, *, environment: dict[str, str] | None = None, timeout: float = 15):
@@ -51,19 +58,26 @@ class GitHubClient:
         endpoint = f"repos/{self.repository}" + (f"/{resource}" if resource else "")
         try:
             argv = [executable, "api", "--hostname", "github.com", "--method", method, endpoint]
+            if raw:
+                # gh refuses job logs containing terminal controls unless opted in.
+                # Accept the transport bytes, then remove controls before display.
+                argv.append("--allow-escape-sequences")
             if payload is not None:
                 argv.extend(["--input", "-"])
             result = subprocess.run(argv, input=json.dumps(payload) if payload is not None else None,
                                     env=self.environment, capture_output=True, text=True, encoding="utf-8",
                                     errors="replace", timeout=self.timeout)
         except (OSError, subprocess.TimeoutExpired) as exc:
-            raise GitHubError(f"GitHub 请求未完成：{type(exc).__name__}") from None
+            error = GitHubOutcomeUnknown if method != "GET" else GitHubError
+            raise error(f"GitHub 请求未完成：{type(exc).__name__}") from None
         if result.returncode:
-            raise GitHubError(f"GitHub 访问失败（退出码 {result.returncode}），请检查 gh 登录及该仓库的访问权限")
+            error = GitHubOutcomeUnknown if method != "GET" else GitHubError
+            raise error(f"GitHub 访问失败（退出码 {result.returncode}），请检查 gh 登录及该仓库的访问权限")
         if len(result.stdout) > 4 * 1024 * 1024:
             raise GitHubError("GitHub 响应超过当前读取上限")
         if raw:
-            return result.stdout
+            clean = re.sub(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)|[@-_])", "", result.stdout)
+            return re.sub(r"[\x00-\x08\x0b-\x1f\x7f]", "", clean)
         if not result.stdout.strip():
             return {}
         try:
@@ -140,7 +154,10 @@ class GitHubClient:
         current = self.pull_request(number)
         if current.get("changed_files", 0) > 100:
             raise GitHubError("PR 超过 100 个文件，需人工审查")
-        return self._get(f"pulls/{number}/files?per_page=100")
+        files = self._get(f"pulls/{number}/files?per_page=100")
+        if not isinstance(files, list) or type(current.get("changed_files")) is not int or len(files) != current["changed_files"]:
+            raise GitHubError("无法确认 PR 修改文件列表完整，取消自动合并")
+        return files
 
     def rerun_workflow(self, run_id: int) -> dict:
         if isinstance(run_id, bool) or not isinstance(run_id, int) or run_id <= 0:
@@ -151,6 +168,35 @@ class GitHubClient:
         if isinstance(run_id, bool) or not isinstance(run_id, int) or run_id <= 0:
             raise ValueError("运行 ID 必须为正整数")
         return self._get(f"actions/runs/{run_id}/jobs?per_page=100")
+
+    def workflow_run(self, run_id: int) -> dict:
+        if isinstance(run_id, bool) or not isinstance(run_id, int) or run_id <= 0:
+            raise ValueError("运行 ID 必须为正整数")
+        return self._get(f"actions/runs/{run_id}")
+
+    def mark_ready(self, number: int, *, expected_head: str) -> dict:
+        current = self.pull_request(number)
+        if current["head"]["sha"] != self._sha(expected_head):
+            raise GitHubError("草稿转为待审查前 head 已变化")
+        self._branch(current["head"]["ref"])
+        node_id = current.get("node_id")
+        if not isinstance(node_id, str) or not node_id:
+            raise GitHubError("缺少 PR 的 GitHub 节点标识")
+        executable = shutil.which("gh", path=self.environment.get("PATH"))
+        if not executable:
+            raise GitHubError("找不到 GitHub CLI")
+        query = "mutation($id:ID!){markPullRequestReadyForReview(input:{pullRequestId:$id}){pullRequest{isDraft}}}"
+        try:
+            response = subprocess.run(
+                [executable, "api", "--hostname", "github.com", "graphql", "--input", "-"],
+                input=json.dumps({"query": query, "variables": {"id": node_id}}), env=self.environment,
+                capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=self.timeout)
+            value = json.loads(response.stdout)
+            if response.returncode or value.get("errors") or value["data"]["markPullRequestReadyForReview"]["pullRequest"]["isDraft"] is not False:
+                raise GitHubOutcomeUnknown("GitHub 未确认草稿已转为待审查")
+        except (OSError, subprocess.TimeoutExpired, ValueError, KeyError, TypeError):
+            raise GitHubOutcomeUnknown("无法确认草稿转为待审查的结果") from None
+        return {"draft": False}
 
     def job_log(self, job_id: int) -> str:
         if isinstance(job_id, bool) or not isinstance(job_id, int) or job_id <= 0:

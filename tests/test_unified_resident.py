@@ -129,11 +129,13 @@ def test_qq_bridge_supervisor_starts_only_hikari_bridge_child(tmp_path: Path):
         "-m",
         "integrations.qq_bridge.app",
     ]
-    assert captured[0][1]["cwd"] == repository.resolve()
+    runtime_root = Path(__file__).resolve().parents[1]
+    assert captured[0][1]["cwd"] == runtime_root
     assert captured[0][1]["env"] == {
         "SAFE": "1",
         "PYTHONIOENCODING": "utf-8",
         "PYTHONUTF8": "1",
+        "PYTHONPATH": str(runtime_root),
     }
     assert all("napcat" not in part.lower() for part in captured[0][0])
 

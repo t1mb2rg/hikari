@@ -841,3 +841,53 @@ footer span:last-child {
   -webkit-box-orient: vertical;
   overflow: hidden;
 }
+textarea {
+  font:
+    12px/1.8 Consolas,
+    monospace;
+  background: #101711;
+  color: var(--text);
+  border: 1px solid #344136;
+  border-radius: 7px;
+  padding: 10px 12px;
+  resize: vertical;
+  width: 100%;
+}
+.policy-form {
+  margin-top: 24px;
+}
+.full-width {
+  grid-column: 1/-1;
+}
+.service-options {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 12px;
+  margin: 22px 0;
+}
+.service-options label {
+  font-size: 11px;
+  color: var(--muted);
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.service-options input {
+  accent-color: var(--accent);
+}
+.activate-capability {
+  margin-top: 18px;
+}
+.task-details pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+#github-policy-state,
+#growth-policy-state {
+  margin-left: 16px;
+}
+@media (max-width: 720px) {
+  .service-options {
+    grid-template-columns: 1fr 1fr;
+  }
+}

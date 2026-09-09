@@ -145,6 +145,7 @@ class NaturalConversationEngine(ConversationEngine):
         relevant_context_text: str | None = None,
         relevant_context_provider: Callable[[], str | None] | None = None,
         relevant_context_placement: str = "system",
+        response_guard=None,
         **kwargs,
     ) -> None:
         super().__init__(*args, **kwargs)
@@ -173,6 +174,9 @@ class NaturalConversationEngine(ConversationEngine):
         if placement not in RELEVANT_CONTEXT_PLACEMENTS:
             raise ValueError("relevant_context_placement must be system or current_turn")
         self.relevant_context_placement = placement
+        if response_guard is not None and not callable(response_guard):
+            raise TypeError("response_guard must be callable")
+        self.response_guard = response_guard
 
     def respond(
         self,
@@ -232,6 +236,10 @@ class NaturalConversationEngine(ConversationEngine):
         except ValueError as exc:
             raise RuntimeError(str(exc)) from exc
         text = output.reply
+        if self.response_guard is not None:
+            text = self.response_guard(turn, text, source_ref)
+            if not isinstance(text, str) or not text.strip():
+                raise RuntimeError("response guard did not provide a usable reply")
 
         user_event = self.memory.remember_event(
             USER_EVENT_TYPE,
@@ -255,5 +263,6 @@ class NaturalConversationEngine(ConversationEngine):
                 source_ref=(source_ref or f"conversation-event:{user_event.id}"),
                 turn=turn,
                 history=history,
+                observed_at=user_event.occurred_at,
             )
         return reply

@@ -115,6 +115,9 @@ def describe_self_state(
             ),
         },
         "engineering": {
+            "backend_selection": env.get("HIKARI_ENGINEERING_BACKEND", "claude"),
+            "implemented_backends": ("claude", "codex"),
+            "backend_completion_contract": "structured_assigned_stage_status_plus_runtime_scope_commit_and_result",
             "relationship": "internal_hikari_capability",
             "conversation_read_only_enabled": engineering_enabled,
             "conversation_maintainer_session_enabled": engineering_enabled,

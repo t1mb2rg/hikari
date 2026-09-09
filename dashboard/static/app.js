@@ -37,6 +37,14 @@ const statusText = {
   draft: "草稿",
   open: "开放",
   closed: "已关闭",
+  ok: "已读取",
+  accepted: "已接单",
+  requested: "已登记",
+  implementing: "实现中",
+  candidate_tested: "候选验证通过",
+  candidate_implemented: "候选代码已生成",
+  capability_active: "已启用",
+  resumed: "原任务已完成",
 };
 const effectText = {
   maintain_project: "修改与验证",
@@ -60,6 +68,9 @@ let operations = null,
   settings = null,
   refreshing = false,
   toastTimer = null;
+let githubPolicy = null,
+  growthPolicy = null,
+  growthSnapshot = null;
 const pill = (s) =>
   '<span class="pill ' +
   (Object.hasOwn(statusText, s) ? s : "unknown") +
@@ -118,6 +129,9 @@ function navigate(page) {
   $("#breadcrumb").textContent = "工作空间 / " + labels[page];
   history.replaceState(null, "", "#" + page);
   if (page === "settings" && !settings) loadSettings();
+  if (page === "settings" && !githubPolicy) loadGithubPolicy();
+  if (page === "settings" && !growthPolicy) loadGrowthPolicy();
+  if (page === "capabilities") refreshGrowth();
   if (page === "github") refreshGithub();
   if (page === "events") refreshEvents();
 }
@@ -164,6 +178,41 @@ function taskContent(goal) {
 }
 function renderTasks() {
   if (!operations) return;
+  $("#task-source-list").innerHTML = (operations.tasks || [])
+    .map(
+      (task) =>
+        '<details class="panel task-card"><summary><div><h3>' +
+        escapeHtml(task.intent?.goal || task.turn?.text || "来源请求") +
+        '</h3><span class="small">' +
+        escapeHtml(task.intent?.kind) +
+        " · " +
+        escapeHtml(when(task.created_at)) +
+        "</span></div>" +
+        pill(task.status) +
+        '</summary><div class="task-details"><p class="small">来源凭据 ' +
+        escapeHtml(task.source_ref) +
+        '</p><p class="small">' +
+        escapeHtml(
+          task.evidence?.goal_id ||
+            task.evidence?.request_id ||
+            task.evidence?.turn_id ||
+            "",
+        ) +
+        "</p><pre>" +
+        escapeHtml(
+          JSON.stringify(
+            {
+              constraints: task.intent?.constraints,
+              acceptance: task.intent?.acceptance_criteria,
+              evidence: task.evidence,
+            },
+            null,
+            2,
+          ),
+        ) +
+        "</pre></div></details>",
+    )
+    .join("");
   const filter = $("#task-filter").value;
   const opened = new Set($$("details[open]").map((x) => x.dataset.id));
   const goals = (operations.goals || []).filter(
@@ -359,13 +408,25 @@ function renderOperations(data) {
         '">' +
         (c.available ? "已实现" : "未实现") +
         '</span><span class="pill ' +
-        (c.delegated ? "healthy" : "blocked") +
+        (c.delegated === null
+          ? "unknown"
+          : c.delegated
+            ? "healthy"
+            : "blocked") +
         '">' +
-        (c.delegated ? "已委托" : "需授权") +
+        (c.delegated === null
+          ? "当前授权未知"
+          : c.delegated
+            ? "已委托"
+            : "需授权") +
         '</span><span class="pill ' +
         (c.runtime_ready ? "healthy" : "unknown") +
         '">' +
-        (c.runtime_ready ? "Worker 在线" : "运行条件未满足") +
+        (c.runtime_ready === null
+          ? "运行条件未知"
+          : c.runtime_ready
+            ? "Worker 在线"
+            : "运行条件未满足") +
         "</span></div></article>",
     )
     .join("");
@@ -713,3 +774,201 @@ refresh();
 setInterval(() => {
   if (!document.hidden) refresh();
 }, 5000);
+
+const lines = (text) =>
+  text
+    .split(/\r?\n/)
+    .map((v) => v.trim())
+    .filter(Boolean);
+async function loadGithubPolicy() {
+  try {
+    githubPolicy = await api("/api/operator/github-policy");
+    const name =
+      $("#policy-repository").value.trim() ||
+      Object.keys(githubPolicy.document.repositories)[0] ||
+      settings?.fields.find((f) => f.key === "HIKARI_GITHUB_REPOSITORY")
+        ?.value ||
+      "";
+    $("#policy-repository").value = name;
+    displayGithubPolicy(name);
+  } catch (error) {
+    toast(error.message);
+  }
+}
+function displayGithubPolicy(name) {
+  const policy = githubPolicy?.document.repositories[name] || {};
+  $("#policy-merge").value = String(policy.auto_merge === true);
+  $("#policy-bases").value = (policy.allowed_bases || []).join("\n");
+  $("#policy-checks").value = (policy.required_checks || []).join("\n");
+  $("#policy-physical").value = String(policy.require_physical_gate !== false);
+  $("#policy-method").value = policy.method || "squash";
+  $("#policy-workflows").value = Object.entries(policy.rerun_workflows || {})
+    .map(([path, sha]) => path + " = " + sha)
+    .join("\n");
+  $("#github-policy-state").textContent = githubPolicy?.configured
+    ? "已读取操作人策略"
+    : "尚未配置，自动合并关闭";
+}
+async function loadGrowthPolicy() {
+  try {
+    growthPolicy = await api("/api/operator/growth-policy");
+    $("#growth-auto").value = String(
+      growthPolicy.document.auto_activate_pure_recipes,
+    );
+    const available = growthPolicy.available_services;
+    const names = Array.isArray(available)
+      ? available
+      : Object.keys(available || {});
+    $("#growth-services").innerHTML = names
+      .map(
+        (name) =>
+          '<label><input type="checkbox" name="growth-service" value="' +
+          escapeHtml(name) +
+          '" ' +
+          (growthPolicy.document.allowed_services.includes(name)
+            ? "checked"
+            : "") +
+          "> " +
+          escapeHtml(name) +
+          "</label>",
+      )
+      .join("");
+    $("#growth-policy-state").textContent = growthPolicy.configured
+      ? "已读取操作人策略"
+      : "默认不自动启用候选能力";
+  } catch (error) {
+    toast(error.message);
+  }
+}
+async function refreshGrowth() {
+  try {
+    growthSnapshot = await api("/api/operator/capabilities");
+    $("#growth-requests").innerHTML =
+      (growthSnapshot.requests || [])
+        .map(
+          (item) =>
+            '<section class="panel"><div class="panel-heading"><h2>' +
+            escapeHtml(item.capability_id) +
+            " · v" +
+            item.version +
+            "</h2>" +
+            pill(item.status === "active" ? "capability_active" : item.status) +
+            '</div><p class="small">' +
+            escapeHtml(item.intent || "") +
+            '</p><p class="small">实现类型 ' +
+            escapeHtml(item.implementation_kind) +
+            " · " +
+            escapeHtml(when(item.updated_at)) +
+            '</p><p class="small">版本摘要 ' +
+            escapeHtml(item.candidate_digest || "尚未生成") +
+            '</p><details class="task-details"><summary>查看验证证据</summary><pre>' +
+            escapeHtml(JSON.stringify(item.evidence, null, 2)) +
+            "</pre></details>" +
+            (item.activatable
+              ? '<button class="button secondary activate-capability" data-request="' +
+                escapeHtml(item.request_id) +
+                '" data-digest="' +
+                escapeHtml(item.candidate_digest) +
+                '">启用这个已验证版本</button>'
+              : "") +
+            "</section>",
+        )
+        .join("") ||
+      empty(
+        "还没有能力增长请求。需要新能力时，可以在私聊中描述目标和验收示例。",
+      );
+    if (growthSnapshot.errors?.length)
+      $("#growth-requests").insertAdjacentHTML(
+        "afterbegin",
+        '<div class="notice">' +
+          escapeHtml(growthSnapshot.errors.map((e) => e.error).join("；")) +
+          "</div>",
+      );
+  } catch (error) {
+    $("#growth-requests").innerHTML = empty(error.message);
+  }
+}
+$("#reload-github-policy").addEventListener("click", loadGithubPolicy);
+$("#reload-growth-policy").addEventListener("click", loadGrowthPolicy);
+$("#refresh-growth").addEventListener("click", refreshGrowth);
+$("#policy-repository").addEventListener("change", () =>
+  displayGithubPolicy($("#policy-repository").value.trim()),
+);
+$("#github-policy-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  if (!githubPolicy) return;
+  const repository = $("#policy-repository").value.trim();
+  const workflows = {};
+  try {
+    for (const line of lines($("#policy-workflows").value)) {
+      const index = line.indexOf("=");
+      if (index < 0) throw new Error("工作流每行需要 路径 = 完整 blob SHA");
+      workflows[line.slice(0, index).trim()] = line.slice(index + 1).trim();
+    }
+    const document = structuredClone(githubPolicy.document);
+    document.repositories[repository] = {
+      auto_merge: $("#policy-merge").value === "true",
+      allowed_bases: lines($("#policy-bases").value),
+      required_checks: lines($("#policy-checks").value),
+      require_physical_gate: $("#policy-physical").value === "true",
+      method: $("#policy-method").value,
+      rerun_workflows: workflows,
+    };
+    githubPolicy = await api("/api/operator/github-policy", {
+      method: "PUT",
+      body: JSON.stringify({ document, revision: githubPolicy.revision }),
+    });
+    $("#github-policy-state").textContent = "策略已保存，后续操作将按此验证";
+    toast("GitHub 授权策略已保存，没有执行任何合并");
+  } catch (error) {
+    toast(error.message);
+  }
+});
+$("#growth-policy-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  if (!growthPolicy) return;
+  try {
+    const document = {
+      version: 1,
+      auto_activate_pure_recipes: $("#growth-auto").value === "true",
+      allowed_services: $$("#growth-services input:checked").map(
+        (x) => x.value,
+      ),
+    };
+    growthPolicy = await api("/api/operator/growth-policy", {
+      method: "PUT",
+      body: JSON.stringify({ document, revision: growthPolicy.revision }),
+    });
+    $("#growth-policy-state").textContent = "已保存，由运行中的续跑器应用";
+    toast("能力授权策略已保存");
+  } catch (error) {
+    toast(error.message);
+  }
+});
+$("#growth-requests").addEventListener("click", async (event) => {
+  const button = event.target.closest("[data-request]");
+  if (!button) return;
+  if (
+    !confirm(
+      "启用此摘要对应的已验证纯文本能力？原请求会在运行中的续跑器内继续。",
+    )
+  )
+    return;
+  button.disabled = true;
+  try {
+    await api(
+      "/api/operator/capabilities/" +
+        encodeURIComponent(button.dataset.request) +
+        "/activate",
+      {
+        method: "POST",
+        body: JSON.stringify({ digest: button.dataset.digest }),
+      },
+    );
+    toast("指定版本已启用");
+    await refreshGrowth();
+  } catch (error) {
+    toast(error.message);
+    button.disabled = false;
+  }
+});

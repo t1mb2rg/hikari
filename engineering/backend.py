@@ -65,6 +65,8 @@ class ClaudeEngineeringBackend:
 
     The backend consumes Claude Code's ``stream-json`` output so Hikari can retain
     grounded activity evidence instead of waiting on one opaque final JSON blob.
+    Process success is only transport success: a validated structured task report
+    determines whether the requested work completed, failed, or was blocked.
     """
 
     def __init__(
@@ -268,12 +270,18 @@ class ClaudeEngineeringBackend:
             )
 
         root = Path(worktree).expanduser().resolve()
+        try:
+            result_schema = Path(__file__).with_name("backend_result.schema.json").read_text(encoding="utf-8")
+        except OSError:
+            return self._failure(126, "[claude-code:configuration_error] Hikari result schema is unavailable")
         argv = [
             executable,
             "-p",
             "--output-format",
             "stream-json",
             "--verbose",
+            "--json-schema",
+            result_schema,
             "--permission-mode",
             self.permission_mode,
             "--max-turns",
@@ -346,7 +354,22 @@ class ClaudeEngineeringBackend:
 
         try:
             if proc.stdin is not None:
-                proc.stdin.write(prompt)
+                boundary = (
+                    "You are Hikari's engineering backend. Work only on the assigned repository task. "
+                    "Hikari owns Git commit, push, PR publication and authority. Do not perform those actions, "
+                    "change permissions, deploy, or read credentials. Perform appropriate validation and repair. "
+                    "Use the required structured result schema to report task status, a concrete summary, and "
+                    "validation evidence. Report ONLY the backend-assigned editing/inspection/validation stage. "
+                    "After that stage is done, Hikari performs its scope check and commit. The user's overall "
+                    "goal may include commit/push/PR; these are expected later Hikari-owned stages. Not doing "
+                    "those stages yourself must NOT cause a blocked report. "
+                    "Set status=blocked when permission or environment prevents your assigned stage; "
+                    "set status=failed when requested work remains incomplete. Set completed only when the "
+                    "requested outcome is established. An already-satisfied task may complete without edits "
+                    "if you explain what you checked. A refusal, proposed plan, or successful reply alone "
+                    "does not mean the task completed.\n\n"
+                )
+                proc.stdin.write(boundary + prompt)
                 if not prompt.endswith("\n"):
                     proc.stdin.write("\n")
                 proc.stdin.close()
@@ -405,9 +428,47 @@ class ClaudeEngineeringBackend:
         elif result_payload is not None:
             subtype = str(result_payload.get("subtype", "")).strip()
             is_error = bool(result_payload.get("is_error", False))
-            if (is_error or (subtype and subtype != "success")) and returncode == 0:
+            if (is_error or subtype != "success") and returncode == 0:
                 returncode = 1
                 detail = f"[claude-code:{subtype or 'execution_error'}] Claude Code reported an unsuccessful result"
+                stderr = (stderr.rstrip() + "\n" + detail).strip()
+
+        if returncode == 0:
+            # --json-schema exposes its validated object in structured_output.
+            # Never upgrade legacy free-form result prose to a completed task.
+            report = result_payload.get("structured_output") if result_payload is not None else None
+            if (
+                not isinstance(report, Mapping)
+                or set(report) != {"status", "summary", "validation"}
+                or not isinstance(report.get("status"), str)
+                or report["status"] not in {"completed", "blocked", "failed"}
+                or not isinstance(report.get("summary"), str)
+                or not report["summary"].strip()
+                or not isinstance(report.get("validation"), list)
+                or not all(isinstance(item, str) for item in report["validation"])
+            ):
+                return self._failure(
+                    1,
+                    (stderr.rstrip() + "\n[claude-code:invalid_result] Completion did not satisfy the Hikari result contract").strip(),
+                    stdout=stdout,
+                    session_id=session_id,
+                    events=event_tuple,
+                )
+            final_message = report["summary"].strip()
+            for item in report["validation"]:
+                if not item.strip():
+                    continue
+                event = EngineeringAgentEvent("validation", item.strip())
+                events.append(event)
+                if self._event_sink is not None:
+                    try:
+                        self._event_sink(event)
+                    except Exception:
+                        pass
+            status = report["status"]
+            if status != "completed":
+                returncode = 77 if status == "blocked" else 1
+                detail = f"[claude-code:{status}] {final_message}"
                 stderr = (stderr.rstrip() + "\n" + detail).strip()
 
         return EngineeringAgentResult(
@@ -416,5 +477,5 @@ class ClaudeEngineeringBackend:
             stderr=stderr,
             final_message=final_message,
             session_id=session_id,
-            events=event_tuple,
+            events=tuple(events),
         )
