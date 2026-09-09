@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from resident.console import configure_utf8_output
+
 import argparse
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import contextmanager
@@ -645,6 +647,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    configure_utf8_output()
     from resident.paths import default_state_dir
 
     args = build_parser().parse_args(argv)

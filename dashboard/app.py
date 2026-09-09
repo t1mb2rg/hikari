@@ -63,7 +63,15 @@ def create_app(config: DashboardProbeConfig):
 
     @app.get("/api/status")
     def api_status():
-        return service.snapshot()
+        snapshot = service.snapshot()
+        backend = operations.snapshot()["engineering_backend"]
+        if backend["status"] in {"blocked", "error"}:
+            snapshot["overall"] = "degraded"
+            snapshot["current_blocker"] = {
+                "component": "工程执行后端", "phase": backend["status"],
+                "blocking_on": backend.get("reason", "执行条件"), "message": backend["message"],
+            }
+        return snapshot
 
     @app.get("/api/events")
     def api_events(limit: int = 60):

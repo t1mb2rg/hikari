@@ -9,7 +9,7 @@ from uuid import uuid4
 
 
 def record_observation(root: Path, component: str, status: str, **details) -> bool:
-    if component not in {"conversation", "model", "qq", "resident"}:
+    if component not in {"conversation", "model", "qq", "resident", "engineering_backend"}:
         raise ValueError("unsupported observed component")
     directory = Path(root) / "observations"
     temporary = directory / f".{component}.{uuid4().hex}.tmp"

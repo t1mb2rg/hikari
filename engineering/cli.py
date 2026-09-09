@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from resident.console import configure_utf8_output
+
 import argparse
 import json
 from pathlib import Path
@@ -47,6 +49,7 @@ def _store(state_dir: str | None) -> EngineeringSessionStore:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    configure_utf8_output()
     args = build_parser().parse_args(argv)
     store = _store(args.state_dir)
 

@@ -248,13 +248,41 @@ def test_interrupted_dispatched_write_is_never_replayed(tmp_path):
     assert remote.calls == []
 
 
-def test_recorded_reads_resume_after_step_budget_without_repeating(tmp_path):
+def test_recorded_reads_resume_after_time_slice_with_steps_remaining(tmp_path, monkeypatch):
     remote = Service({"list_runs": {"workflow_runs": [{"id": 4}]}, "jobs": {"jobs": [{"id": 5}]}, "logs": {"content": "real"}})
-    flow, _, remote = workflow(tmp_path, [plan(["logs"]), action("list_runs")], remote, max_steps=1)
-    assert flow.run("诊断", source_ref="read", turn=TURN)["status"] == "pending"
+    flow, _, remote = workflow(tmp_path, [plan(["logs"]), action("list_runs")], remote, max_steps=5, deadline_seconds=1)
+    ticks = iter([0, 0.1, 0.2, 2])
+    with monkeypatch.context() as scoped:
+        scoped.setattr("conversation.github_workflow.time.monotonic", lambda: next(ticks))
+        assert flow.run("诊断", source_ref="read", turn=TURN)["status"] == "pending"
     reopened = GitHubConversationWorkflow(Provider([action("jobs", run_id=4), action("logs", job_id=5), done(3)]), remote, flow.path, max_steps=5)
     assert reopened.run("诊断", source_ref="read", turn=TURN)["status"] == "completed"
     assert [call[0] for call in remote.calls] == ["list_runs", "jobs", "logs"]
+
+
+def test_total_step_exhaustion_is_terminal_and_replay_does_not_repeat_work(tmp_path):
+    remote = Service({"list_runs": {"workflow_runs": [{"id": 4}]}})
+    flow, provider, remote = workflow(tmp_path, [plan(["logs"]), action("list_runs")], remote, max_steps=1)
+    result = flow.run("诊断", source_ref="read", turn=TURN)
+    assert result["status"] == "blocked"
+    assert result["code"] == "step_limit_reached"
+    assert result["missing_actions"] == ["logs"]
+    assert result["blocker"] == {"code": "step_limit_reached", "max_steps": 1, "used_steps": 1, "missing_actions": ["logs"]}
+    assert flow._snapshot("read")["status"] == "blocked"
+    before = (len(provider.messages), len(remote.calls))
+    assert flow.run("诊断", source_ref="read", turn=TURN) == {**result, "replayed": True}
+    assert before == (len(provider.messages), len(remote.calls))
+    reopened = GitHubConversationWorkflow(Provider([]), remote, flow.path, max_steps=10)
+    assert reopened.run("诊断", source_ref="read", turn=TURN) == {**result, "replayed": True}
+    assert len(remote.calls) == 1
+
+
+def test_step_exhaustion_reports_no_missing_action_when_only_final_confirmation_remains(tmp_path):
+    flow, _, remote = workflow(tmp_path, [plan(["read_pr"]), action("read_pr", number=3)], max_steps=1)
+    result = flow.run("读取 PR", source_ref="read", turn=TURN)
+    assert result["status"] == "blocked" and result["code"] == "step_limit_reached"
+    assert result["missing_actions"] == []
+    assert result["completed_actions"] == ["read_pr"]
 
 
 @pytest.mark.parametrize("new_turn", [UserTurn("qq", "private:42", TURN.text, actor_id="other"), UserTurn("qq", "private:other", TURN.text, actor_id="42")])

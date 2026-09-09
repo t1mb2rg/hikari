@@ -13,7 +13,7 @@ Hikari 不以模拟意识或虚构感官为目标。人格和自然表达维持�
 | 私人对话 | `ConversationTaskRouter` 区分讨论、澄清、状态、工程、GitHub 和能力请求；普通对话进入默认 Jarvis/Natural 引擎。 |
 | 工程任务 | 保存来源、目标、设计约束和验收标准，经持久 Goal / EngineeringSession 与 typed effect 执行；Worker 负责隔离工作区、验证和工程分支提交。 |
 | 工程发布 | 已实现非受保护 engineering 分支 push 和草稿 PR 创建/维护；是否执行仍由请求的 effect 与项目 mandate 决定。 |
-| GitHub | 提供仓库、PR、文件、Actions 读取，以及受限分支写入、PR 维护、授权工作流重跑和条件化合并；远端写入有不可变来源凭据。 |
+| GitHub | 提供仓库、PR、文件、Actions 读取，以及受限分支写入、PR 维护、授权工作流重跑和条件化合并；明确授权的失败修复可携实际日志交给既有 Engineering，远端写入有不可变来源凭据。 |
 | 能力增长 | 缺失能力可进入持久实现请求；纯文本/列表 recipe 在宿主解释器中实测，精确候选版本经操作人启用后才可调用。Native 代码仍是待审查、验证和部署的候选。 |
 | 群聊 | 与私人任务路径分开，必须满足群和群成员白名单、@Hikari、纯文本条件；不取得私人工程、GitHub 或能力增长权限。 |
 | 运行面板 | 读取进程、心跳、真实模型调用、连接和任务/投递记录；过期或缺失证据保持 `unknown`。设置保存与运行时生效分开。 |
@@ -53,7 +53,7 @@ HIKARI_ENGINEERING_CODEX_MODEL=
 HIKARI_ENGINEERING_BACKEND_TIMEOUT_SECONDS=300
 ```
 
-Claude 是默认工程后端，也可选择 `codex`。两者都要求结构化 `completed / blocked / failed` 结果；进程退出成功或一句“完成了”不足以证明任务完成。Worker 继续负责实际文件、测试、提交和交付证据。Codex 不继承桌面会话权限配置、插件或 hooks。
+Claude 是默认工程后端，也可选择 `codex`。两者都要求结构化 `completed / blocked / failed` 结果；进程退出成功或一句“完成了”不足以证明任务完成。Worker 继续负责实际文件、测试、提交和交付证据。Codex 不继承桌面会话权限配置、插件或 hooks。当前受限读取 profile 在已审计的 Windows `unelevated` 沙箱上会于模型启动前 blocked；旧功能 Gate 使用内置宽泛读取 profile，不能证明新边界已可用。平台设置需由操作人决定并完成新的完整 Gate，见 [Codex 沙箱边界](docs/CODEX_SANDBOX_BOUNDARY.md)。
 
 ## 常驻启动与面板
 
@@ -102,6 +102,8 @@ QQ 登录、手机扫码和风控验证由用户完成。NapCat Login Guard 可�
 自动合并默认关闭。操作人策略保存在运行 state 的 `github_policy.json`，位于候选 worktree 之外，且不属于对话 action catalog。放行需要明确的目标分支和实际检查名称、Hikari 创建的 PR 所有权、当前 head 的通过证据、无阻塞审查、无权限/验收边界改动，以及配置要求的真实验收记录。草稿满足实质条件后可以由 gate 转为待审查，再次验证后合并。历史 M7 验收 PR #77、#78、#79 保留用户决定。
 
 重跑失败任务另需操作人固定的工作流文件路径和 blob SHA；重跑请求被接收不等于 CI 已通过。部署、权限扩张、密钥修改、共享历史强推等高影响动作不能由模型自行授权。远端写入结果不确定时保持未知并禁止自动重复。
+
+私人用户明确要求修复 CI 失败时，工作流取得实际失败 run 的 job 日志，再以固定子来源将原目标、约束和验收交给 Engineering。只请求修复不自动发布；明确要求的安全 engineering 分支 push / Draft PR 可顺序继续。本地修复或发布成功仍需另外核验远端 CI。恢复、去重和总步骤上限见 [GitHub 修复交接](docs/GITHUB_REPAIR_HANDOFF.md)。
 
 ## 验证证据与文档
 

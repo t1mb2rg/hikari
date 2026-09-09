@@ -52,3 +52,19 @@ def test_quiet_qq_does_not_expire_before_configured_observation_interval(tmp_pat
     data["observed_at"] = time.time() - 160
     path.write_text(json.dumps(data), encoding="utf-8")
     assert DashboardOperations(tmp_path, DashboardSettings(tmp_path / ".env")).snapshot()["qq"]["status"] == "unknown"
+
+
+def test_blocked_backend_is_not_presented_as_ready_from_worker_heartbeat(tmp_path: Path):
+    import os, time
+    from engineering.heartbeat import EngineeringWorkerHeartbeatStore, EngineeringWorkerHeartbeat
+    EngineeringWorkerHeartbeatStore(tmp_path / "engineering_worker.json").write(
+        EngineeringWorkerHeartbeat(pid=os.getpid(), owner="fixture", started_at=time.time(), updated_at=time.time()))
+    record_observation(tmp_path, "conversation", "healthy", engineering_enabled=True)
+    record_observation(tmp_path, "engineering_backend", "blocked", backend="CodexEngineeringBackend",
+                       reason="execution_boundary_blocked", returncode=77)
+    data = DashboardOperations(tmp_path, DashboardSettings(tmp_path / ".env")).snapshot()
+    assert data["worker"]["status"] == "healthy"
+    assert data["engineering_backend"]["status"] == "blocked"
+    read = next(item for item in data["capabilities"] if item["key"] == "engineering.repository.read")
+    assert read["available"] and read["delegated"]
+    assert read["runtime_ready"] is False

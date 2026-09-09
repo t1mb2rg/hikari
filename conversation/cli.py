@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from resident.console import configure_utf8_output
+
 import argparse
 import getpass
 from collections.abc import Callable, Mapping, Sequence
@@ -281,6 +283,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    configure_utf8_output()
     args = build_parser().parse_args(argv)
     jarvis_profiles = {
         "jarvis",

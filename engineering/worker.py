@@ -377,8 +377,14 @@ class EngineeringWorker:
         workspace: EngineeringWorkspace,
         prompt: str,
     ) -> tuple[object, EngineeringAgentResult] | WorkerOutcome:
+        from resident.telemetry import record_observation
+        root = self.store.root.parent
+        selected = "unknown"
         try:
             active_backend = self.backend_factory(state, turn)
+            selected = type(active_backend).__name__
+            record_observation(root, "engineering_backend", "running", backend=selected,
+                               session_id=state.session_id, turn_id=turn.turn_id)
             set_event_sink = getattr(active_backend, "set_event_sink", None)
             if callable(set_event_sink):
                 set_event_sink(
@@ -386,6 +392,8 @@ class EngineeringWorker:
                 )
             result = active_backend.run(workspace.path, prompt)
         except Exception as exc:
+            record_observation(root, "engineering_backend", "error", backend=selected,
+                               session_id=state.session_id, turn_id=turn.turn_id, error_type=type(exc).__name__)
             return self._finish(
                 state,
                 turn,
@@ -394,6 +402,11 @@ class EngineeringWorker:
             )
         if not isinstance(result, EngineeringAgentResult):
             raise TypeError("engineering backend must return EngineeringAgentResult")
+        record_observation(root, "engineering_backend",
+                           "healthy" if result.returncode == 0 else "blocked" if result.returncode == 77 else "error",
+                           backend=selected, session_id=state.session_id, turn_id=turn.turn_id,
+                           returncode=result.returncode,
+                           reason="backend_stage_completed" if result.returncode == 0 else "execution_boundary_blocked" if result.returncode == 77 else "backend_failed")
         return active_backend, result
 
     def _backend_event(

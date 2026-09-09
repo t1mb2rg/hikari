@@ -45,6 +45,9 @@ const statusText = {
   candidate_implemented: "候选代码已生成",
   capability_active: "已启用",
   resumed: "原任务已完成",
+  repair_needed: "需要本地修复",
+  repair_pending: "修复待推进",
+  repair_running: "修复进行中",
 };
 const effectText = {
   maintain_project: "修改与验证",
@@ -437,6 +440,7 @@ function renderComponents() {
   let components = [...(latestStatus.components || [])];
   if (operations) {
     components.push(operations.worker, operations.model);
+    if (operations.engineering_backend) components.push(operations.engineering_backend);
     if (operations.conversation) components.push(operations.conversation);
   }
   $("#component-cards").innerHTML = components

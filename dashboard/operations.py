@@ -107,21 +107,24 @@ class DashboardOperations:
             worker.update(status="error", message="心跳记录不可读取")
         values = self.settings.values()
         observations = {}
-        for component in ("conversation", "model", "qq"):
-            entry = {"id": component, "label": {"conversation": "Conversation", "model": "对话模型", "qq": "OneBot 链路"}[component],
+        for component in ("conversation", "model", "qq", "engineering_backend"):
+            entry = {"id": component, "label": {"conversation": "Conversation", "model": "对话模型", "qq": "OneBot 链路", "engineering_backend": "工程执行后端"}[component],
                      "status": "unknown", "message": "尚无运行进程提供的观察证据"}
             try:
                 observation = read_observation(self.root, component)
                 if observation:
                     age = max(0, time.time() - observation["observed_at"])
                     alive = _process_alive(observation["pid"])
-                    maximum = 300 if component == "model" else 30
+                    maximum = 300 if component in {"model", "engineering_backend"} else 30
                     if component == "qq":
                         maximum = min(600, max(15, float(observation.get("details", {}).get("observation_ttl_seconds", 30))))
                     entry.update(observation.get("details", {}), observed_at=observation["observed_at"],
                                  status=observation["status"] if alive and age < maximum else "unknown",
                                  age_seconds=round(age, 1))
                     entry["message"] = ("最近真实模型调用的结果" if component == "model" else "由运行组件报告的连接证据") if alive and age < maximum else "观察已过期或原进程已退出"
+                    if component == "engineering_backend" and alive and age < maximum:
+                        entry["message"] = ("最近工程调用被执行边界阻止，需要检查该任务结果" if entry["status"] == "blocked"
+                                            else "最近真实工程后端调用的状态；不代表所有任务必定可执行")
             except (OSError, ValueError, KeyError):
                 entry.update(status="error", message="运行观察记录不可读取")
             observations[component] = entry
@@ -133,6 +136,13 @@ class DashboardOperations:
              "runtime_ready": (worker["status"] == "healthy" and enabled) if activation_known and capability.available else (False if not capability.available else None)}
             for key, capability in hikari_engineering_capabilities(True).items()
         ]
+        backend_status = observations["engineering_backend"]["status"]
+        for capability in capabilities:
+            if capability["key"] in {"engineering.repository.read", "engineering.repository.write", "engineering.commands.run", "engineering.tests.run"}:
+                capability["runtime_ready"] = (
+                    False if backend_status in {"blocked", "error"} else
+                    True if activation_known and enabled and worker["status"] == "healthy" and backend_status == "healthy" else None
+                )
         observations["model"]["configured_model"] = values.get("HIKARI_MODEL_NAME", "")
         return {"generated_at": _now(), "errors": errors, "complete": not errors,
                 "goals": sorted(goals, key=lambda x: x["updated_at"], reverse=True)[:60],

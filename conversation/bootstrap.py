@@ -25,7 +25,7 @@ def build_private_task_router(engine, *, repository: Path, state_dir: Path, valu
                               repository=repository, implementation_enabled=engineering_bridge is not None)
     router = ConversationTaskRouter(engineering_bridge=engineering_bridge,
                                    tasks=ConversationTaskStore(state_dir / "conversation_tasks.db"),
-                                   github_service=github, growth=growth)
+                                   github_service=github, growth=growth, engine=engine)
     router.growth_operator = CapabilityOperatorControls(repository, state_dir)
     router.github_workflow = GitHubConversationWorkflow(engine.provider, github, state_dir / "github_workflows.db")
     if isinstance(engine, ConversationEngine):

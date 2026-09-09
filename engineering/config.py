@@ -53,12 +53,16 @@ class EngineeringBackendConfig:
     max_turns: int
     backend: str = "claude"
     codex_model: str = ""
+    codex_sandbox: str = "unelevated"
 
     @classmethod
     def from_mapping(cls, values: Mapping[str, str]) -> "EngineeringBackendConfig":
         backend = values.get("HIKARI_ENGINEERING_BACKEND", "claude").strip().lower()
         if backend not in {"claude", "codex"}:
             raise ValueError("HIKARI_ENGINEERING_BACKEND must be claude or codex")
+        codex_sandbox = values.get("HIKARI_ENGINEERING_CODEX_SANDBOX", "unelevated").strip().lower()
+        if codex_sandbox not in {"unelevated", "elevated"}:
+            raise ValueError("HIKARI_ENGINEERING_CODEX_SANDBOX must be unelevated or elevated")
         return cls(
             executable=_owned_text(
                 values,
@@ -82,6 +86,7 @@ class EngineeringBackendConfig:
             ),
             backend=backend,
             codex_model=values.get("HIKARI_ENGINEERING_CODEX_MODEL", "").strip(),
+            codex_sandbox=codex_sandbox,
         )
 
     def resolve_executable(self, *, path: str | None = None) -> str | None:
@@ -102,6 +107,7 @@ class EngineeringBackendConfig:
         result = dict(values)
         result["HIKARI_ENGINEERING_BACKEND"] = self.backend
         result["HIKARI_ENGINEERING_CODEX_MODEL"] = self.codex_model
+        result["HIKARI_ENGINEERING_CODEX_SANDBOX"] = self.codex_sandbox
         executable_key = "HIKARI_ENGINEERING_CODEX_EXECUTABLE" if self.backend == "codex" else "HIKARI_ENGINEERING_CLAUDE_EXECUTABLE"
         result[executable_key] = self.executable
         result["HIKARI_ENGINEERING_MODEL"] = self.model

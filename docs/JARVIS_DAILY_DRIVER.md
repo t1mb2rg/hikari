@@ -2,6 +2,10 @@
 
 这份指南区分三个状态：代码已实现、候选已验证、日常运行已启用。测试和隔离 physical gate 只能证明各自覆盖的路径。当前候选仍在整合；本文不是生产切换记录，也不宣告全部长期运行目标完成。
 
+### 当前 Codex 平台边界
+
+最新后端已收紧读取范围。审计的 Windows `unelevated` 模式无法执行该策略，预检会在模型任务启动前明确 blocked，不退回宽泛读取。早先的 Codex/Growth/Resident 功能 Gate 使用旧的内置 profile，不能证明新策略已在本机可用。需要操作人决定并验证受支持的沙箱设置后，再进行完整 Codex 工程 Gate。详见 [Codex sandbox boundary](CODEX_SANDBOX_BOUNDARY.md)。默认 Claude 后端的选择不会因此被自动改成 Codex。
+
 ## 先确定正在使用哪一套配置
 
 运行版本由以下项目共同决定，不能只看编辑器打开的仓库：
@@ -22,6 +26,8 @@ hikari-autostart status
 hikari-doctor --json
 ```
 
+全部已注册 CLI 在参数解析前配置 UTF-8 输出，帮助、错误信息和中文 JSON 均沿用这一编码；管道接收方也应按 UTF-8 解码。只读状态查询不会为修正显示而改写任务、结果或环境指针。
+
 把实际的旧 checkout、Python、env 路径、state 路径和 Git commit 记下来，供回滚使用。不要根据“刚保存了面板设置”推断进程已经换了模型或后端。
 
 ## 独立候选构建与验证
@@ -32,7 +38,7 @@ hikari-doctor --json
 $CandidateRepo = (Resolve-Path '.').Path
 $LiveRepo = 'G:\work\LAB\code\hikari'
 $LiveState = Join-Path $env:LOCALAPPDATA 'Hikari\resident'
-$LiveEnv = Join-Path $LiveRepo '.env'
+$LiveEnv = Join-Path $LiveRepo '.env.gemma.local' # 以实际日常启动使用的 env-file 为准
 if ($CandidateRepo -eq $LiveRepo) { throw '请从独立候选 checkout 执行' }
 $CandidateState = Join-Path (Split-Path $CandidateRepo -Parent) ('hikari-candidate-' + (Get-Date -Format 'yyyyMMdd-HHmmss'))
 New-Item -ItemType Directory -Path $CandidateState | Out-Null
@@ -157,6 +163,10 @@ python -m resident.windows_autostart run-now
 
 GitHub 默认仓库来自 origin / `HIKARI_GITHUB_REPOSITORY`，允许列表来自 `HIKARI_GITHUB_ALLOWED_REPOSITORIES`。持久 action receipt、PR 所有权和真实验收凭据属于原 runtime state；策略文件为其下的 `github_policy.json`。操作人策略使用 revision 校验保存，不能由对话参数或候选 PR 修改。
 
+私人请求明确要求“检查 CI 失败并修复”时，工作流先读取真实 run/job/log 证据，再把原始目标、约束和验收交给既有 Engineering。可以明确要求“修复并验证，不发布”，也可以明确要求“修复后推送工程分支并开 Draft PR”；后一种按持久步骤继续，前一种不自动加入发布。已观察到失败但缺日志时继续诊断，全部已观察 runs 成功时不虚构修复。状态查询仍对应原请求；本地修复及发布完成不代表远端 CI 已通过。
+
+修复子任务的 terminal 投递由 Engineering 保持单一所有权；内部交接不重复写用户记忆。重启后精确恢复既有来源；缺少 intake 凭据或远端写入结果不确定时保留 `unknown`，需要核对原记录。总步骤耗尽的 GitHub 任务为 `blocked / step_limit_reached`，不会通过不断重启继续；时间片耗尽的 `pending` 可由 pump 继续。详细边界与回归范围见 [GitHub repair handoff](GITHUB_REPAIR_HANDOFF.md)。
+
 启用条件合并时必须明确目标 base 和 GitHub 实际检查名称，默认要求当前 head 的物理验收。权限、部署、验收逻辑和已存在测试修改、保护路径重命名等会阻塞自动放行。失败工作流重跑还需工作流路径和精确 blob SHA 的操作人授权，缺失或变更的 pin 会返回实际观测值供审查，不会自动授予权限。
 
 能力增长中的 `candidate_tested`、`candidate_implemented` 都不是“已安装”。Recipe 仅在精确 digest 获得操作人激活后成为可调用版本；Native 候选还需要独立执行边界、验证和部署。不要把 scratch 的能力注册库当作 live 注册库。
@@ -177,3 +187,5 @@ GitHub 默认仓库来自 origin / `HIKARI_GITHUB_REPOSITORY`，允许列表来�
 | [Capability growth](CAPABILITY_GROWTH_GATE.md) | 真实 Codex 生成 TODO recipe、15 个宿主执行案例、精确 scratch 激活、调用和原请求重启恢复。 | Native 自动安装、生产 QQ 或 live capability 激活。 |
 
 每条记录都保留原始状态、失败和范围。最终日常可用性仍应以实际启用后的进程、私聊/群聊、任务和投递证据判断；这份指南不会把候选测试组合成尚未发生的整体上线。
+
+当前还需把最终候选提交与完整测试、远端 CI、安装环境和交付报告对应起来，并完成真实 GitHub 失败修复交接验收。Codex 还缺受支持的受限读取沙箱下完整工程 Gate；操作人平台设置决定、用户部署决定和真实 QQ 扫码/私聊/群聊验收均未被上述历史记录替代。

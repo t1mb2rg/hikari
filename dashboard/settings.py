@@ -33,6 +33,7 @@ SETTINGS = (
     Setting("HIKARI_ENGINEERING_BACKEND", "工程后端", "engineering", "choice", "claude", ("claude", "codex")),
     Setting("HIKARI_ENGINEERING_MODEL", "Claude 工程模型", "engineering", default="sonnet"),
     Setting("HIKARI_ENGINEERING_CODEX_MODEL", "Codex 模型（留空使用本机配置）", "engineering"),
+    Setting("HIKARI_ENGINEERING_CODEX_SANDBOX", "Codex Windows 沙箱实现（须先完成系统配置）", "engineering", "choice", "unelevated", ("unelevated", "elevated")),
     Setting("HIKARI_ENGINEERING_BACKEND_TIMEOUT_SECONDS", "单次工程超时（秒）", "engineering", "positive", "300"),
     Setting("HIKARI_ENGINEERING_MAX_TURNS", "Claude 最大轮数", "engineering", "integer", "30"),
     Setting("HIKARI_QQ_ENABLED", "启用 QQ", "qq", "bool", "false"),

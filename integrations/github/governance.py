@@ -12,6 +12,7 @@ import time
 import uuid
 
 from .client import GitHubClient, GitHubError, GitHubOutcomeUnknown, validate_repository
+from resident.file_locks import serialized_file_update, FileUpdateBusy
 
 
 AUTHORITY_PATHS = (
@@ -90,26 +91,21 @@ class GitHubPolicyStore:
             raise ValueError("启用自动合并前必须明确目标分支和必需检查")
         if not isinstance(expected_revision, str) or not expected_revision:
             raise ValueError("保存配置需要读取时的版本")
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        lock = self.path.with_name(self.path.name + ".lock")
-        try:
-            descriptor = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-        except FileExistsError:
-            raise ValueError("授权配置正在保存，请重新读取后重试") from None
         temporary = self.path.with_name(self.path.name + "." + uuid.uuid4().hex + ".tmp")
         try:
-            os.close(descriptor)
-            if self.load()["revision"] != expected_revision:
-                raise ValueError("授权配置已被修改，请重新读取后再保存")
-            raw = (json.dumps(document, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
-            with temporary.open("xb") as stream:
-                stream.write(raw)
-                stream.flush()
-                os.fsync(stream.fileno())
-            os.replace(temporary, self.path)
+            with serialized_file_update(self.path):
+                if self.load()["revision"] != expected_revision:
+                    raise ValueError("授权配置已被修改，请重新读取后再保存")
+                raw = (json.dumps(document, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
+                with temporary.open("xb") as stream:
+                    stream.write(raw)
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                os.replace(temporary, self.path)
+        except FileUpdateBusy:
+            raise ValueError("授权配置正在保存，请重新读取后重试") from None
         finally:
             temporary.unlink(missing_ok=True)
-            lock.unlink(missing_ok=True)
         return self.load()
 
 

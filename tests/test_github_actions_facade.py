@@ -1,4 +1,6 @@
 import json
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -398,3 +400,15 @@ def test_historic_m7_gate_prs_never_auto_merge(service, number):
     assessment = GitHubMergeGate(remote, evidence, facade.policy_path).assess(number)
     assert not assessment["ready"]
     assert not next(c for c in assessment["conditions"] if c["key"] == "historic_gate")["passed"]
+def test_operator_policy_writer_can_recover_after_process_crash(tmp_path):
+    from integrations.github.governance import GitHubPolicyStore
+    script = (
+        "import os,sys; from pathlib import Path; "
+        "from resident.file_locks import serialized_file_update; "
+        "lock=serialized_file_update(Path(sys.argv[1])); lock.__enter__(); os._exit(17)"
+    )
+    path = tmp_path / "github_policy.json"
+    result = subprocess.run([sys.executable, "-B", "-c", script, str(path)], capture_output=True, timeout=15)
+    assert result.returncode == 17
+    saved = GitHubPolicyStore(path).save({"version": 1, "repositories": {}}, expected_revision="absent", operator=True)
+    assert saved["configured"] and saved["document"]["repositories"] == {}

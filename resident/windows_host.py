@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from resident.console import configure_utf8_output
+
 import argparse
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass
@@ -506,6 +508,7 @@ def _doctor(env_file: str | None) -> int:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    configure_utf8_output()
     args = build_parser().parse_args(argv)
 
     if args.command == "doctor":

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from resident.console import configure_utf8_output
+
 import argparse
 import asyncio
 from collections.abc import Mapping, Sequence
@@ -376,6 +378,7 @@ async def _run_host(
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    configure_utf8_output()
     args = build_parser().parse_args(argv)
     try:
         runtime = load_runtime_environment(env_file=args.env_file)
