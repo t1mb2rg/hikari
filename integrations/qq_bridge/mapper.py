@@ -70,6 +70,8 @@ def normalize_private_message(
             channel="qq",
             conversation_id=f"private:{user_id_text}",
             text=text,
+            actor_id=user_id_text,
+            scope="private",
         ),
     )
 
@@ -124,20 +126,23 @@ def normalize_group_message(
     user_id: str | int,
     message_id: str | int,
     message: object,
-    allowed_user_ids: frozenset[str],
     allowed_group_ids: frozenset[str],
+    allowed_group_user_ids: frozenset[str] | None = None,
+    allowed_user_ids: frozenset[str] | None = None,
 ) -> tuple[str, UserTurn] | None:
-    """Map an at-self group message from an allowlisted user into a group turn.
+    """Map an at-self group message into a shared conversation turn.
 
-    Fail-closed: the sender must be allowlisted, the group must be allowlisted,
-    and the message must carry an at-self mention with pure text otherwise.
+    ``allowed_group_user_ids`` is the group-only participant boundary. The legacy
+    ``allowed_user_ids`` keyword remains accepted so existing direct-owner tests/callers
+    keep working; production runtime passes the explicit effective group participant set.
     """
 
     user_id_text = str(user_id).strip()
     group_id_text = str(group_id).strip()
     if not user_id_text or not group_id_text:
         return None
-    if user_id_text not in allowed_user_ids:
+    group_users = frozenset(allowed_group_user_ids or ()) | frozenset(allowed_user_ids or ())
+    if user_id_text not in group_users:
         return None
     if group_id_text not in allowed_group_ids:
         return None
@@ -156,5 +161,7 @@ def normalize_group_message(
             channel="qq",
             conversation_id=f"group:{group_id_text}",
             text=text,
+            actor_id=user_id_text,
+            scope="shared",
         ),
     )

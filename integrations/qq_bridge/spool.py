@@ -49,11 +49,44 @@ class BridgeSpool:
                     channel TEXT NOT NULL,
                     conversation_id TEXT NOT NULL,
                     user_text TEXT NOT NULL,
+                    actor_id TEXT,
+                    scope TEXT NOT NULL DEFAULT 'private',
                     reply_text TEXT,
                     state TEXT NOT NULL,
                     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
                 )
+                """
+            )
+            columns = {
+                str(row["name"])
+                for row in connection.execute("PRAGMA table_info(qq_bridge_spool)")
+            }
+            if "actor_id" not in columns:
+                connection.execute(
+                    "ALTER TABLE qq_bridge_spool ADD COLUMN actor_id TEXT"
+                )
+            if "scope" not in columns:
+                connection.execute(
+                    "ALTER TABLE qq_bridge_spool ADD COLUMN scope TEXT NOT NULL DEFAULT 'private'"
+                )
+
+            # Rows created by the pre-principal group-chat slice defaulted to private
+            # when the new column was added. Recover scope from the durable route so
+            # reconnect drain can never send a legacy group turn through private paths.
+            connection.execute(
+                "UPDATE qq_bridge_spool SET scope = 'shared' WHERE conversation_id LIKE 'group:%'"
+            )
+            connection.execute(
+                "UPDATE qq_bridge_spool SET scope = 'private' WHERE conversation_id LIKE 'private:%'"
+            )
+            # A private route encodes the authenticated QQ user directly, so this
+            # principal can be recovered without inference. Legacy group rows cannot.
+            connection.execute(
+                """
+                UPDATE qq_bridge_spool
+                SET actor_id = substr(conversation_id, 9)
+                WHERE actor_id IS NULL AND conversation_id LIKE 'private:%'
                 """
             )
 
@@ -65,6 +98,8 @@ class BridgeSpool:
                 channel=row["channel"],
                 conversation_id=row["conversation_id"],
                 text=row["user_text"],
+                actor_id=row["actor_id"],
+                scope=row["scope"],
             ),
             reply_text=row["reply_text"],
             state=row["state"],
@@ -77,7 +112,8 @@ class BridgeSpool:
         with self._connect() as connection:
             row = connection.execute(
                 """
-                SELECT request_id, channel, conversation_id, user_text, reply_text, state
+                SELECT request_id, channel, conversation_id, user_text,
+                       actor_id, scope, reply_text, state
                 FROM qq_bridge_spool
                 WHERE request_id = ?
                 """,
@@ -95,15 +131,22 @@ class BridgeSpool:
             connection.execute(
                 """
                 INSERT OR IGNORE INTO qq_bridge_spool (
-                    request_id, channel, conversation_id, user_text, state
-                ) VALUES (?, ?, ?, ?, 'pending')
+                    request_id, channel, conversation_id, user_text, actor_id, scope, state
+                ) VALUES (?, ?, ?, ?, ?, ?, 'pending')
                 """,
-                (request_id, turn.channel, turn.conversation_id, turn.text),
+                (
+                    request_id,
+                    turn.channel,
+                    turn.conversation_id,
+                    turn.text,
+                    turn.actor_id,
+                    turn.scope,
+                ),
             )
         item = self.get(request_id)
         if item is None:
             raise RuntimeError("failed to persist QQ bridge turn")
-        if item.turn != turn:
+        if not item.turn.same_wire_turn(turn):
             raise ValueError("request_id was reused for a different QQ turn")
         return item
 
@@ -159,7 +202,8 @@ class BridgeSpool:
         with self._connect() as connection:
             rows = connection.execute(
                 """
-                SELECT request_id, channel, conversation_id, user_text, reply_text, state
+                SELECT request_id, channel, conversation_id, user_text,
+                       actor_id, scope, reply_text, state
                 FROM qq_bridge_spool
                 WHERE state != 'sent'
                 ORDER BY created_at ASC, request_id ASC

@@ -120,7 +120,13 @@ def build_remote_conversation_engine(
 
 
 class ConversationRequestProcessor:
-    """Idempotently route remote explicit chat turns through ConversationEngine."""
+    """Idempotently route remote explicit chat turns through ConversationEngine.
+
+    Shared multi-user turns never enter the private action bridge. That boundary is
+    structural rather than prompt-based: a group participant can converse with Hikari,
+    but cannot obtain the primary user's Engineering mandate by wording a group message
+    like an engineering request.
+    """
 
     def __init__(
         self,
@@ -144,11 +150,11 @@ class ConversationRequestProcessor:
     def process(self, request_id: str, turn: UserTurn) -> tuple[AssistantReply, bool]:
         existing = self.receipts.get(request_id)
         if existing is not None:
-            if existing.turn != turn:
+            if not existing.turn.same_wire_turn(turn):
                 raise ValueError("request_id was reused for a different user turn")
             return existing.reply, True
 
-        if self.action_bridge is None:
+        if self.action_bridge is None or turn.is_shared:
             reply = self.engine.respond(turn, source_ref=request_id)
         else:
             reply = self.action_bridge.respond(
