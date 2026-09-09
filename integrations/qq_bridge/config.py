@@ -52,6 +52,7 @@ class QQBridgeConfig:
     onebot_port: int
     allowed_user_ids: frozenset[str]
     core_url: str
+    allowed_group_ids: frozenset[str] = frozenset()
     adapter_id: str = DEFAULT_ADAPTER_ID
     onebot_access_token: str | None = None
     core_shared_secret: str | None = None
@@ -118,6 +119,9 @@ class QQBridgeConfig:
             raise ValueError("HIKARI_ONEBOT_PORT must be an integer") from exc
 
         allowed = parse_allowed_user_ids(values.get("HIKARI_ONEBOT_ALLOWED_USER_IDS"))
+        allowed_groups = parse_allowed_user_ids(
+            values.get("HIKARI_ONEBOT_ALLOWED_GROUP_IDS")
+        )
         access_token = values.get("HIKARI_ONEBOT_ACCESS_TOKEN")
         access_token = access_token.strip() if access_token and access_token.strip() else None
         core_secret = values.get("HIKARI_CONVERSATION_SHARED_SECRET")
@@ -134,6 +138,7 @@ class QQBridgeConfig:
             onebot_host=host,
             onebot_port=port,
             allowed_user_ids=allowed,
+            allowed_group_ids=allowed_groups,
             core_url=values.get("HIKARI_CONVERSATION_URL", DEFAULT_CORE_URL).strip(),
             adapter_id=values.get("HIKARI_ONEBOT_ADAPTER_ID", DEFAULT_ADAPTER_ID).strip(),
             onebot_access_token=access_token,

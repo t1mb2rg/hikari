@@ -49,3 +49,5 @@
 - Final Gate 唯一 commit `b7d75b5ed727...` 的 parent 正是 Gate baseline `c8f96d0ad48f...`，证明没有重复 maintain/duplicate commit；同一个 engineering head 只存在 PR #79，没有 duplicate publication。QQ 侧只有 accepted 与一次最终 terminal success，没有中间把子步骤误报为整 Goal 完成，也没有重复 terminal delivery。
 - M7-C 正式判定 `PHYSICAL PASS`。M7 的毕业标准已满足：用户可以只交给 Hikari 一个真实工程目标并离开，期间即使 Worker 与 Resident 真实中断，Hikari 仍能从 durable truth 恢复、保持权限边界、避免重复副作用、自动完成分支发布与 Draft PR，并最终交付经过验证的结果，而不需要用户 babysit。
 - M7 正式 `GRADUATED`，从此进入 `M7 FREEZE`。后续开发不得在未明确开启下一阶段/新路线的情况下继续扩张 M7 普通能力或改写已通过的核心语义；M7 只允许针对真实回归、发布阻塞或安全/正确性问题进行必要修复。
+- M7 FREEZE 后首个明确请求的 QQ 能力扩展（群聊对话）已在 Bridge 层实现，不触及 M7 工程运行时语义：`HIKARI_ONEBOT_ALLOWED_GROUP_IDS` 群白名单（空即禁用）叠加既有用户白名单，只有群里 @Hikari 的纯文本消息会触发模型，at-self 片段剥离后按 `group:<group_id>` 会话进入 Conversation，回复以纯文本送回同一群；@别人、不带 at-self、夹带非文本段、非白名单发送者或非白名单群的消息一律 fail-closed 不触发。请求 id 为 `qq:<self>:g:<group_id>:<message_id>`，与私聊共用同一 durable spool 去重与恢复路径。
+- 群聊对话的 targeted 测试已随实现提交（config 群白名单解析、group mapper 接受/拒绝矩阵、runtime 群消息一次投递与去重、非白名单群忽略、回复出站校验）；工程 worktree 内测试命令无执行授权，真实环境 `python -m pytest -q` 验证尚未运行，QQ 群聊物理验收尚未进行。

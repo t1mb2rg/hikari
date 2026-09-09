@@ -6,13 +6,13 @@ from conversation.models import AssistantReply
 from core.delivery import DeliveryOutbox, DeliveryRecord
 from nonebot import get_driver, logger, on_message
 from nonebot.adapters import Event
-from nonebot.adapters.onebot.v11 import Bot, PrivateMessageEvent
+from nonebot.adapters.onebot.v11 import Bot, GroupMessageEvent, PrivateMessageEvent
 from nonebot.message import event_preprocessor
 
 from .config import QQBridgeConfig
 from .core_client import ConversationCoreClient
 from .health import OneBotLinkHealth
-from .mapper import normalize_private_message
+from .mapper import normalize_group_message, normalize_private_message
 from .spool import BridgeSpool, BridgeSpoolItem
 
 
@@ -73,6 +73,24 @@ class QQBridgeRuntime:
             return
         await self._deliver_item(bot, item)
 
+    async def handle_group_message(self, bot: Bot, event: GroupMessageEvent) -> None:
+        normalized = normalize_group_message(
+            bot_self_id=bot.self_id,
+            group_id=event.group_id,
+            user_id=event.user_id,
+            message_id=event.message_id,
+            message=event.message,
+            allowed_user_ids=self.config.allowed_user_ids,
+            allowed_group_ids=self.config.allowed_group_ids,
+        )
+        if normalized is None:
+            return
+        request_id, turn = normalized
+        item = self.spool.record_turn(request_id, turn)
+        if item.state == "sent":
+            return
+        await self._deliver_item(bot, item)
+
     async def _deliver_item(self, bot: Bot, item: BridgeSpoolItem) -> None:
         async with self._conversation_lock:
             current = self.spool.get(item.request_id)
@@ -87,14 +105,27 @@ class QQBridgeRuntime:
                 reply = current.reply
             if reply is None:
                 raise RuntimeError("QQ bridge spool lost assistant reply")
-            self._validate_outbound(reply)
-            user_id_text = reply.conversation_id.removeprefix("private:")
+            await self._send_outbound(bot, reply)
+            self.spool.mark_sent(current.request_id)
+
+    async def _send_outbound(self, bot: Bot, reply: AssistantReply) -> None:
+        self._validate_outbound(reply)
+        if reply.conversation_id.startswith("private:"):
             await bot.send_private_msg(
-                user_id=self._onebot_user_id(user_id_text),
+                user_id=self._onebot_user_id(
+                    reply.conversation_id.removeprefix("private:")
+                ),
                 message=reply.text,
                 auto_escape=True,
             )
-            self.spool.mark_sent(current.request_id)
+            return
+        await bot.send_group_msg(
+            group_id=self._onebot_user_id(
+                reply.conversation_id.removeprefix("group:")
+            ),
+            message=reply.text,
+            auto_escape=True,
+        )
 
     @staticmethod
     def _onebot_user_id(user_id_text: str) -> int | str:
@@ -106,11 +137,17 @@ class QQBridgeRuntime:
     def _validate_outbound(self, reply: AssistantReply) -> None:
         if reply.channel != "qq":
             raise ValueError("QQ bridge refuses non-QQ replies")
-        if not reply.conversation_id.startswith("private:"):
-            raise ValueError("QQ bridge refuses non-private replies")
-        user_id = reply.conversation_id.removeprefix("private:")
-        if user_id not in self.config.allowed_user_ids:
-            raise ValueError("QQ bridge refuses replies outside the allowlist")
+        if reply.conversation_id.startswith("private:"):
+            user_id = reply.conversation_id.removeprefix("private:")
+            if user_id not in self.config.allowed_user_ids:
+                raise ValueError("QQ bridge refuses replies outside the allowlist")
+            return
+        if reply.conversation_id.startswith("group:"):
+            group_id = reply.conversation_id.removeprefix("group:")
+            if group_id not in self.config.allowed_group_ids:
+                raise ValueError("QQ bridge refuses replies to an unapproved group")
+            return
+        raise ValueError("QQ bridge refuses replies outside private or approved groups")
 
     def _validate_proactive(self, item: DeliveryRecord) -> None:
         request = item.request
@@ -296,11 +333,20 @@ def install_nonebot_handlers(runtime: QQBridgeRuntime) -> None:
 
     @matcher.handle()
     async def _handle_message(bot: Bot, event: Event) -> None:
-        if not isinstance(event, PrivateMessageEvent):
-            return
         try:
-            await runtime.handle_private_message(bot, event)
+            if isinstance(event, PrivateMessageEvent):
+                await runtime.handle_private_message(bot, event)
+            elif isinstance(event, GroupMessageEvent):
+                # At-self gating keeps model calls out of ordinary group noise and
+                # out of any echoed copy of Hikari's own plain-text group replies.
+                await runtime.handle_group_message(bot, event)
         except Exception as exc:
+            if isinstance(event, PrivateMessageEvent):
+                kind = "private message"
+            elif isinstance(event, GroupMessageEvent):
+                kind = "group message"
+            else:
+                kind = "message"
             logger.error(
-                f"Hikari QQ failed to handle private message: {type(exc).__name__}: {exc}"
+                f"Hikari QQ failed to handle {kind}: {type(exc).__name__}: {exc}"
             )
