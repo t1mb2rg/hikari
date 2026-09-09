@@ -8,6 +8,7 @@ from nonebot.adapters.onebot.v11 import Adapter as OneBotV11Adapter
 
 from core.delivery import DeliveryOutbox
 from resident.environment import load_runtime_environment
+from resident.console import configure_utf8_output
 
 from .config import QQBridgeConfig
 from .core_client import ConversationCoreClient
@@ -31,6 +32,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    configure_utf8_output()
     args = build_parser().parse_args(argv)
     try:
         runtime_environment = load_runtime_environment(env_file=args.env_file)

@@ -10,6 +10,7 @@ from core.delivery import DeliveryOutbox, DeliveryRequest, DeliveryRouter
 from integrations.qq_bridge.config import QQBridgeConfig
 
 from .environment import load_runtime_environment
+from .console import configure_utf8_output
 from .paths import default_state_dir
 
 
@@ -78,6 +79,7 @@ def _print_record(record) -> None:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    configure_utf8_output()
     args = build_parser().parse_args(argv)
     root = _state_dir(args.state_dir)
     outbox = _outbox(root)

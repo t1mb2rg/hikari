@@ -770,6 +770,7 @@ $("#restart-napcat").addEventListener("click", () => {
     napcatAction("/api/napcat/restart");
 });
 navigate(location.hash.slice(1));
+window.addEventListener("hashchange", () => navigate(location.hash.slice(1)));
 refresh();
 setInterval(() => {
   if (!document.hidden) refresh();

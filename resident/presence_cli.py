@@ -15,6 +15,7 @@ from integrations.qq_bridge.config import QQBridgeConfig
 from memory.store import MemoryStore
 
 from .environment import load_runtime_environment
+from .console import configure_utf8_output
 from .paths import default_state_dir
 from .presence_delivery import RoutedPresenceDelivery, WindowsDeliverySink
 from .unified import runtime_bool
@@ -167,6 +168,7 @@ def _print_result(result, outbox: DeliveryOutbox) -> None:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    configure_utf8_output()
     args = build_parser().parse_args(argv)
     root = _state_dir(args.state_dir)
     policy_db = (

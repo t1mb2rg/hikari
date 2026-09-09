@@ -42,6 +42,7 @@ def _run(tmp_path: Path, *arguments: str) -> subprocess.CompletedProcess[str]:
         env=_environment(),
         capture_output=True,
         text=True,
+        encoding="utf-8",
         timeout=20,
         check=False,
     )
@@ -158,6 +159,7 @@ def test_presence_gate_busy_foreground_suppresses_ordinary(tmp_path: Path):
         env=environment,
         capture_output=True,
         text=True,
+        encoding="utf-8",
         timeout=20,
         check=False,
     )
