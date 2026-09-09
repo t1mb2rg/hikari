@@ -1,5 +1,19 @@
 # Hikari Current Context
 
+## Daily Driver candidate — 2026-09-10
+
+- 当前候选开发分支为 `m8-jarvis-daily-driver`。下面的历史 M7/M8-01 验收记录保留；新候选尚未部署到日常 Resident，不能把候选测试当成生产运行状态。
+- Dashboard 已加入真实运行观察、任务/Goal/请求来源/交付结果、配置编辑、GitHub PR/Actions/合并条件以及能力候选和操作人策略入口。未知、过期、未启用状态保持明确。
+- 私人 ConversationTaskRouter 已贯通同会话讨论、当前用户执行意图、持久约束/验收/来源 ID 与 typed Engineering effect；shared turn 不经过私人动作入口。接单与工程 terminal 表达直接基于 durable facts，普通生成回复检查未经证实的行动声明。
+- Claude 与 Codex 后端均支持结构化 assigned-stage completion；模型正常退出不等于目标完成。Codex 已复用本机 provider/model 配置完成真实隔离文件修改与 Hikari 提交。
+- GitHub 支持授权仓库读取、普通 engineering 分支写入、PR/Actions、多步只读诊断和基于精确 head/策略/所有权/验证的条件合并。真实 PR #82 仅合入隔离验收 base，main 未修改；历史 M7 Gate PR 不自动清理或合并。操作人策略不能由会话模型修改。
+- 能力增长具备持久请求、真实 Engineering 实现、宿主独立验证、精确摘要启用和原输入续跑。纯文本 recipe 在明确操作人策略内可自动启用；native 候选只记录源代码与证据，仍需要单独验证和部署，不在 Resident 中任意 import。
+- 用户事实提取已从回复关键路径移到私有持久队列：固定原始历史/候选、按序处理、恢复去重；失败保持显式。环境候选绑定源码与依赖，已提升环境不重建，回滚指针不冒充源码/数据库回滚。
+- 真实隔离验收记录：`docs/CODEX_BACKEND_GATE.md`、`docs/NATURAL_ACTION_GATE.md`、`docs/GITHUB_PHYSICAL_GATE.md`、`docs/GITHUB_CONVERSATION_GATE.md`、`docs/CAPABILITY_GROWTH_GATE.md`、`docs/RESIDENT_INTEGRATION_GATE.md`。保留首次失败、诊断、修复和通过证据，不覆盖历史结果。
+- 待完成：候选分支远端 CI、安装包/候选环境验证、正式部署决定、真实 QQ 扫码/私聊/群聊最终验收。未授予无限权限；部署与权限变更继续由用户决定。长期情绪理解、广泛感知和通用 native 能力启用仍是后续演进范围。
+
+## Preserved milestone evidence
+
 - 项目/系统工程名仍是 Hikari；默认对话人格现在是 Jarvis。
 - Architecture Audit / Cleanup 已收官；Awareness 0 也已完成物理验收。
 - M7-07 Capability-Aware Delegation 已完成。
