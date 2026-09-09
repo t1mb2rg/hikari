@@ -51,14 +51,19 @@ class EngineeringBackendConfig:
     model: str
     timeout_seconds: float
     max_turns: int
+    backend: str = "claude"
+    codex_model: str = ""
 
     @classmethod
     def from_mapping(cls, values: Mapping[str, str]) -> "EngineeringBackendConfig":
+        backend = values.get("HIKARI_ENGINEERING_BACKEND", "claude").strip().lower()
+        if backend not in {"claude", "codex"}:
+            raise ValueError("HIKARI_ENGINEERING_BACKEND must be claude or codex")
         return cls(
             executable=_owned_text(
                 values,
-                "HIKARI_ENGINEERING_CLAUDE_EXECUTABLE",
-                DEFAULT_ENGINEERING_EXECUTABLE,
+                "HIKARI_ENGINEERING_CODEX_EXECUTABLE" if backend == "codex" else "HIKARI_ENGINEERING_CLAUDE_EXECUTABLE",
+                "codex" if backend == "codex" else DEFAULT_ENGINEERING_EXECUTABLE,
             ),
             model=_owned_text(
                 values,
@@ -75,6 +80,8 @@ class EngineeringBackendConfig:
                 "HIKARI_ENGINEERING_MAX_TURNS",
                 DEFAULT_ENGINEERING_MAX_TURNS,
             ),
+            backend=backend,
+            codex_model=values.get("HIKARI_ENGINEERING_CODEX_MODEL", "").strip(),
         )
 
     def resolve_executable(self, *, path: str | None = None) -> str | None:
@@ -86,14 +93,17 @@ class EngineeringBackendConfig:
     def validate_runtime(self, values: Mapping[str, str]) -> None:
         if self.resolve_executable(path=values.get("PATH")) is None:
             raise ValueError(
-                "HIKARI Engineering Runtime cannot find Claude Code executable "
-                f"{self.executable!r}; configure HIKARI_ENGINEERING_CLAUDE_EXECUTABLE "
+                f"HIKARI Engineering Runtime cannot find {self.backend} executable "
+                f"{self.executable!r}; configure the selected backend executable "
                 "or fix Resident PATH"
             )
 
     def apply_to_environment(self, values: Mapping[str, str]) -> dict[str, str]:
         result = dict(values)
-        result["HIKARI_ENGINEERING_CLAUDE_EXECUTABLE"] = self.executable
+        result["HIKARI_ENGINEERING_BACKEND"] = self.backend
+        result["HIKARI_ENGINEERING_CODEX_MODEL"] = self.codex_model
+        executable_key = "HIKARI_ENGINEERING_CODEX_EXECUTABLE" if self.backend == "codex" else "HIKARI_ENGINEERING_CLAUDE_EXECUTABLE"
+        result[executable_key] = self.executable
         result["HIKARI_ENGINEERING_MODEL"] = self.model
         result["HIKARI_ENGINEERING_BACKEND_TIMEOUT_SECONDS"] = f"{self.timeout_seconds:g}"
         result["HIKARI_ENGINEERING_MAX_TURNS"] = str(self.max_turns)

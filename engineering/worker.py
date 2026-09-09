@@ -15,6 +15,8 @@ from .bindings import EngineeringConversationBindingStore
 from .delivery import EngineeringCompletionDelivery
 from .github_publish import open_or_update_draft_pr
 from .goal import EngineeringGoalStore
+from .config import EngineeringBackendConfig
+from .codex_backend import CodexEngineeringBackend
 from .heartbeat import (
     EngineeringWorkerHeartbeatEmitter,
     EngineeringWorkerHeartbeatStore,
@@ -191,9 +193,13 @@ class EngineeringWorker:
 
     @staticmethod
     def _default_backend(state: EngineeringSessionState, turn: EngineeringTurn):
+        config = EngineeringBackendConfig.from_mapping(os.environ)
+        if config.backend == "codex":
+            return CodexEngineeringBackend(writable=turn.authority.repository_write,
+                                           session_id=state.backend_session_id)
         return ClaudeEngineeringBackend(
             permission_mode="acceptEdits" if turn.authority.repository_write else "plan",
-            session_id=state.backend_session_id,
+            session_id=state.backend_session_id if not (state.backend_session_id or "").startswith("codex:") else None,
         )
 
     def run_once(self) -> WorkerOutcome | None:
@@ -401,7 +407,7 @@ class EngineeringWorker:
             session_id,
             turn_id,
             "progress",
-            f"Claude Code: {event.summary.strip()}"[:1000],
+            f"Engineering backend: {event.summary.strip()}"[:1000],
         )
 
     def _run_read_only(
@@ -537,11 +543,15 @@ class EngineeringWorker:
 
     @staticmethod
     def _validation_summary(events: tuple[EngineeringAgentEvent, ...]) -> str:
+        reported = [event.summary for event in events if event.kind == "validation"]
         commands: list[str] = []
         for event in events:
-            if event.kind != "tool" or not event.summary.startswith("Bash:"):
+            if event.kind == "command":
+                command = event.summary
+            elif event.kind == "tool" and event.summary.startswith("Bash:"):
+                command = event.summary.split(":", 1)[1].strip()
+            else:
                 continue
-            command = event.summary.split(":", 1)[1].strip()
             normalized = command.casefold()
             if any(marker in normalized for marker in _VALIDATION_COMMAND_MARKERS):
                 commands.append(command)
@@ -549,8 +559,10 @@ class EngineeringWorker:
             visible = "；".join(f"`{command[:220]}`" for command in commands[:4])
             if len(commands) > 4:
                 visible += f"；另有 {len(commands) - 4} 条"
-            return f"Claude Code 已执行任务内验证：{visible}"
-        return "Claude Code 按任务范围自主管理验证；未记录到项目测试命令，Hikari 已完成改动范围检查。"
+            return f"工程后端已执行任务内验证：{visible}"
+        if reported:
+            return "工程后端报告：" + "；".join(reported[:4])[:1000]
+        return "工程后端按任务范围自主管理验证；未记录到项目测试命令，Hikari 已完成改动范围检查。"
 
     @staticmethod
     def _change_policy_violation(
@@ -576,7 +588,8 @@ class EngineeringWorker:
         detail = (result.stderr or "").strip()
         if len(detail) > 1200:
             detail = detail[-1200:]
-        message = "Engineering backend 执行失败"
+        blocked = result.returncode == 77 and "[codex:blocked]" in detail
+        message = "Engineering backend 被阻塞" if blocked else "Engineering backend 执行失败"
         if detail:
             message += f"：{detail}"
         if result.events:
@@ -585,7 +598,7 @@ class EngineeringWorker:
         return self._finish(
             state,
             turn,
-            status="failed",
+            status="blocked" if blocked else "failed",
             message=message,
             backend_session_id=result.session_id or None,
             changed_files=changed_files,
