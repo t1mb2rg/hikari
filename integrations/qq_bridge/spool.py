@@ -71,6 +71,25 @@ class BridgeSpool:
                     "ALTER TABLE qq_bridge_spool ADD COLUMN scope TEXT NOT NULL DEFAULT 'private'"
                 )
 
+            # Rows created by the pre-principal group-chat slice defaulted to private
+            # when the new column was added. Recover scope from the durable route so
+            # reconnect drain can never send a legacy group turn through private paths.
+            connection.execute(
+                "UPDATE qq_bridge_spool SET scope = 'shared' WHERE conversation_id LIKE 'group:%'"
+            )
+            connection.execute(
+                "UPDATE qq_bridge_spool SET scope = 'private' WHERE conversation_id LIKE 'private:%'"
+            )
+            # A private route encodes the authenticated QQ user directly, so this
+            # principal can be recovered without inference. Legacy group rows cannot.
+            connection.execute(
+                """
+                UPDATE qq_bridge_spool
+                SET actor_id = substr(conversation_id, 9)
+                WHERE actor_id IS NULL AND conversation_id LIKE 'private:%'
+                """
+            )
+
     @staticmethod
     def _row_to_item(row: sqlite3.Row) -> BridgeSpoolItem:
         return BridgeSpoolItem(

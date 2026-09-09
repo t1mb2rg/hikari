@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import sqlite3
 
 from brain.model_reasoner import ChatMessage
 from conversation.models import AssistantReply, UserTurn
@@ -97,6 +98,95 @@ def test_shared_actor_and_scope_survive_wire_spool_and_receipt(tmp_path: Path):
     assert receipt.turn.scope == "shared"
 
 
+def test_legacy_group_rows_migrate_to_shared_scope(tmp_path: Path):
+    spool_path = tmp_path / "legacy-spool.db"
+    with sqlite3.connect(spool_path) as connection:
+        connection.execute(
+            """
+            CREATE TABLE qq_bridge_spool (
+                request_id TEXT PRIMARY KEY,
+                channel TEXT NOT NULL,
+                conversation_id TEXT NOT NULL,
+                user_text TEXT NOT NULL,
+                reply_text TEXT,
+                state TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO qq_bridge_spool (
+                request_id, channel, conversation_id, user_text, state
+            ) VALUES ('qq:100:g:10:44', 'qq', 'group:10', '旧群消息', 'pending')
+            """
+        )
+
+    migrated = BridgeSpool(spool_path).get("qq:100:g:10:44")
+    assert migrated is not None
+    assert migrated.turn.scope == "shared"
+    assert migrated.turn.actor_id is None
+
+    receipt_path = tmp_path / "legacy-receipts.db"
+    with sqlite3.connect(receipt_path) as connection:
+        connection.execute(
+            """
+            CREATE TABLE conversation_receipts (
+                request_id TEXT PRIMARY KEY,
+                channel TEXT NOT NULL,
+                conversation_id TEXT NOT NULL,
+                user_text TEXT NOT NULL,
+                reply_text TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO conversation_receipts (
+                request_id, channel, conversation_id, user_text, reply_text
+            ) VALUES ('qq:100:g:10:45', 'qq', 'group:10', '旧群消息', '旧回复')
+            """
+        )
+
+    receipt = ConversationReceiptStore(receipt_path).get("qq:100:g:10:45")
+    assert receipt is not None
+    assert receipt.turn.scope == "shared"
+    assert receipt.turn.actor_id is None
+
+
+def test_legacy_private_rows_recover_actor_from_private_route(tmp_path: Path):
+    spool_path = tmp_path / "legacy-private-spool.db"
+    with sqlite3.connect(spool_path) as connection:
+        connection.execute(
+            """
+            CREATE TABLE qq_bridge_spool (
+                request_id TEXT PRIMARY KEY,
+                channel TEXT NOT NULL,
+                conversation_id TEXT NOT NULL,
+                user_text TEXT NOT NULL,
+                reply_text TEXT,
+                state TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO qq_bridge_spool (
+                request_id, channel, conversation_id, user_text, state
+            ) VALUES ('qq:100:46', 'qq', 'private:7', '旧私聊', 'pending')
+            """
+        )
+
+    migrated = BridgeSpool(spool_path).get("qq:100:46")
+    assert migrated is not None
+    assert migrated.turn.scope == "private"
+    assert migrated.turn.actor_id == "7"
+
+
 def test_shared_conversation_hides_private_context_and_labels_actor(tmp_path: Path):
     memory = MemoryStore(tmp_path / "memory.db")
     memory.remember_event(
@@ -168,6 +258,28 @@ def test_shared_events_are_not_recalled_into_private_turns(tmp_path: Path):
 
     private_messages = "\n".join(message.content for message in provider.calls[1])
     assert "火箭企鹅" not in private_messages
+
+
+def test_pre_scope_group_events_are_not_recalled_into_private_turns(tmp_path: Path):
+    memory = MemoryStore(tmp_path / "memory.db")
+    memory.remember_event(
+        "conversation.user",
+        "旧版群聊暗号是海盐卫星。",
+        context={"channel": "qq", "conversation_id": "group:10", "role": "user"},
+        importance=1.0,
+    )
+    provider = RecordingProvider("收到。")
+    engine = NaturalConversationEngine(
+        provider,
+        memory,
+        relevant_context_provider=lambda: "当前可用的系统事实：\n- Resident 正在运行。",
+        relevant_context_placement="current_turn",
+    )
+
+    engine.respond(UserTurn("qq", "private:7", "之前有人说过什么暗号吗"))
+
+    private_messages = "\n".join(message.content for message in provider.calls[0])
+    assert "海盐卫星" not in private_messages
 
 
 class RecordingActionBridge:

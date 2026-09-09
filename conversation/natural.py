@@ -105,13 +105,14 @@ def _shared_history_messages(history: list[MemoryEvent]) -> list[ChatMessage]:
 
 
 def _shared_event_ids(memory: MemoryStore, *, scan_limit: int = 240) -> set[int]:
-    """Keep shared-space events out of private cross-conversation recall."""
+    """Keep current and pre-scope group events out of private cross-conversation recall."""
 
-    return {
-        event.id
-        for event in memory.recent_events(scan_limit)
-        if event.context.get("scope") == "shared"
-    }
+    result: set[int] = set()
+    for event in memory.recent_events(scan_limit):
+        conversation_id = str(event.context.get("conversation_id", "")).strip()
+        if event.context.get("scope") == "shared" or conversation_id.startswith("group:"):
+            result.add(event.id)
+    return result
 
 
 def _event_context_for_turn(

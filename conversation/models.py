@@ -21,7 +21,8 @@ class UserTurn:
     adapter can prove it. ``scope`` distinguishes the primary/private conversation
     boundary from a shared multi-user space. They are excluded from legacy dataclass
     equality so existing three-field callers remain compatible; durable replay paths
-    must use ``same_wire_turn`` when principal/scope identity matters.
+    use ``same_wire_turn`` so scope and available principal identity remain part of
+    idempotency truth.
     """
 
     channel: str
@@ -54,20 +55,32 @@ class UserTurn:
         return self.scope == "shared"
 
     def same_wire_turn(self, other: object) -> bool:
+        """Compare durable routing truth while tolerating pre-principal v1 records.
+
+        Scope, route and text must always match. Actor identity must match when both
+        sides have it. A missing actor on exactly one side is accepted only for
+        backward compatibility with persisted `hikari.conversation.v1` rows created
+        before actor identity existed; it never changes private/shared authority.
+        """
+
         if not isinstance(other, UserTurn):
             return False
-        return (
+        if (
             self.channel,
             self.conversation_id,
             self.text,
-            self.actor_id,
             self.scope,
-        ) == (
+        ) != (
             other.channel,
             other.conversation_id,
             other.text,
-            other.actor_id,
             other.scope,
+        ):
+            return False
+        return (
+            self.actor_id == other.actor_id
+            or self.actor_id is None
+            or other.actor_id is None
         )
 
 

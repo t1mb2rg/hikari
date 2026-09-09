@@ -56,6 +56,20 @@ class ConversationReceiptStore:
                     "ALTER TABLE conversation_receipts ADD COLUMN scope TEXT NOT NULL DEFAULT 'private'"
                 )
 
+            connection.execute(
+                "UPDATE conversation_receipts SET scope = 'shared' WHERE conversation_id LIKE 'group:%'"
+            )
+            connection.execute(
+                "UPDATE conversation_receipts SET scope = 'private' WHERE conversation_id LIKE 'private:%'"
+            )
+            connection.execute(
+                """
+                UPDATE conversation_receipts
+                SET actor_id = substr(conversation_id, 9)
+                WHERE actor_id IS NULL AND conversation_id LIKE 'private:%'
+                """
+            )
+
     def get(self, request_id: str) -> ConversationReceipt | None:
         request_id = str(request_id).strip()
         if not request_id:
