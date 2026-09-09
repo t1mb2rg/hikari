@@ -14,6 +14,7 @@ from .backend import ClaudeEngineeringBackend, EngineeringAgentEvent, Engineerin
 from .bindings import EngineeringConversationBindingStore
 from .delivery import EngineeringCompletionDelivery
 from .github_publish import open_or_update_draft_pr
+from .goal import EngineeringGoalStore
 from .heartbeat import (
     EngineeringWorkerHeartbeatEmitter,
     EngineeringWorkerHeartbeatStore,
@@ -196,6 +197,8 @@ class EngineeringWorker:
         )
 
     def run_once(self) -> WorkerOutcome | None:
+        # Do not execute pending work when its possible Goal ownership is unreadable.
+        EngineeringGoalStore(self.store.root.parent / "engineering_goals").list_states()
         pending = [state for state in self.store.list_states() if state.status == "pending"]
         if not pending:
             return None

@@ -14,8 +14,8 @@ from engineering.bindings import (
     EngineeringConversationBindingStore,
 )
 from engineering.effects import authority_for_effect
-from engineering.goal import EngineeringGoalState, EngineeringGoalStep, EngineeringGoalStore
-from engineering.goal_index import active_goal_for_session, latest_goal_for_session
+from engineering.goal import EngineeringGoalState, EngineeringGoalStep, EngineeringGoalStore, EngineeringGoalStoreError
+from engineering.goal_index import active_goal_for_session, goal_for_turn
 from engineering.maintainer import project_session_authority_ceiling
 from engineering.planning import EngineeringGoalPlan, build_engineering_goal_plan
 from engineering.progress import describe_engineering_progress
@@ -263,11 +263,32 @@ class ConversationEngineeringBridge:
             return None
 
     def _status_reply(self, turn: UserTurn) -> AssistantReply:
+        try:
+            self.goals.list_states()
+            return self._read_status_reply(turn)
+        except EngineeringGoalStoreError as exc:
+            return self._goal_store_error_reply(turn, exc)
+
+    @staticmethod
+    def _goal_store_error_reply(turn: UserTurn, error: EngineeringGoalStoreError) -> AssistantReply:
+        return AssistantReply(
+            turn.channel,
+            turn.conversation_id,
+            "工程目标存储存在不可读取的记录，无法可靠判断当前任务。"
+            "我不会把它当作没有任务，也不会据此启动新的工程工作。"
+            f"需要先检查并恢复记录：{error}",
+        )
+
+    def _read_status_reply(self, turn: UserTurn) -> AssistantReply:
         state = self._bound_state(turn.channel, turn.conversation_id)
         if state is None:
             text = "这个会话当前没有可读取的 Engineering 任务状态。"
         else:
-            goal = latest_goal_for_session(self.goals, state.session_id)
+            # A newly accepted goal exists before its first turn is enqueued. Prefer
+            # that active goal; otherwise only a goal owning the current turn applies.
+            goal = active_goal_for_session(self.goals, state.session_id)
+            if goal is None and state.current_turn_id:
+                goal = goal_for_turn(self.goals, state.session_id, state.current_turn_id)
             if goal is not None:
                 step = goal.current_step
                 position = goal.current_step_index + 1
@@ -535,6 +556,13 @@ class ConversationEngineeringBridge:
         resolution = self._resolve_intent(engine, turn, state, capabilities)
         if resolution is None or not resolution.engineering:
             return engine.respond(turn, source_ref=source_ref)
+
+        try:
+            self.goals.list_states()
+        except EngineeringGoalStoreError as exc:
+            reply = self._goal_store_error_reply(turn, exc)
+            _remember_control_exchange(engine, turn, reply)
+            return reply
 
         assessment = assess_task_capabilities(resolution.required_capabilities, capabilities)
         if assessment.status == ASSESSMENT_CAPABILITY_GAP:

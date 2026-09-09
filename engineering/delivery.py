@@ -85,6 +85,9 @@ class EngineeringCompletionDelivery:
     def pump(self) -> int:
         """Idempotently reconcile ownership, advance goals, and ensure terminal delivery."""
 
+        # Missing goal ownership must never turn a goal step into a standalone
+        # completion or permit orphaned work to be replayed before the error is seen.
+        self.goals.list_states()
         if self.renderer is None:
             self._recover_worker_owned_running_turns()
 

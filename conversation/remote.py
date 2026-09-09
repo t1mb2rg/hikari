@@ -148,21 +148,46 @@ class ConversationRequestProcessor:
         self.action_bridge = action_bridge
 
     def process(self, request_id: str, turn: UserTurn) -> tuple[AssistantReply, bool]:
+        request_id = str(request_id).strip()
+        with self.receipts.request_lock(request_id):
+            return self._process_claimed_request(request_id, turn)
+
+    def _process_claimed_request(self, request_id: str, turn: UserTurn) -> tuple[AssistantReply, bool]:
         existing = self.receipts.get(request_id)
         if existing is not None:
             if not existing.turn.same_wire_turn(turn):
                 raise ValueError("request_id was reused for a different user turn")
             return existing.reply, True
 
-        if self.action_bridge is None or turn.is_shared:
-            reply = self.engine.respond(turn, source_ref=request_id)
-        else:
-            reply = self.action_bridge.respond(
-                self.engine,
-                turn,
-                source_ref=request_id,
-            )
-        self.receipts.save(request_id, turn, reply)
+        if not self.receipts.claim(request_id, turn):
+            # Another host may have completed between get() and the atomic claim.
+            existing = self.receipts.get(request_id)
+            if existing is not None:
+                if not existing.turn.same_wire_turn(turn):
+                    raise ValueError("request_id was reused for a different user turn")
+                return existing.reply, True
+            # Do not save a fabricated completion receipt or dispatch again. An old
+            # host may still be processing, or have stopped after a durable side effect.
+            return AssistantReply(
+                turn.channel,
+                turn.conversation_id,
+                "这条消息已有处理记录，但我目前无法确认完整结果。为避免重复动作，我没有重新执行。"
+                "请先核对上一条请求的结果；工程任务可以查询当前任务状态。",
+            ), True
+
+        try:
+            if self.action_bridge is None or turn.is_shared:
+                reply = self.engine.respond(turn, source_ref=request_id)
+            else:
+                reply = self.action_bridge.respond(
+                    self.engine,
+                    turn,
+                    source_ref=request_id,
+                )
+            self.receipts.save(request_id, turn, reply)
+        except Exception:
+            self.receipts.mark_uncertain(request_id)
+            raise
         return reply, False
 
 

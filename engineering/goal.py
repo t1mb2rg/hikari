@@ -276,6 +276,10 @@ class EngineeringGoalState:
         )
 
 
+class EngineeringGoalStoreError(EngineeringProtocolError):
+    """Goal ownership cannot be determined; intake, scheduling and delivery must stop."""
+
+
 class EngineeringGoalStore:
     """Durable goal-level truth above single-turn EngineeringSession execution."""
 
@@ -295,11 +299,17 @@ class EngineeringGoalStore:
             payload = json.loads(path.read_text(encoding="utf-8"))
         except FileNotFoundError:
             raise EngineeringProtocolError(f"unknown engineering goal: {goal_id}") from None
-        except (OSError, json.JSONDecodeError):
+        except (OSError, UnicodeError, json.JSONDecodeError):
             raise EngineeringProtocolError(f"engineering goal is unreadable: {goal_id}") from None
         if not isinstance(payload, Mapping):
             raise EngineeringProtocolError("engineering goal must be an object")
-        return EngineeringGoalState.from_mapping(payload)
+        try:
+            goal = EngineeringGoalState.from_mapping(payload)
+        except (ValueError, TypeError, KeyError, AttributeError, OverflowError):
+            raise EngineeringProtocolError(f"engineering goal schema is invalid: {goal_id}") from None
+        if goal.goal_id != goal_id:
+            raise EngineeringProtocolError(f"engineering goal identity does not match filename: {goal_id}")
+        return goal
 
     def save(self, goal: EngineeringGoalState) -> None:
         self.root.mkdir(parents=True, exist_ok=True)
@@ -312,14 +322,25 @@ class EngineeringGoalStore:
         os.replace(temporary, path)
 
     def list_states(self) -> list[EngineeringGoalState]:
-        if not self.root.is_dir():
+        if not self.root.exists():
             return []
+        if not self.root.is_dir():
+            raise EngineeringGoalStoreError("engineering goal store is not a directory")
         goals: list[EngineeringGoalState] = []
-        for path in self.root.glob("*.json"):
+        unreadable: list[str] = []
+        try:
+            paths = sorted(path for path in self.root.iterdir() if path.suffix == ".json")
+        except OSError:
+            raise EngineeringGoalStoreError("engineering goal store cannot be listed") from None
+        for path in paths:
             try:
                 goals.append(self.load(path.stem))
             except EngineeringProtocolError:
-                continue
+                unreadable.append(path.stem)
+        if unreadable:
+            raise EngineeringGoalStoreError(
+                "unreadable engineering goal record(s): " + ", ".join(unreadable)
+            )
         return sorted(goals, key=lambda item: item.updated_at)
 
     def _path(self, goal_id: str) -> Path:
