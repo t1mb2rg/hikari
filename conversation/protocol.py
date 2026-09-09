@@ -21,6 +21,15 @@ def _required_text(value: object, *, name: str) -> str:
     return value.strip()
 
 
+def _optional_text(value: object, *, name: str) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ConversationProtocolError(f"{name} must be a string when provided")
+    text = value.strip()
+    return text or None
+
+
 def decode_envelope(raw: str | bytes) -> dict[str, Any]:
     if isinstance(raw, bytes):
         if len(raw) > MAX_WIRE_MESSAGE_BYTES:
@@ -89,14 +98,18 @@ def hello_ack_envelope(*, adapter_id: str) -> dict[str, object]:
 def turn_envelope(*, request_id: str, turn: UserTurn) -> dict[str, object]:
     if not isinstance(turn, UserTurn):
         raise TypeError("turn must be UserTurn")
+    turn_payload: dict[str, object] = {
+        "channel": turn.channel,
+        "conversation_id": turn.conversation_id,
+        "text": turn.text,
+        "scope": turn.scope,
+    }
+    if turn.actor_id is not None:
+        turn_payload["actor_id"] = turn.actor_id
     return {
         "type": "turn",
         "request_id": _required_text(request_id, name="request_id"),
-        "turn": {
-            "channel": turn.channel,
-            "conversation_id": turn.conversation_id,
-            "text": turn.text,
-        },
+        "turn": turn_payload,
     }
 
 
@@ -115,6 +128,12 @@ def parse_turn(payload: Mapping[str, object]) -> tuple[str, UserTurn]:
                 name="turn.conversation_id",
             ),
             text=_required_text(raw_turn.get("text"), name="turn.text"),
+            actor_id=_optional_text(raw_turn.get("actor_id"), name="turn.actor_id"),
+            scope=(
+                _required_text(raw_turn.get("scope"), name="turn.scope")
+                if raw_turn.get("scope") is not None
+                else "private"
+            ),
         )
     except ValueError as exc:
         raise ConversationProtocolError(str(exc)) from exc

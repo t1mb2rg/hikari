@@ -74,13 +74,16 @@ class QQBridgeRuntime:
         await self._deliver_item(bot, item)
 
     async def handle_group_message(self, bot: Bot, event: GroupMessageEvent) -> None:
+        effective_group_users = (
+            self.config.allowed_user_ids | self.config.allowed_group_user_ids
+        )
         normalized = normalize_group_message(
             bot_self_id=bot.self_id,
             group_id=event.group_id,
             user_id=event.user_id,
             message_id=event.message_id,
             message=event.message,
-            allowed_user_ids=self.config.allowed_user_ids,
+            allowed_group_user_ids=effective_group_users,
             allowed_group_ids=self.config.allowed_group_ids,
         )
         if normalized is None:

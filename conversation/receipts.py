@@ -36,11 +36,25 @@ class ConversationReceiptStore:
                     channel TEXT NOT NULL,
                     conversation_id TEXT NOT NULL,
                     user_text TEXT NOT NULL,
+                    actor_id TEXT,
+                    scope TEXT NOT NULL DEFAULT 'private',
                     reply_text TEXT NOT NULL,
                     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
                 )
                 """
             )
+            columns = {
+                str(row["name"])
+                for row in connection.execute("PRAGMA table_info(conversation_receipts)")
+            }
+            if "actor_id" not in columns:
+                connection.execute(
+                    "ALTER TABLE conversation_receipts ADD COLUMN actor_id TEXT"
+                )
+            if "scope" not in columns:
+                connection.execute(
+                    "ALTER TABLE conversation_receipts ADD COLUMN scope TEXT NOT NULL DEFAULT 'private'"
+                )
 
     def get(self, request_id: str) -> ConversationReceipt | None:
         request_id = str(request_id).strip()
@@ -49,7 +63,8 @@ class ConversationReceiptStore:
         with self._connect() as connection:
             row = connection.execute(
                 """
-                SELECT request_id, channel, conversation_id, user_text, reply_text
+                SELECT request_id, channel, conversation_id, user_text,
+                       actor_id, scope, reply_text
                 FROM conversation_receipts
                 WHERE request_id = ?
                 """,
@@ -61,6 +76,8 @@ class ConversationReceiptStore:
             channel=row["channel"],
             conversation_id=row["conversation_id"],
             text=row["user_text"],
+            actor_id=row["actor_id"],
+            scope=row["scope"],
         )
         reply = AssistantReply(
             channel=row["channel"],
@@ -89,14 +106,17 @@ class ConversationReceiptStore:
             connection.execute(
                 """
                 INSERT OR IGNORE INTO conversation_receipts (
-                    request_id, channel, conversation_id, user_text, reply_text
-                ) VALUES (?, ?, ?, ?, ?)
+                    request_id, channel, conversation_id, user_text,
+                    actor_id, scope, reply_text
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     request_id,
                     turn.channel,
                     turn.conversation_id,
                     turn.text,
+                    turn.actor_id,
+                    turn.scope,
                     reply.text,
                 ),
             )
@@ -104,7 +124,7 @@ class ConversationReceiptStore:
         stored = self.get(request_id)
         if stored is None:
             raise RuntimeError("failed to persist conversation receipt")
-        if stored.turn != turn:
+        if not stored.turn.same_wire_turn(turn):
             raise ValueError("request_id was reused for a different user turn")
         if stored.reply != reply:
             raise ValueError("request_id was reused for a different assistant reply")

@@ -72,8 +72,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     print("Hikari QQ Bridge 运行时装配完成。")
     print(f"NapCat Reverse WebSocket：{reverse_websocket_url}")
     print(f"Hikari Conversation Host：{config.core_url}")
-    print(f"QQ allowlist：{len(config.allowed_user_ids)} 个用户")
+    print(f"QQ private allowlist：{len(config.allowed_user_ids)} 个用户")
     print(f"QQ group allowlist：{len(config.allowed_group_ids)} 个群")
+    print(f"QQ group participant allowlist：{len(config.allowed_group_user_ids)} 个用户")
     print(
         "QQ 主动投递目标："
         + (config.proactive_user_id if config.proactive_user_id is not None else "未配置")
