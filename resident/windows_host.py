@@ -130,13 +130,12 @@ def _select_background_python(
     *,
     platform_name: str | None = None,
 ) -> str:
-    """Prefer the windowless interpreter for a detached Windows resident.
+    """Use the selected venv's console interpreter with no visible console.
 
-    Windows Terminal can surface a new console window even when a console
-    interpreter is launched with detached creation flags. A venv ships a
-    sibling ``pythonw.exe`` specifically for GUI/background processes. Using it
-    keeps the resident independent of any visible console while stdout/stderr
-    remain explicitly redirected to the host log.
+    Some native Windows venv ``pythonw.exe`` launchers delegate a detached
+    process to the base interpreter, which can silently reintroduce an editable
+    installation. ``CREATE_NO_WINDOW`` already suppresses the console, so keep
+    the exact ``python.exe`` path and preserve source/venv identity.
     """
 
     platform_name = os.name if platform_name is None else platform_name
@@ -147,9 +146,9 @@ def _select_background_python(
     if executable.name.lower() not in {"python.exe", "pythonw.exe"}:
         return str(executable)
 
-    pythonw = executable.with_name("pythonw.exe")
-    if pythonw.is_file():
-        return str(pythonw)
+    python = executable.with_name("python.exe")
+    if python.is_file():
+        return str(python)
     return str(executable)
 
 

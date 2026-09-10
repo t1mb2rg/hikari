@@ -40,10 +40,10 @@ def test_windows_background_python_prefers_pythonw_when_available(tmp_path: Path
 
     selected = _select_background_python(str(python), platform_name="nt")
 
-    assert selected == str(pythonw)
+    assert selected == str(python)
 
 
-def test_windows_background_python_falls_back_when_pythonw_is_missing(tmp_path: Path):
+def test_windows_background_python_falls_back_when_console_python_is_missing(tmp_path: Path):
     python = tmp_path / "python.exe"
     python.write_text("", encoding="utf-8")
 
