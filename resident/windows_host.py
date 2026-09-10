@@ -184,10 +184,13 @@ def _default_launcher(
     creationflags |= int(getattr(subprocess, "DETACHED_PROCESS", 0))
     creationflags |= int(getattr(subprocess, "CREATE_NO_WINDOW", 0))
 
+    launch_root = Path(environment.get("HIKARI_RUNTIME_PACKAGE_ROOT", str(cwd))).expanduser().resolve()
+    if not launch_root.is_dir():
+        raise ValueError("trusted Hikari runtime package root is missing")
     with log_path.open("ab") as log_handle:
         process = subprocess.Popen(
             argv,
-            cwd=cwd,
+            cwd=launch_root,
             env=dict(environment),
             stdin=subprocess.DEVNULL,
             stdout=log_handle,
@@ -334,6 +337,7 @@ class WindowsResidentHost:
         # trusted installed Hikari package so a target repository or old editable
         # install cannot supply resident/worker modules.
         package_root = str(Path(__file__).resolve().parents[1])
+        runtime_environment.values["HIKARI_RUNTIME_PACKAGE_ROOT"] = package_root
         previous_pythonpath = runtime_environment.values.get("PYTHONPATH", "")
         runtime_environment.values["PYTHONPATH"] = os.pathsep.join(
             [package_root, *[item for item in previous_pythonpath.split(os.pathsep)
