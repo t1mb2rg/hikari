@@ -1,8 +1,16 @@
 from __future__ import annotations
 
+from resident.console import configure_utf8_output
+
 import argparse
+import getpass
 from collections.abc import Callable, Mapping, Sequence
+from contextlib import contextmanager
+from copy import copy
+import logging
 from pathlib import Path
+import threading
+from uuid import uuid4
 
 from awareness import (
     ChineseCalendarContextProvider,
@@ -14,11 +22,14 @@ from awareness import (
 )
 from brain.model_reasoner import ChatProvider
 from brain.providers import OpenAICompatibleProvider
+from brain.providers.observed import ObservedChatProvider
 from memory.store import MemoryStore
 from personality import load_personality, load_voice
-from resident.environment import load_runtime_environment
+from resident.environment import load_runtime_environment, source_checkout_root
 from resident.paths import default_state_dir
 from user_model import build_user_model_runtime
+
+from .bootstrap import build_private_task_router
 
 from .engine import (
     ConversationEngine,
@@ -44,6 +55,9 @@ from .whiteboard import (
 
 
 DEFAULT_CHAT_TEMPERATURE = 0.65
+USER_MODEL_DRAIN_INTERVAL_SECONDS = 0.5
+USER_MODEL_DRAIN_TIMEOUT_SECONDS = 8.0
+logger = logging.getLogger(__name__)
 EXIT_COMMANDS = {"/exit", "/quit"}
 PASTE_COMMAND = "/paste"
 PASTE_SEND_COMMAND = "/send"
@@ -101,6 +115,89 @@ def build_chat_provider(environment: Mapping[str, str]) -> ChatProvider:
     )
 
 
+def _entrypoint_paths(args, values: Mapping[str, str]) -> tuple[Path, Path, Path]:
+    """Keep conversation memory, task state and the selected checkout explicit."""
+    repository = Path(args.repository).expanduser().resolve() if args.repository else (source_checkout_root() or Path.cwd()).resolve()
+    state_dir = (
+        Path(args.state_dir).expanduser().resolve() if args.state_dir
+        else Path(args.db).expanduser().resolve().parent if args.db
+        else default_state_dir(values).resolve()
+    )
+    memory_path = Path(args.db).expanduser().resolve() if args.db else state_dir / "memory.db"
+    return repository, state_dir, memory_path
+
+
+def _entrypoint_engineering_bridge(*, repository: Path, state_dir: Path, enabled: bool):
+    if not enabled:
+        return None
+    from engineering.bindings import EngineeringConversationBindingStore
+    from engineering.session import EngineeringSessionStore
+    from .engineering_bridge import ConversationEngineeringBridge
+
+    # Standalone entrypoints use an independently managed Worker; intake never
+    # launches another worker or adds authority because one is absent.
+    return ConversationEngineeringBridge(
+        EngineeringSessionStore(state_dir / "engineering"),
+        EngineeringConversationBindingStore(state_dir / "engineering_bindings.json"),
+        repository=repository,
+    )
+
+
+def _entrypoint_enabled(values: Mapping[str, str], name: str) -> bool:
+    value = values.get(name, "false").strip().casefold() or "false"
+    if value not in {"1", "true", "yes", "on", "0", "false", "no", "off"}:
+        raise ValueError(f"{name} must be true or false")
+    return value in {"1", "true", "yes", "on"}
+
+
+def _bounded_user_model_worker(worker):
+    """Keep extraction shutdown bounded without changing conversation timeouts."""
+    if worker is None:
+        return None
+    extractor = getattr(worker, "extractor", None)
+    provider = getattr(extractor, "provider", None)
+    if provider is None:
+        return worker
+    bounded = copy(worker)
+    bounded.extractor = copy(extractor)
+    bounded_provider = copy(provider)
+    if isinstance(provider, ObservedChatProvider):
+        bounded_provider.provider = copy(provider.provider)
+        transport = bounded_provider.provider
+    else:
+        transport = bounded_provider
+    if isinstance(transport, OpenAICompatibleProvider):
+        transport.timeout = min(transport.timeout, USER_MODEL_DRAIN_TIMEOUT_SECONDS)
+    bounded.extractor.provider = bounded_provider
+    return bounded
+
+
+@contextmanager
+def _cli_user_model_drain(router):
+    worker = _bounded_user_model_worker(getattr(router, "user_model_worker", None))
+    if worker is None:
+        yield
+        return
+    stop = threading.Event()
+
+    def drain():
+        # Waiting is interruptible, so an idle CLI exits immediately. Never drain
+        # the backlog on shutdown; only finish the one bounded job already owned.
+        while not stop.wait(USER_MODEL_DRAIN_INTERVAL_SECONDS):
+            try:
+                worker.drain_once()
+            except Exception as exc:
+                logger.warning("User Model background drain degraded: %s", type(exc).__name__)
+
+    thread = threading.Thread(target=drain, name="hikari-cli-user-model", daemon=False)
+    thread.start()
+    try:
+        yield
+    finally:
+        stop.set()
+        thread.join()
+
+
 def default_context_collector(*, include_desktop_activity: bool = False) -> ContextCollector:
     providers = [
         TimeContextProvider(),
@@ -152,6 +249,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--env-file", default=None)
     parser.add_argument("--db", default=None)
+    parser.add_argument("--repository", default=None)
+    parser.add_argument("--state-dir", default=None)
     parser.add_argument("--channel", default="cli")
     parser.add_argument("--conversation", default="local")
     parser.add_argument("--history-limit", type=int, default=12)
@@ -184,6 +283,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    configure_utf8_output()
     args = build_parser().parse_args(argv)
     jarvis_profiles = {
         "jarvis",
@@ -196,12 +296,11 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     try:
         runtime_environment = load_runtime_environment(env_file=args.env_file)
-        provider = build_chat_provider(runtime_environment.values)
-        memory_path = (
-            Path(args.db).expanduser().resolve()
-            if args.db
-            else (default_state_dir() / "memory.db").resolve()
-        )
+        values = runtime_environment.values
+        repository, state_dir, memory_path = _entrypoint_paths(args, values)
+        provider = ObservedChatProvider(build_chat_provider(values), state_dir,
+                                        model=values.get("HIKARI_MODEL_NAME", "configured"))
+        engineering_enabled = _entrypoint_enabled(values, "HIKARI_ENGINEERING_ENABLED")
         legacy_prompt = args.prompt_profile == "legacy"
         jarvis_prompt = args.prompt_profile in jarvis_profiles
         jarvis_production = args.prompt_profile == "jarvis-production"
@@ -238,7 +337,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         user_model_service, user_fact_extractor = build_user_model_runtime(
             provider,
-            memory_path.parent / "user_model.db",
+            state_dir / "user_model.db",
         )
 
         shared_kwargs = {
@@ -326,6 +425,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                 ),
                 **shared_kwargs,
             )
+        router = build_private_task_router(
+            engine, repository=repository, state_dir=state_dir, values=dict(values),
+            engineering_bridge=_entrypoint_engineering_bridge(
+                repository=repository, state_dir=state_dir, enabled=engineering_enabled,
+            ),
+        )
     except ValueError as exc:
         print(f"{assistant_name} 对话启动失败：{exc}")
         return 2
@@ -337,6 +442,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     print(f"Prompt：{args.prompt_profile}")
     print(f"对话记忆：{memory_path}")
 
+    with _cli_user_model_drain(router):
+        return _chat_loop(engine, router, args, assistant_name)
+
+
+def _chat_loop(engine, router, args, assistant_name) -> int:
     while True:
         try:
             text = input("你> ")
@@ -350,7 +460,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 0
         if command == PASTE_COMMAND:
             try:
-                text = collect_multiline_turn()
+                text = collect_multiline_turn(input_fn=input)
             except (EOFError, KeyboardInterrupt):
                 print(f"\n{assistant_name} 对话已断开。")
                 return 0
@@ -360,12 +470,15 @@ def main(argv: Sequence[str] | None = None) -> int:
             continue
 
         try:
-            reply = engine.respond(
+            reply = router.respond(
+                engine,
                 UserTurn(
                     channel=args.channel,
                     conversation_id=args.conversation,
                     text=text,
-                )
+                    actor_id="local:" + getpass.getuser(),
+                ),
+                source_ref="cli:" + uuid4().hex,
             )
         except Exception as exc:
             print(f"{assistant_name}> 对话处理失败：{exc}")

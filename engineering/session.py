@@ -18,6 +18,19 @@ class EngineeringProtocolError(ValueError):
     """Raised when durable engineering state is malformed or unsafe."""
 
 
+def _text_items(value: object, *, name: str) -> tuple[str, ...]:
+    """Validate additive durable text lists without silently discarding bad records."""
+    if not isinstance(value, (list, tuple)) or not all(isinstance(item, str) for item in value):
+        raise EngineeringProtocolError(f"engineering {name} must be a list of text")
+    return tuple(dict.fromkeys(item.strip() for item in value if item.strip()))
+
+
+def _optional_text(value: object, *, name: str) -> str | None:
+    if value is not None and not isinstance(value, str):
+        raise EngineeringProtocolError(f"engineering {name} must be text or null")
+    return value.strip() or None if isinstance(value, str) else None
+
+
 @dataclass(frozen=True, slots=True)
 class EngineeringAuthority:
     """Machine-readable outer boundary for one engineering session/turn.
@@ -92,6 +105,10 @@ class EngineeringTurn:
     context: str
     authority: EngineeringAuthority
     created_at: float
+    effect: str | None = None
+    constraints: tuple[str, ...] = ()
+    acceptance_criteria: tuple[str, ...] = ()
+    source_request_id: str | None = None
 
     def __post_init__(self) -> None:
         turn_id = self.turn_id.strip()
@@ -103,6 +120,20 @@ class EngineeringTurn:
             raise EngineeringProtocolError("engineering intent must not be empty")
         if not isinstance(self.authority, EngineeringAuthority):
             raise TypeError("engineering turn authority must be EngineeringAuthority")
+        effect = self.effect
+        if effect is not None:
+            if not isinstance(effect, str) or not effect.strip():
+                raise EngineeringProtocolError("engineering turn effect must be non-empty text")
+            effect = effect.strip()
+            # Import at construction time to avoid the effects/session module cycle.
+            from .effects import authority_for_effect
+
+            if self.authority != authority_for_effect(effect):
+                raise EngineeringProtocolError("engineering turn effect does not match its authority")
+        object.__setattr__(self, "effect", effect)
+        object.__setattr__(self, "constraints", _text_items(self.constraints, name="constraints"))
+        object.__setattr__(self, "acceptance_criteria", _text_items(self.acceptance_criteria, name="acceptance_criteria"))
+        object.__setattr__(self, "source_request_id", _optional_text(self.source_request_id, name="source_request_id"))
         object.__setattr__(self, "turn_id", turn_id)
         object.__setattr__(self, "intent", intent)
         object.__setattr__(self, "context", context)
@@ -115,6 +146,10 @@ class EngineeringTurn:
         intent: str,
         authority: EngineeringAuthority,
         context: str = "",
+        effect: str | None = None,
+        constraints: tuple[str, ...] = (),
+        acceptance_criteria: tuple[str, ...] = (),
+        source_request_id: str | None = None,
     ) -> "EngineeringTurn":
         return cls(
             turn_id=uuid4().hex,
@@ -122,6 +157,10 @@ class EngineeringTurn:
             context=context,
             authority=authority,
             created_at=time.time(),
+            effect=effect,
+            constraints=constraints,
+            acceptance_criteria=acceptance_criteria,
+            source_request_id=source_request_id,
         )
 
     def to_mapping(self) -> dict[str, object]:
@@ -132,6 +171,10 @@ class EngineeringTurn:
             "context": self.context,
             "authority": self.authority.to_mapping(),
             "created_at": self.created_at,
+            "effect": self.effect,
+            "constraints": list(self.constraints),
+            "acceptance_criteria": list(self.acceptance_criteria),
+            "source_request_id": self.source_request_id,
         }
 
     @classmethod
@@ -147,6 +190,10 @@ class EngineeringTurn:
             context=str(payload.get("context", "")),
             authority=EngineeringAuthority.from_mapping(authority),
             created_at=float(payload.get("created_at", 0.0)),
+            effect=payload.get("effect"),
+            constraints=_text_items(payload.get("constraints", ()), name="constraints"),
+            acceptance_criteria=_text_items(payload.get("acceptance_criteria", ()), name="acceptance_criteria"),
+            source_request_id=_optional_text(payload.get("source_request_id"), name="source_request_id"),
         )
 
 

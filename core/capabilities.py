@@ -20,7 +20,7 @@ _CAPABILITY_MANIFEST = {
     },
     "conversation": {
         "available": True,
-        "summary": "Can hold persistent multi-turn conversations through the shared ConversationEngine; external chat-platform adapters can reuse the same identity and memory.",
+        "summary": "NaturalConversationEngine provides persistent dialogue. Private TaskRouter carries source-linked goals, constraints and acceptance into bounded services; shared turns bypass private actions.",
     },
     "ambient_context": {
         "available": True,
@@ -43,6 +43,16 @@ _CAPABILITY_MANIFEST = {
             "Ordered routine maintenance, bounded recovery, non-protected push, and Draft PR "
             "publication remain internal Hikari capabilities rather than an external Forge boundary."
         ),
+    },
+    "github_remote": {
+        "available": True,
+        "summary": "Repository-scoped GitHub reads and writes, PR/Actions workflows and conditional merge are implemented. Actual auth, repository scope and merge permission come from runtime configuration, operator policy and exact-head evidence.",
+        "current_authority": "not_asserted_by_static_manifest",
+    },
+    "capability_growth": {
+        "available": True,
+        "summary": "Private requests can create isolated engineering candidates. Pure recipes over bounded services are independently validated and require explicit operator activation or an existing pure-service policy. Native code candidates require separate validation and deployment; generated code is not automatically a live ability.",
+        "native_auto_deployment": False,
     },
 }
 

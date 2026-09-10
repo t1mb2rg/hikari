@@ -55,12 +55,14 @@ windows-notify = [
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["core*", "memory*", "user_model*", "events*", "attention*", "brain*", "awareness*", "personality*", "learning*", "actions*", "resident*", "conversation*", "integrations*", "dashboard*", "engineering*"]
+include = ["core*", "memory*", "user_model*", "events*", "attention*", "brain*", "awareness*", "personality*", "learning*", "actions*", "resident*", "conversation*", "integrations*", "dashboard*", "engineering*", "capabilities*"]
 exclude = ["tests*"]
 
 [tool.setuptools.package-data]
+core = ["*.yaml"]
 personality = ["*.yaml"]
 dashboard = ["static/*.html", "static/*.css", "static/*.js"]
+engineering = ["*.schema.json"]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]

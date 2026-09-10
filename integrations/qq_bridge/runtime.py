@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import time
+from dataclasses import asdict
+from resident.telemetry import record_observation
 
 from conversation.models import AssistantReply
 from core.delivery import DeliveryOutbox, DeliveryRecord
@@ -40,13 +43,26 @@ class QQBridgeRuntime:
         # This prevents overlapping model calls or QQ sends for the same turn
         # while retaining durable at-least-once recovery after process failure.
         self._conversation_lock = asyncio.Lock()
+        self._last_observation = 0.0
+
+    def _publish_health(self, *, force: bool = False) -> None:
+        now = time.monotonic()
+        if not force and now - self._last_observation < 3:
+            return
+        self._last_observation = now
+        snapshot = self.health.snapshot()
+        root = self.spool.path.parent
+        record_observation(root, "qq", "healthy" if snapshot.healthy else "offline",
+                           observation_ttl_seconds=max(15.0, self.config.link_check_seconds * 2.5), **asdict(snapshot))
 
     def observe_event(self) -> None:
         self.health.mark_event()
+        self._publish_health()
 
     async def on_bot_connect(self, bot: Bot) -> None:
         self._bot = bot
         self.health.mark_connected(bot.self_id)
+        self._publish_health(force=True)
         logger.info(f"Hikari QQ OneBot connected: self_id={bot.self_id}")
         await self.drain_unsent(bot)
         await self.drain_proactive(bot)
@@ -55,6 +71,7 @@ class QQBridgeRuntime:
         if self._bot is bot:
             self._bot = None
         self.health.mark_disconnected()
+        self._publish_health(force=True)
         logger.warning(f"Hikari QQ OneBot disconnected: self_id={bot.self_id}")
 
     async def handle_private_message(self, bot: Bot, event: PrivateMessageEvent) -> None:
@@ -234,6 +251,7 @@ class QQBridgeRuntime:
         try:
             while True:
                 await asyncio.sleep(self.config.link_check_seconds)
+                self._publish_health(force=True)
                 bot = self._bot
                 if bot is None or not self.health.needs_probe():
                     continue
@@ -246,6 +264,7 @@ class QQBridgeRuntime:
                     )
                 else:
                     self.health.mark_probe(True)
+                self._publish_health(force=True)
         except asyncio.CancelledError:
             raise
 

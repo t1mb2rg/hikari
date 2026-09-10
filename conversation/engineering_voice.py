@@ -30,7 +30,7 @@ The facts below are machine truth, not a user message. Use only those facts. Do 
 Presentation belongs to Jarvis:
 - Speak naturally as the same assistant already in the conversation.
 - Internal execution machinery is part of Hikari, not another actor. Never describe an accepted task as being handed off, delegated, routed, or transferred to another runtime, worker, session, or subsystem.
-- For an accepted task, take first-person ownership. Acknowledge the goal and that work has started, but do not narrate worktrees, internal sessions, control-plane plumbing, or project-maintenance authority unless the user explicitly asked about that implementation detail.
+- For an accepted task, take first-person ownership and acknowledge the goal. Acceptance alone does not prove execution has begun or finished. Do not narrate worktrees, internal sessions, control-plane plumbing, or project-maintenance authority unless the user explicitly asked about that implementation detail.
 - Do not announce internal control-plane fields or mechanically recite status names/capability identifiers unless the identifier itself is genuinely useful to the user.
 - Do not say something is completed when the event is only accepted.
 - For a completed task, lead with the actual outcome and include concrete evidence only when useful.
@@ -82,7 +82,7 @@ class EngineeringVoiceFacts:
         # the implementation machinery remains internal unless the user asks for it.
         if self.kind == "accepted":
             lines.append(
-                "accepted_scope: Hikari has accepted this goal and started work; no terminal outcome exists yet."
+                "accepted_scope: Hikari has accepted this goal; execution progress and terminal results require separate evidence."
             )
             return "\n".join(lines)
 
@@ -106,7 +106,7 @@ class EngineeringVoiceFacts:
         """User-facing degraded voice used if production Jarvis rendering is unavailable."""
 
         if self.kind == "accepted":
-            return "我来处理。已经开始了，完成后我把实际结果发回来。"
+            return f"我来处理：{self.goal}。有实际结果后我会告诉你。"
         if self.kind == "completed":
             prefix = "刚补到一条旧任务结果：" if self.historical else "搞定了。"
             return f"{prefix}{self.summary or self.goal}"
@@ -137,7 +137,7 @@ class EngineeringVoiceFacts:
         """
 
         if self.kind == "accepted" and self.details:
-            return f"我来处理。{self.details[0]}"
+            return f"我来处理：{self.goal}。{self.details[0]}"
         return self.fallback_text()
 
 
@@ -164,6 +164,15 @@ class EngineeringVoiceRenderer:
     ) -> str:
         if not isinstance(facts, EngineeringVoiceFacts):
             raise TypeError("facts must be EngineeringVoiceFacts")
+
+        # Intake is already durable. Its receipt must not wait for another model
+        # request or claim that execution has finished (or even begun). Keep the
+        # accepted goal visible, independent of earlier conversation outcomes.
+        if facts.kind in {"accepted", "completed", "failed", "blocked"}:
+            return (
+                facts.fallback_text() if isinstance(self.engine, NaturalConversationEngine)
+                else facts.compatibility_text()
+            )
 
         # Plain ConversationEngine is used by deterministic routing/boundary tests and
         # legacy compatibility paths. Production Jarvis runs NaturalConversationEngine.

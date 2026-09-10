@@ -25,6 +25,7 @@ from resident.napcat_login_guard import (
     WindowsScheduledTaskRestarter,
 )
 from resident.windows_host import _default_process_probe, default_state_dir
+from resident.telemetry import read_observation
 
 from .models import ComponentSnapshot, ComponentStatus
 
@@ -37,6 +38,7 @@ class DashboardProbeConfig:
     napcat_task_name: str = DEFAULT_NAPCAT_TASK_NAME
     onebot_host: str = "127.0.0.1"
     onebot_port: int = 8081
+    env_file: Path | None = None
 
     def __post_init__(self) -> None:
         repository = Path(self.repository).expanduser().resolve()
@@ -53,6 +55,8 @@ class DashboardProbeConfig:
         object.__setattr__(self, "napcat_root", napcat_root)
         object.__setattr__(self, "napcat_task_name", str(self.napcat_task_name).strip())
         object.__setattr__(self, "onebot_port", int(self.onebot_port))
+        if self.env_file is not None:
+            object.__setattr__(self, "env_file", Path(self.env_file).expanduser().resolve())
 
     @classmethod
     def local_default(cls, repository: str | Path = ".") -> "DashboardProbeConfig":
@@ -312,7 +316,15 @@ class DashboardProbeService:
         )
 
     def probe_napcat(self) -> ComponentSnapshot:
-        onebot_connected = _tcp_open(self.config.onebot_host, self.config.onebot_port)
+        listener_reachable = _tcp_open(self.config.onebot_host, self.config.onebot_port)
+        onebot_connected = None
+        try:
+            observed = read_observation(self.config.state_dir, "qq")
+            ttl = min(600, max(15, float((observed or {}).get("details", {}).get("observation_ttl_seconds", 30))))
+            if observed and _process_alive(observed["pid"]) and time.time() - observed["observed_at"] < ttl:
+                onebot_connected = observed.get("details", {}).get("connected") is True
+        except (OSError, ValueError, KeyError):
+            pass
         try:
             status = self._get_napcat_client().check()
         except NapCatLoginError as exc:
@@ -324,13 +336,14 @@ class DashboardProbeService:
                 message="无法读取 NapCat 登录状态",
                 updated_at=_iso_now(),
                 last_error=str(exc),
-                details={"onebot_connected": onebot_connected},
+                details={"onebot_connected": onebot_connected, "onebot_listener_reachable": listener_reachable},
             )
 
         details = {
             "qq_logged_in": status.is_login,
             "qq_offline": status.is_offline,
             "onebot_connected": onebot_connected,
+            "onebot_listener_reachable": listener_reachable,
             "qrcode_url": status.qrcode_url,
             "login_error": status.login_error,
         }
@@ -350,7 +363,7 @@ class DashboardProbeService:
                 label="QQ / NapCat",
                 status=ComponentStatus.WARNING,
                 phase="QQ 已登录",
-                message="QQ 已登录，但 OneBot 端口没有响应",
+                message="QQ 已登录，但尚无新鲜的 OneBot 连接证据",
                 updated_at=_iso_now(),
                 blocking_on="OneBot 连接",
                 details=details,

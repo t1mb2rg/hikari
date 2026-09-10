@@ -273,6 +273,7 @@ def test_delivery_cli_queues_only_configured_qq_recipient(tmp_path: Path):
         env=environment,
         capture_output=True,
         text=True,
+        encoding="utf-8",
         timeout=20,
         check=False,
     )

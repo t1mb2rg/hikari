@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from resident.console import configure_utf8_output
+
 import argparse
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass
@@ -128,13 +130,12 @@ def _select_background_python(
     *,
     platform_name: str | None = None,
 ) -> str:
-    """Prefer the windowless interpreter for a detached Windows resident.
+    """Use the selected venv's console interpreter with no visible console.
 
-    Windows Terminal can surface a new console window even when a console
-    interpreter is launched with detached creation flags. A venv ships a
-    sibling ``pythonw.exe`` specifically for GUI/background processes. Using it
-    keeps the resident independent of any visible console while stdout/stderr
-    remain explicitly redirected to the host log.
+    Some native Windows venv ``pythonw.exe`` launchers delegate a detached
+    process to the base interpreter, which can silently reintroduce an editable
+    installation. ``CREATE_NO_WINDOW`` already suppresses the console, so keep
+    the exact ``python.exe`` path and preserve source/venv identity.
     """
 
     platform_name = os.name if platform_name is None else platform_name
@@ -145,9 +146,9 @@ def _select_background_python(
     if executable.name.lower() not in {"python.exe", "pythonw.exe"}:
         return str(executable)
 
-    pythonw = executable.with_name("pythonw.exe")
-    if pythonw.is_file():
-        return str(pythonw)
+    python = executable.with_name("python.exe")
+    if python.is_file():
+        return str(python)
     return str(executable)
 
 
@@ -183,10 +184,13 @@ def _default_launcher(
     creationflags |= int(getattr(subprocess, "DETACHED_PROCESS", 0))
     creationflags |= int(getattr(subprocess, "CREATE_NO_WINDOW", 0))
 
+    launch_root = Path(environment.get("HIKARI_RUNTIME_PACKAGE_ROOT", str(cwd))).expanduser().resolve()
+    if not launch_root.is_dir():
+        raise ValueError("trusted Hikari runtime package root is missing")
     with log_path.open("ab") as log_handle:
         process = subprocess.Popen(
             argv,
-            cwd=cwd,
+            cwd=launch_root,
             env=dict(environment),
             stdin=subprocess.DEVNULL,
             stdout=log_handle,
@@ -327,6 +331,17 @@ class WindowsResidentHost:
         )
         runtime_environment.values["HIKARI_RUNTIME_PYTHON"] = (
             _select_runtime_child_python(self.python_executable)
+        )
+        # A native Windows venv launcher may delegate the detached pythonw process
+        # to its base interpreter. Bind the child import root explicitly to the
+        # trusted installed Hikari package so a target repository or old editable
+        # install cannot supply resident/worker modules.
+        package_root = str(Path(__file__).resolve().parents[1])
+        runtime_environment.values["HIKARI_RUNTIME_PACKAGE_ROOT"] = package_root
+        previous_pythonpath = runtime_environment.values.get("PYTHONPATH", "")
+        runtime_environment.values["PYTHONPATH"] = os.pathsep.join(
+            [package_root, *[item for item in previous_pythonpath.split(os.pathsep)
+                             if item and Path(item).resolve() != Path(package_root).resolve()]]
         )
         build_reasoner(
             self.config.reasoner,
@@ -506,6 +521,7 @@ def _doctor(env_file: str | None) -> int:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    configure_utf8_output()
     args = build_parser().parse_args(argv)
 
     if args.command == "doctor":

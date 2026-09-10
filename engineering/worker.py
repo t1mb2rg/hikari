@@ -14,6 +14,9 @@ from .backend import ClaudeEngineeringBackend, EngineeringAgentEvent, Engineerin
 from .bindings import EngineeringConversationBindingStore
 from .delivery import EngineeringCompletionDelivery
 from .github_publish import open_or_update_draft_pr
+from .goal import EngineeringGoalStore
+from .config import EngineeringBackendConfig
+from .codex_backend import CodexEngineeringBackend
 from .heartbeat import (
     EngineeringWorkerHeartbeatEmitter,
     EngineeringWorkerHeartbeatStore,
@@ -70,21 +73,11 @@ _VALIDATION_COMMAND_MARKERS = (
     "go test",
     "dotnet test",
 )
-_EFFECT_PREFIX = "Requested effect: "
-
-
 def _turn_effect(turn: EngineeringTurn) -> str:
-    """Read the deterministic effect written by ConversationEngineeringBridge.
+    """Use the same typed effect and legacy fallback as restart recovery."""
+    from .effects import turn_effect
 
-    This deliberately does not interpret the user's natural-language intent. The bridge
-    writes its machine field after the semantic goal, so the last marker is authoritative.
-    Older publish turns without the field remain compatible with the original push path.
-    """
-
-    _, marker, tail = turn.context.rpartition(_EFFECT_PREFIX)
-    if not marker:
-        return ""
-    return tail.split(".", 1)[0].strip()
+    return turn_effect(turn)
 
 
 def _prompt_for_read_only_turn(state: EngineeringSessionState, turn: EngineeringTurn) -> str:
@@ -135,6 +128,7 @@ def _prompt_for_maintainer_turn(state: EngineeringSessionState, turn: Engineerin
         "You may inspect and edit/create/delete project files needed for the task.",
         "Stay inside this repository. Do not use the network or access external secret locations.",
         "Do not stage, commit, push, merge, publish, deploy, or alter Git history; Hikari's Worker owns those steps.",
+        "Return completed when your edit/validation stage is complete. Hikari will commit after you return; do not report blocked merely because you correctly left that commit to Hikari.",
         "You own task-appropriate validation inside this turn. Choose validation proportionate to the actual change.",
         "Documentation-only changes do not need a meaningless full project test suite. For code/config/test changes, run the relevant checks needed to support completion.",
         "If a validation command fails because of your change, continue diagnosing and repairing inside this same agent loop before finishing.",
@@ -190,12 +184,18 @@ class EngineeringWorker:
 
     @staticmethod
     def _default_backend(state: EngineeringSessionState, turn: EngineeringTurn):
+        config = EngineeringBackendConfig.from_mapping(os.environ)
+        if config.backend == "codex":
+            return CodexEngineeringBackend(writable=turn.authority.repository_write,
+                                           session_id=state.backend_session_id)
         return ClaudeEngineeringBackend(
             permission_mode="acceptEdits" if turn.authority.repository_write else "plan",
-            session_id=state.backend_session_id,
+            session_id=state.backend_session_id if not (state.backend_session_id or "").startswith("codex:") else None,
         )
 
     def run_once(self) -> WorkerOutcome | None:
+        # Do not execute pending work when its possible Goal ownership is unreadable.
+        EngineeringGoalStore(self.store.root.parent / "engineering_goals").list_states()
         pending = [state for state in self.store.list_states() if state.status == "pending"]
         if not pending:
             return None
@@ -350,6 +350,16 @@ class EngineeringWorker:
             "updated": "已更新",
             "existing": "已确认已有",
         }[result.action]
+        if result.action == "created":
+            from urllib.parse import urlparse
+            from integrations.github.governance import GitHubEvidenceStore
+            url = urlparse(result.url)
+            parts = url.path.strip("/").split("/")
+            if url.hostname == "github.com" and len(parts) == 4 and parts[2] == "pull":
+                GitHubEvidenceStore(self.store.root.parent / "github_evidence.db").record_owned(
+                    "/".join(parts[:2]), result.number, session_id=state.session_id,
+                    head=result.head, base=result.base,
+                )
         return self._finish(
             state,
             turn,
@@ -367,8 +377,14 @@ class EngineeringWorker:
         workspace: EngineeringWorkspace,
         prompt: str,
     ) -> tuple[object, EngineeringAgentResult] | WorkerOutcome:
+        from resident.telemetry import record_observation
+        root = self.store.root.parent
+        selected = "unknown"
         try:
             active_backend = self.backend_factory(state, turn)
+            selected = type(active_backend).__name__
+            record_observation(root, "engineering_backend", "running", backend=selected,
+                               session_id=state.session_id, turn_id=turn.turn_id)
             set_event_sink = getattr(active_backend, "set_event_sink", None)
             if callable(set_event_sink):
                 set_event_sink(
@@ -376,6 +392,8 @@ class EngineeringWorker:
                 )
             result = active_backend.run(workspace.path, prompt)
         except Exception as exc:
+            record_observation(root, "engineering_backend", "error", backend=selected,
+                               session_id=state.session_id, turn_id=turn.turn_id, error_type=type(exc).__name__)
             return self._finish(
                 state,
                 turn,
@@ -384,6 +402,11 @@ class EngineeringWorker:
             )
         if not isinstance(result, EngineeringAgentResult):
             raise TypeError("engineering backend must return EngineeringAgentResult")
+        record_observation(root, "engineering_backend",
+                           "healthy" if result.returncode == 0 else "blocked" if result.returncode == 77 else "error",
+                           backend=selected, session_id=state.session_id, turn_id=turn.turn_id,
+                           returncode=result.returncode,
+                           reason="backend_stage_completed" if result.returncode == 0 else "execution_boundary_blocked" if result.returncode == 77 else "backend_failed")
         return active_backend, result
 
     def _backend_event(
@@ -398,7 +421,7 @@ class EngineeringWorker:
             session_id,
             turn_id,
             "progress",
-            f"Claude Code: {event.summary.strip()}"[:1000],
+            f"Engineering backend: {event.summary.strip()}"[:1000],
         )
 
     def _run_read_only(
@@ -534,11 +557,15 @@ class EngineeringWorker:
 
     @staticmethod
     def _validation_summary(events: tuple[EngineeringAgentEvent, ...]) -> str:
+        reported = [event.summary for event in events if event.kind == "validation"]
         commands: list[str] = []
         for event in events:
-            if event.kind != "tool" or not event.summary.startswith("Bash:"):
+            if event.kind == "command":
+                command = event.summary
+            elif event.kind == "tool" and event.summary.startswith("Bash:"):
+                command = event.summary.split(":", 1)[1].strip()
+            else:
                 continue
-            command = event.summary.split(":", 1)[1].strip()
             normalized = command.casefold()
             if any(marker in normalized for marker in _VALIDATION_COMMAND_MARKERS):
                 commands.append(command)
@@ -546,8 +573,10 @@ class EngineeringWorker:
             visible = "；".join(f"`{command[:220]}`" for command in commands[:4])
             if len(commands) > 4:
                 visible += f"；另有 {len(commands) - 4} 条"
-            return f"Claude Code 已执行任务内验证：{visible}"
-        return "Claude Code 按任务范围自主管理验证；未记录到项目测试命令，Hikari 已完成改动范围检查。"
+            return f"工程后端已执行任务内验证：{visible}"
+        if reported:
+            return "工程后端报告：" + "；".join(reported[:4])[:1000]
+        return "工程后端按任务范围自主管理验证；未记录到项目测试命令，Hikari 已完成改动范围检查。"
 
     @staticmethod
     def _change_policy_violation(
@@ -573,7 +602,8 @@ class EngineeringWorker:
         detail = (result.stderr or "").strip()
         if len(detail) > 1200:
             detail = detail[-1200:]
-        message = "Engineering backend 执行失败"
+        blocked = result.returncode == 77 and any(marker in detail for marker in ("[codex:blocked]", "[claude-code:blocked]"))
+        message = "Engineering backend 被阻塞" if blocked else "Engineering backend 执行失败"
         if detail:
             message += f"：{detail}"
         if result.events:
@@ -582,7 +612,7 @@ class EngineeringWorker:
         return self._finish(
             state,
             turn,
-            status="failed",
+            status="blocked" if blocked else "failed",
             message=message,
             backend_session_id=result.session_id or None,
             changed_files=changed_files,

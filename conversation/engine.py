@@ -106,6 +106,8 @@ class ConversationEngine:
         user_fact_extractor: ModelUserFactExtractor | None = None,
         user_model_limit: int = 6,
         system_instructions: str = INTERACTIVE_SYSTEM_INSTRUCTIONS,
+        response_guard=None,
+        assimilation_sink=None,
     ) -> None:
         if not isinstance(provider, ChatProvider):
             raise TypeError("ConversationEngine requires a ChatProvider")
@@ -119,6 +121,10 @@ class ConversationEngine:
             raise ValueError("user_model_limit must be positive")
         if not isinstance(system_instructions, str) or not system_instructions.strip():
             raise ValueError("system_instructions must not be empty")
+        if response_guard is not None and not callable(response_guard):
+            raise TypeError("response_guard must be callable")
+        if assimilation_sink is not None and not callable(assimilation_sink):
+            raise TypeError("assimilation_sink must be callable")
 
         self.provider = provider
         self.memory = memory
@@ -133,6 +139,8 @@ class ConversationEngine:
         self.user_fact_extractor = user_fact_extractor
         self.user_model_limit = int(user_model_limit)
         self.system_instructions = system_instructions.strip()
+        self.response_guard = response_guard
+        self.assimilation_sink = assimilation_sink
 
     def respond(
         self,
@@ -199,21 +207,26 @@ class ConversationEngine:
         text = self.provider.complete(messages).strip()
         if not text:
             raise RuntimeError("model provider returned empty conversation reply")
+        if self.response_guard is not None:
+            text = self.response_guard(turn, text, source_ref)
+            if not isinstance(text, str) or not text.strip():
+                raise RuntimeError("response guard did not provide a usable reply")
 
         user_event = self.memory.remember_event(
             USER_EVENT_TYPE,
             turn.text,
-            context=self._event_context(turn.channel, turn.conversation_id, "user"),
+            context={**self._event_context(turn.channel, turn.conversation_id, "user"),
+                     "scope": turn.scope, "actor_id": turn.actor_id},
             importance=1.0,
         )
         self.memory.remember_event(
             ASSISTANT_EVENT_TYPE,
             text,
-            context=self._event_context(
+            context={**self._event_context(
                 turn.channel,
                 turn.conversation_id,
                 "assistant",
-            ),
+            ), "scope": turn.scope, "actor_id": turn.actor_id},
             importance=1.0,
         )
         reply = AssistantReply(
@@ -225,6 +238,7 @@ class ConversationEngine:
             source_ref=(source_ref or f"conversation-event:{user_event.id}"),
             turn=turn,
             history=history,
+            observed_at=user_event.occurred_at,
         )
         return reply
 
@@ -250,7 +264,21 @@ class ConversationEngine:
         source_ref: str,
         turn: UserTurn,
         history: list[MemoryEvent],
+        observed_at: str | None = None,
     ) -> None:
+        if turn.is_shared:
+            return
+        if self.assimilation_sink is not None:
+            self.assimilation_sink(
+                source_ref=source_ref, turn=turn, observed_at=observed_at,
+                recent_history=[
+                    {"role": "user" if event.event_type == USER_EVENT_TYPE else "assistant", "content": event.content}
+                    for event in history[-6:]
+                    if event.context.get("scope", "private") == "private"
+                    and event.context.get("actor_id") in {None, turn.actor_id}
+                ],
+            )
+            return
         if self.user_model_service is None or self.user_fact_extractor is None:
             return
         recent_history = [

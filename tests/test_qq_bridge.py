@@ -588,6 +588,7 @@ def test_standalone_cli_check_assembles_nonebot_runtime(tmp_path: Path):
         env=environment,
         capture_output=True,
         text=True,
+        encoding="utf-8",
         timeout=20,
         check=False,
     )

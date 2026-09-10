@@ -196,7 +196,8 @@ def test_engineering_worker_supervisor_starts_resident_owned_child(tmp_path: Pat
         "--owner",
         "resident",
     ]
-    assert captured[0][1]["cwd"] == repository.resolve()
+    assert captured[0][1]["cwd"] == Path(__file__).resolve().parents[1]
+    assert captured[0][1]["env"]["PYTHONPATH"].split(__import__("os").pathsep)[0] == str(Path(__file__).resolve().parents[1])
     assert captured[0][1]["env"]["SAFE"] == "1"
     assert captured[0][1]["env"]["PYTHONUTF8"] == "1"
 

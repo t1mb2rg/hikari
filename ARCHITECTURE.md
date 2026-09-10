@@ -64,9 +64,10 @@ Conversation Transport
        ↓
 Conversation Host
        ↓
-NaturalConversationEngine
+private ConversationTaskRouter / shared conversation path
        ↓
-Natural Context + Memory + User Model + Persona
+chat: NaturalConversationEngine + selected context
+task: durable request → authorized effect service → evidence
        ↓
  AssistantReply
        ↓
@@ -86,12 +87,14 @@ QQ Bridge
  ↓ hikari.conversation.v1
 Conversation Host
  ↓
-NaturalConversationEngine
+private TaskRouter / shared Natural conversation
 ```
 
 Platform SDK types remain outside cognition packages. NoneBot / OneBot types belong only to the QQ integration package.
 
 The bridge is a transport edge, not a second brain. It may authenticate callers, normalize platform identifiers, buffer/retry transport work, and report connection health. It does not own personality, memory semantics, prompt construction, action authority, or autonomous participation policy.
+
+QQ private users, groups, and group participants have separate configured allowlists. A group turn requires an approved group and participant, an @Hikari mention, and otherwise plain text. It remains shared scope; membership does not grant the private task router, private memory, Engineering, GitHub, or growth authority. Stable transport source identifiers bind accepted work to its originating private principal.
 
 ## Natural Context Boundary
 
@@ -154,9 +157,11 @@ Direct user conversation bypasses ambient Attention because the user has already
 
 Owns direct, persistent, channel-neutral dialogue.
 
-`NaturalConversationEngine` is the current production conversation implementation. Resident Conversation Host and standalone `hikari-conversation-host` both use this Natural/Jarvis path, with recent conversation plus small selected Natural Context near the current utterance. Durable persistence and User Model assimilation continue behind that boundary.
+The default conversation profile is Jarvis, implemented by `NaturalConversationEngine`. Private ingress passes through `ConversationTaskRouter`: an intent resolver sees bounded same-principal discussion and the current request, then emits a validated intent. It can choose chat, clarification, status, engineering, GitHub, a missing-capability request, or invocation of a verified active capability. Historical assistant proposals do not independently authorize execution.
 
-`ConversationEngine` currently remains as a shared lifecycle/base implementation plus an explicit legacy grounded fallback. Its old `respond()` path builds the historical heavy JSON grounding payload and is not part of the default production Host path. Final naming/decomposition of this compatibility surface is a pre-release cleanup requirement so the production and legacy responsibilities are unambiguous before release.
+Chat delegates to the Natural/Jarvis engine with selected context; shared scope bypasses private task routing. Status is read from durable records rather than generated from optimistic conversation history. A task records its original source, principal, goal, constraints, acceptance criteria, chosen effect and resulting evidence. Reusing an existing source cannot silently substitute a different request or repeat an uncertain effect. Resident advances accepted work and durable delivery separately from generating the initial acknowledgement.
+
+`ConversationEngine` remains a shared lifecycle/base implementation and an explicit legacy grounded profile. Its historical heavy JSON grounding path is not the default private chat implementation. Whiteboard/grounded profiles are compatibility or experiment choices, not additional identities.
 
 Historical Whiteboard profiles reuse the production natural conversation lifecycle and vary only prompt/context inputs; they do not maintain a second conversation engine implementation.
 
@@ -169,13 +174,13 @@ Abstracts model providers. Models are replaceable cognition components, not Hika
 Engineering Runtime is Hikari's internal bounded engineering capability. Forge is no longer an active runtime component in the Resident conversation path.
 
 ```text
-Conversation engineering intent
+private request + discussion constraints + acceptance criteria
         ↓
-Capability / authority assessment
+durable request / EngineeringGoal with typed steps
         ↓
-EngineeringSession
+capability and authority assessment → EngineeringSession / turn
         ↓
-Engineering Worker / backend
+Engineering Worker / selected Claude or Codex backend
         ↓
 isolated workspace + validation
         ↓
@@ -186,7 +191,35 @@ Hikari delivery / next decision
 
 Routine delegated repository work does not require per-action confirmation. High-impact effects remain outside the standing mandate and are escalated.
 
+The executing effect is a typed field, independent of display text. Implemented effects include project inspection, a bounded project command, maintenance, engineering-branch push, and draft-PR publication. Goal, turn, source request, constraints and acceptance criteria survive dispatch and recovery. The Worker owns validation and commits; source baseline changes create fresh sessions. A terminal result is not equivalent to user delivery, which has its own durable outbox state.
+
+Claude remains the default backend; `HIKARI_ENGINEERING_BACKEND=codex` selects the alternative. Their executable/model settings are separate from Conversation. Both adapters require structured `completed`, `blocked` or `failed` reports and preserve actual activity/session evidence. A successful process exit means transport success only. Missing/invalid structured results fail closed, and a permission-blocked result remains blocked. Timeouts terminate the owned process tree. The Codex adapter copies vetted model-provider settings without inheriting desktop session authority, plugins or hooks.
+
 Conversation itself does not gain direct filesystem perception merely because Engineering Runtime exists. Engineering state and results must come from durable runtime state.
+
+### GitHub effect service
+
+`GitHubActionService` exposes a closed catalog of repository/PR/file/Actions reads and scoped branch, file, PR, rerun and merge effects. Runtime configuration supplies allowed repositories and private source identity. The model cannot provide shell commands, credentials, operator policy, ownership receipts or physical-gate evidence. Every accepted write first reserves an immutable receipt; an incomplete or uncertain external outcome is not replayed automatically.
+
+`GitHubPolicyStore` is a separate operator surface with revision-checked saves. Its `github_policy.json` belongs to the original runtime state outside candidate worktrees. Missing policy disables automatic merge. A configured merge requires an explicitly allowed base and actual named checks, Hikari-created PR ownership, the same repository, exact head/base/ref consistency, resolved blocking reviews, unchanged authority/validation paths (including rename sources), and any required exact-head physical acceptance evidence. A qualifying draft can be marked ready only after substantive checks pass, then reassessed before a SHA-conditioned merge. Historical gate PRs #77–79 in `t1mb2rg/hikari` remain user-owned decisions.
+
+Failed Actions reruns require an operator-pinned workflow path and blob SHA. The returned receipt means rerun requested, not CI success. Deployment and permission changes are not conversational actions. Ordinary tests and reusable pure capabilities do not grant those effects.
+
+### Private capability growth
+
+`CapabilityGrowth` persists missing-capability requests, private ownership, typed contracts, immutable acceptance examples and the original input before dispatching an isolated Engineering turn. The recipe domain composes host-owned pure text/list operations with no external permissions. Growth validates the committed candidate diff, captures an immutable digest, and runs both original and candidate examples itself.
+
+The recipe lifecycle is `requested → implementing → candidate_tested → active → resumed`. `candidate_tested` has `live=false`; activation requires the exact digest and an explicit operator decision. Invocation rechecks the snapshot and original private principal. A restart can recover the original request/result without replacing its identity. Failed attempts retain their evidence.
+
+Native implementation requests may create source candidates, but stop at `candidate_implemented`. Resident does not import generated Python; native validation, runtime extension and deployment remain separate reviewed work. See `docs/CAPABILITY_GROWTH.md` for the executable contract and limits.
+
+### Runtime truth and configuration
+
+Producer-owned observations record component PID, timestamp, actual model/connection outcomes and bounded details. The dashboard combines these with live process checks, Worker heartbeat, Goal/session results, delivery receipts and GitHub reads. Missing, stale or dead-producer observations are `unknown`; a configured model name or open port does not prove successful service.
+
+Dashboard settings are operator-owned dotenv edits with revision conflict detection. Secret values are write-only in the response, existing comments/unknown settings are preserved, and the UI distinguishes saved configuration from process overrides and runtime application. Saving does not mutate process environment or restart services. Local-host and same-origin mutation boundaries protect the dashboard operation surface.
+
+Runtime deployment has three separate coordinates: code checkout, Python/dependency environment, and durable state/env-file paths. New candidate environment IDs bind source checkout/content/revision as well as lock/Python/extras; non-editable builds and validation/promotion checks prevent substituting a changed source. Promoted or running environments cannot be rebuilt in place. An environment `current.json` pointer selects a verified interpreter for the autostart launcher; it does not restore or deploy source files. Candidate validation, controlled startup and permanent autostart migration are recorded separately. See `docs/JARVIS_DAILY_DRIVER.md` for startup, controlled switch and rollback procedures.
 
 ## Adapter Boundary
 

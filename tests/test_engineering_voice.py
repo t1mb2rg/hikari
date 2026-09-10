@@ -46,13 +46,19 @@ def test_production_engineering_voice_renders_trusted_terminal_facts(tmp_path: P
         conversation_id="private:42",
     )
 
-    assert text == "搞定了，先生。README 已同步到当前真实能力。"
-    assert len(provider.calls) == 1
-    prompt = provider.calls[0][-1].content
-    assert "event: completed" in prompt
-    assert "goal: 同步 README 的 M7-07 状态" in prompt
-    assert "changed_files: README.md" in prompt
-    assert "branch: hikari/engineering/example" in prompt
+    assert text == "搞定了。README 已更新，范围检查通过。"
+    assert provider.calls == []
+
+
+def test_terminal_voice_cannot_turn_committed_evidence_into_pending_stage(tmp_path: Path):
+    provider = _RecordingProvider("修改已移交给后续工程层提交。")
+    engine = NaturalConversationEngine(provider, MemoryStore(tmp_path / "memory.db"))
+    result = EngineeringVoiceRenderer(engine).render(EngineeringVoiceFacts(
+        kind="completed", goal="修改并提交文件", status="completed", summary="提交已完成：abc123。",
+    ), channel="qq", conversation_id="private:42")
+    assert "提交已完成：abc123" in result
+    assert "后续" not in result
+    assert provider.calls == []
 
 
 def test_production_accepted_voice_hides_internal_delegation_plumbing(tmp_path: Path) -> None:
@@ -76,19 +82,18 @@ def test_production_accepted_voice_hides_internal_delegation_plumbing(tmp_path: 
         conversation_id="private:42",
     )
 
-    assert text == "好，我来改。只动 README 里你指定的那部分，完成后告诉你结果。"
-    assert len(provider.calls) == 1
-    prompt = provider.calls[0][-1].content
-    assert "event: accepted" in prompt
-    assert "goal: 只更新 README 的 M7-07 Engineering Runtime 部分" in prompt
-    assert "accepted_scope:" in prompt
-    assert "项目维护职责" not in prompt
-    assert "持久工程会话" not in prompt
-    assert "隔离工程分支" not in prompt
-    assert "hikari/engineering/example" not in prompt
+    assert "我来处理" in text
+    assert "只更新 README 的 M7-07 Engineering Runtime 部分" in text
+    assert provider.calls == []
+    assert "项目维护职责" not in text
+    assert "持久工程会话" not in text
+    assert "隔离工程分支" not in text
+    assert "hikari/engineering/example" not in text
+    assert "已经开始" not in text
+    assert "已完成" not in text
 
 
-def test_production_accepted_voice_degrades_without_exposing_internal_plumbing(
+def test_production_accepted_voice_needs_no_working_model(
     tmp_path: Path,
 ) -> None:
     engine = NaturalConversationEngine(_FailingProvider(), MemoryStore(tmp_path / "memory.db"))
@@ -110,6 +115,41 @@ def test_production_accepted_voice_degrades_without_exposing_internal_plumbing(
     assert "项目维护职责" not in text
     assert "工程会话" not in text
     assert "工程分支" not in text
+    assert "更新 README" in text
+
+
+def test_acceptance_uses_current_durable_goal_without_loading_history_or_model(tmp_path: Path, monkeypatch) -> None:
+    provider = _RecordingProvider("stale model response")
+    engine = NaturalConversationEngine(provider, MemoryStore(tmp_path / "memory.db"))
+
+    def forbidden_history(*args):
+        raise AssertionError("accepted receipt must be immediate without history retrieval")
+
+    monkeypatch.setattr(engine, "_recent_history", forbidden_history)
+    facts = EngineeringVoiceFacts(
+        kind="accepted",
+        goal="修正新的安装示例，只修改 README",
+        status="accepted",
+        summary="This is not terminal evidence",
+        branch="hikari/engineering/private-internal-id",
+    )
+    text = EngineeringVoiceRenderer(engine).render(facts, channel="qq", conversation_id="private:42")
+    assert facts.goal in text
+    assert provider.calls == []
+    assert "stale model response" not in text
+    assert "This is not terminal evidence" not in text
+    assert "private-internal-id" not in text
+    assert "搞定" not in text and "已经开始" not in text
+
+
+def test_base_acceptance_keeps_goal_identity_and_legacy_boundary_detail(tmp_path: Path) -> None:
+    provider = _RecordingProvider("must remain unused")
+    engine = ConversationEngine(provider, MemoryStore(tmp_path / "memory.db"))
+    facts = EngineeringVoiceFacts(kind="accepted", goal="检查命令示例", details=("已经开始一个只读工程会话。",))
+    text = EngineeringVoiceRenderer(engine).render(facts, channel="cli", conversation_id="local")
+    assert facts.goal in text
+    assert facts.details[0] in text
+    assert provider.calls == []
 
 
 def test_base_engineering_voice_fallback_keeps_authority_decision_model_free(

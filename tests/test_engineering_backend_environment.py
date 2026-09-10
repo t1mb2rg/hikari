@@ -58,6 +58,7 @@ def test_backend_spawns_claude_with_isolated_model_environment(
                         "session_id": "isolated-model-session",
                         "is_error": False,
                         "result": "done",
+                        "structured_output": {"status": "completed", "summary": "done", "validation": []},
                     }
                 )
                 + "\n"
