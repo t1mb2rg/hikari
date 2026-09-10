@@ -312,6 +312,8 @@ class EnvironmentManager:
             "--python",
             candidate.python_version,
             "--no-editable",
+            "--reinstall-package",
+            "hikari",
         ]
         for extra in candidate.extras:
             argv.extend(("--extra", extra))
