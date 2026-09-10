@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -114,6 +115,7 @@ def test_start_detaches_one_trusted_child_and_persists_minimal_state(tmp_path: P
     assert log_path == config.log_file
     assert environment["HIKARI_MODEL_API_KEY"] == "never-persist-this"
     assert environment["HIKARI_RUNTIME_PYTHON"] == "python-test"
+    assert environment["PYTHONPATH"].split(os.pathsep)[0] == str(Path(__file__).resolve().parents[1])
     assert "never-persist-this" not in " ".join(argv)
 
     persisted_text = config.state_file.read_text(encoding="utf-8")

@@ -330,6 +330,16 @@ class WindowsResidentHost:
         runtime_environment.values["HIKARI_RUNTIME_PYTHON"] = (
             _select_runtime_child_python(self.python_executable)
         )
+        # A native Windows venv launcher may delegate the detached pythonw process
+        # to its base interpreter. Bind the child import root explicitly to the
+        # trusted installed Hikari package so a target repository or old editable
+        # install cannot supply resident/worker modules.
+        package_root = str(Path(__file__).resolve().parents[1])
+        previous_pythonpath = runtime_environment.values.get("PYTHONPATH", "")
+        runtime_environment.values["PYTHONPATH"] = os.pathsep.join(
+            [package_root, *[item for item in previous_pythonpath.split(os.pathsep)
+                             if item and Path(item).resolve() != Path(package_root).resolve()]]
+        )
         build_reasoner(
             self.config.reasoner,
             environment=runtime_environment.values,
